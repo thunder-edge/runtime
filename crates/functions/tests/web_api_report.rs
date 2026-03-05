@@ -361,6 +361,64 @@ fn define_checks() -> Vec<ApiCheck> {
             status: String::new(),
         },
 
+        // ── Non-Standard APIs ──
+        ApiCheck {
+            category: "Non-Standard APIs",
+            api: "ScheduledEvent",
+            js_check: r#"(() => { return typeof ScheduledEvent === 'function' ? 'full' : 'none'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Non-Standard APIs",
+            api: "KV",
+            js_check: r#"(() => { return typeof KVNamespace === 'function' ? 'full' : 'none'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Non-Standard APIs",
+            api: "Durable Objects",
+            js_check: r#"(() => { return (typeof DurableObject === 'function' || typeof DurableObjectNamespace === 'function') ? 'full' : 'none'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Non-Standard APIs",
+            api: "crypto.DigestStream",
+            js_check: r#"(() => { return typeof DigestStream === 'function' ? 'full' : 'none'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Non-Standard APIs",
+            api: "Ed25519 via WebCrypto",
+            js_check: r#"(() => { try { return (typeof crypto === 'object' && crypto.subtle && typeof crypto.subtle.generateKey === 'function' && typeof crypto.subtle.sign === 'function' && typeof crypto.subtle.verify === 'function') ? 'partial' : 'none'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+
+        // ── General Capabilities ──
+        ApiCheck {
+            category: "General Capabilities",
+            api: "File system access",
+            js_check: r#"(() => { return (typeof Deno === 'object' && typeof Deno.readFile === 'function') ? 'full' : 'none'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "General Capabilities",
+            api: "Connect TCP",
+            js_check: r#"(() => { return (typeof Deno === 'object' && typeof Deno.connect === 'function') ? 'full' : 'none'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "General Capabilities",
+            api: "Connect UDP",
+            js_check: r#"(() => { return (typeof Deno === 'object' && typeof Deno.listenDatagram === 'function') ? 'full' : 'none'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "General Capabilities",
+            api: "WebSockets (Server)",
+            js_check: r#"(() => { return (typeof Deno === 'object' && typeof Deno.upgradeWebSocket === 'function') ? 'full' : 'none'; })()"#,
+            status: String::new(),
+        },
+
         // ── Typed Arrays ──
         ApiCheck {
             category: "Typed Arrays",

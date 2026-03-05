@@ -6,10 +6,10 @@
 
 | Status | Count | Percentage |
 |--------|------:|------------|
-| Full | 62 | 86% |
-| Partial | 2 | 3% |
-| None | 8 | 11% |
-| **Total** | **72** | **100%** |
+| Full | 62 | 77% |
+| Partial | 3 | 4% |
+| None | 16 | 20% |
+| **Total** | **81** | **100%** |
 
 ## Detailed Results
 
@@ -60,6 +60,15 @@
 | Messaging API | MessageChannel / MessagePort | Full |
 | Messaging API | ImageData | Full |
 | HTML Rewriter | HTMLRewriter | None |
+| Non-Standard APIs | ScheduledEvent | None |
+| Non-Standard APIs | KV | None |
+| Non-Standard APIs | Durable Objects | None |
+| Non-Standard APIs | crypto.DigestStream | None |
+| Non-Standard APIs | Ed25519 via WebCrypto | Partial |
+| General Capabilities | File system access | None |
+| General Capabilities | Connect TCP | None |
+| General Capabilities | Connect UDP | None |
+| General Capabilities | WebSockets (Server) | None |
 | Typed Arrays | Uint8Array | Full |
 | Typed Arrays | Int32Array / Float64Array | Full |
 | Typed Arrays | ArrayBuffer / DataView | Full |
@@ -106,6 +115,8 @@
 | Performance API | 2 | 0 | 0 | 2 |
 | Messaging API | 2 | 0 | 0 | 2 |
 | HTML Rewriter | 0 | 0 | 1 | 1 |
+| Non-Standard APIs | 0 | 1 | 4 | 5 |
+| General Capabilities | 0 | 0 | 4 | 4 |
 | Typed Arrays | 3 | 0 | 0 | 3 |
 | JSON API | 1 | 0 | 0 | 1 |
 | Promise API | 1 | 0 | 0 | 1 |

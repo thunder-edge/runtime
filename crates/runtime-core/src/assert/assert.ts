@@ -240,6 +240,31 @@ export type SuiteOptions = {
   only?: boolean;
 };
 
+function isColorEnabled(): boolean {
+  // Respect common terminal color disable signals.
+  // deno-lint-ignore no-explicit-any
+  const env = (globalThis as any).Deno?.env;
+  if (!env?.get) return true;
+  return env.get("NO_COLOR") == null && env.get("TERM") !== "dumb";
+}
+
+function color(text: string, code: string): string {
+  if (!isColorEnabled()) return text;
+  return `\x1b[${code}m${text}\x1b[0m`;
+}
+
+function green(text: string): string {
+  return color(text, "32");
+}
+
+function red(text: string): string {
+  return color(text, "31");
+}
+
+function gray(text: string): string {
+  return color(text, "90");
+}
+
 export function test(name: string, run: () => void | Promise<void>): TestCase {
   return { name, run };
 }
@@ -270,7 +295,7 @@ export async function runSuite(
   options: SuiteOptions = {},
 ): Promise<void> {
   if (options.ignore) {
-    console.log(`suite: ${suiteName} (ignored)`);
+    console.log(`suite: ${suiteName} (${gray("IGNORED")})`);
     return;
   }
 
@@ -281,20 +306,42 @@ export async function runSuite(
 
   let passed = 0;
   let ignored = 0;
+  let failed = 0;
+  const failures: string[] = [];
+
   for (const testCase of selectedTests) {
     if (testCase.ignore) {
       ignored += 1;
-      console.log(`skip - ${testCase.name}`);
+      console.log(`ok - ${testCase.name}... ${gray("IGNORED")}`);
       continue;
     }
 
-    await testCase.run();
-    passed += 1;
-    console.log(`ok - ${testCase.name}`);
+    try {
+      await testCase.run();
+      passed += 1;
+      console.log(`ok - ${testCase.name}... ${green("OK")}`);
+    } catch (error) {
+      failed += 1;
+      const isError = error instanceof Error;
+      const status = isError ? `${red("FAIL")} (${red("ERROR")})` : red("FAIL");
+      console.log(`ok - ${testCase.name}... ${status}`);
+      failures.push(
+        isError && error.message ? `${testCase.name}: ${error.message}` : `${testCase.name}: ${String(error)}`,
+      );
+    }
   }
 
   const total = selectedTests.length;
-  console.log(`suite done: ${passed}/${total} (ignored: ${ignored})`);
+  console.log(`suite done: ${passed}/${total} (ignored: ${ignored}, failed: ${failed})`);
+
+  if (failures.length > 0) {
+    throw new AssertionError(
+      [
+        `Suite '${suiteName}' failed with ${failed} test(s):`,
+        ...failures,
+      ].join("\n"),
+    );
+  }
 }
 
 export async function runSuites(suites: TestSuite[]): Promise<void> {
