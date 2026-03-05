@@ -1,7 +1,9 @@
 // Example: Generators - Lazy Data Processing
 // Demonstrates generator functions for memory-efficient operations
 
-Deno.serve(async (req) => {
+declare const Deno: any;
+
+Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
 
   // Generator function: create a sequence of numbers

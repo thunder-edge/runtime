@@ -33,6 +33,7 @@ serde_json.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 pin-project.workspace = true
+sysinfo.workspace = true
 
 [features]
 hot-reload = ["functions/hot-reload"]

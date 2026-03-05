@@ -100,6 +100,10 @@ async-trait = "0.1.73"
 libc = "0.2.126"
 log = "0.4.20"
 ctor = "0.2.6"
+notify = "6.1"
+regex = "1.10"
+walkdir = "2.4"
+sysinfo = "0.30"
 
 [patch.crates-io]
 deno_core = { git = "https://github.com/supabase/deno_core", branch = "324-supabase" }

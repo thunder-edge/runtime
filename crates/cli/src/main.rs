@@ -23,6 +23,8 @@ enum Commands {
     Start(commands::start::StartArgs),
     /// Bundle a TypeScript/JavaScript file into an eszip
     Bundle(commands::bundle::BundleArgs),
+    /// Watch directory for TypeScript/JavaScript functions
+    Watch(commands::watch::WatchArgs),
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -47,5 +49,6 @@ fn main() -> Result<(), anyhow::Error> {
     match cli.command {
         Commands::Start(args) => commands::start::run(args),
         Commands::Bundle(args) => commands::bundle::run(args),
+        Commands::Watch(args) => commands::watch::run(args),
     }
 }

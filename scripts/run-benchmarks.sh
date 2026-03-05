@@ -75,22 +75,22 @@ fi
 echo ""
 
 # Step 4: Start server
-# print_section "Step 4a/5: Starting deno-edge-runtime server..."
-# SERVER_PID=""
+print_section "Step 4a/5: Starting deno-edge-runtime server..."
+SERVER_PID=""
 
 # Kill any existing server
-# pkill -f "deno-edge-runtime.*start" 2>/dev/null || true
-# sleep 1
+pkill -f "deno-edge-runtime.*start" 2>/dev/null || true
+sleep 1
 
 # Start server in background
-# "$PROJECT_ROOT/target/release/deno-edge-runtime" start --host 0.0.0.0 --port 9000 > /tmp/edge-runtime.log 2>&1 &
-# SERVER_PID=$!
+"$PROJECT_ROOT/target/release/deno-edge-runtime" start --host 0.0.0.0 --port 9000 > /tmp/edge-runtime.log 2>&1 &
+SERVER_PID=$!
 
-# echo "Server PID: $SERVER_PID"
+echo "Server PID: $SERVER_PID"
 
 # Wait for server to be ready
-# echo "Waiting for server to start..."
-# sleep 3
+echo "Waiting for server to start..."
+sleep 3
 
 # Check if server is running
 if ! curl -s -f "http://localhost:9000/_internal/metrics" > /dev/null 2>&1; then

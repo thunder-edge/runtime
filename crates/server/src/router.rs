@@ -72,6 +72,9 @@ impl Router {
             );
         };
 
+        // Get function config for timeouts
+        let config = self.registry.get_config(function_name).unwrap_or_default();
+
         // Rewrite path: strip the function_name prefix
         let forwarded_path = if segments.len() >= 3 {
             format!("/{}", segments[2])
@@ -99,15 +102,25 @@ impl Router {
             .unwrap();
         *forwarded_req.headers_mut() = parts.headers;
 
-        // Send to isolate
-        match handle.send_request(forwarded_req).await {
-            Ok(resp) => {
+        // Send to isolate with timeout
+        let timeout_duration = if config.wall_clock_timeout_ms > 0 {
+            std::time::Duration::from_millis(config.wall_clock_timeout_ms)
+        } else {
+            std::time::Duration::from_secs(60) // default 60s
+        };
+
+        match tokio::time::timeout(timeout_duration, handle.send_request(forwarded_req)).await {
+            Ok(Ok(resp)) => {
                 let (parts, body) = resp.into_parts();
                 Response::from_parts(parts, Full::new(body))
             }
-            Err(e) => json_response(
+            Ok(Err(e)) => json_response(
                 StatusCode::BAD_GATEWAY,
                 &format!(r#"{{"error":"isolate error: {}"}}"#, e),
+            ),
+            Err(_) => json_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                r#"{"error":"request timeout"}"#,
             ),
         }
     }
@@ -153,13 +166,34 @@ impl Router {
                     0
                 };
 
+                // Get process memory info
+                let mut sys = sysinfo::System::new_all();
+                sys.refresh_processes();
+                let current_pid = sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from(0));
+                let process_memory_mb = sys
+                    .process(current_pid)
+                    .map(|p| p.memory() / 1024) // Convert from KB to MB
+                    .unwrap_or(0);
+
+                // Estimate memory per function (simple division)
+                let function_count = self.registry.count();
+                let estimated_memory_per_function_mb = if function_count > 0 {
+                    process_memory_mb / (function_count as u64)
+                } else {
+                    0
+                };
+
                 let body = serde_json::json!({
-                    "function_count": self.registry.count(),
+                    "function_count": function_count,
                     "total_requests": total_requests,
                     "total_errors": total_errors,
                     "total_cold_starts": total_cold_starts,
                     "avg_cold_start_ms": avg_cold_start_ms,
                     "avg_warm_start_ms": avg_warm_start_ms,
+                    "memory": {
+                        "process_memory_mb": process_memory_mb,
+                        "estimated_per_function_mb": estimated_memory_per_function_mb
+                    },
                     "functions": functions,
                 });
                 json_response(StatusCode::OK, &body.to_string())

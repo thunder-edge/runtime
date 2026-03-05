@@ -852,8 +852,17 @@ function generateIndexPage(): string {
           if (difficulty) params.append('difficulty', difficulty);
 
           try {
-            const response = await fetch('/api/examples?' + params.toString());
+            const response = await fetch('./api/examples?' + params.toString());
+
+            if (!response.ok) {
+              throw new Error(\`Failed to load examples: \${response.status} \${response.statusText}\`);
+            }
+
             const data = await response.json();
+
+            if (!Array.isArray(data)) {
+              throw new Error('Invalid response format: expected an array');
+            }
 
             if (data.length === 0) {
               document.getElementById('examplesGrid').innerHTML = \`

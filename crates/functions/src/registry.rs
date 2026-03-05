@@ -67,6 +67,11 @@ impl FunctionRegistry {
         })
     }
 
+    /// Get the config for a function.
+    pub fn get_config(&self, name: &str) -> Option<IsolateConfig> {
+        self.functions.get(name).map(|entry| entry.config.clone())
+    }
+
     /// List all functions.
     pub fn list(&self) -> Vec<FunctionInfo> {
         self.functions

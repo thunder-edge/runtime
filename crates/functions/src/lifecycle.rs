@@ -86,8 +86,8 @@ pub async fn create_function(
                 .expect("failed to build tokio runtime for isolate");
 
             let local = tokio::task::LocalSet::new();
-            local.block_on(&rt, async move {
-                match run_isolate(
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                local.block_on(&rt, run_isolate(
                     isolate_name.clone(),
                     eszip,
                     root_specifier,
@@ -98,13 +98,15 @@ pub async fn create_function(
                     bundle_format,
                     snapshot_bytes,
                     bundle_package.v8_version.clone(),
-                )
-                .await
-                {
+                ))
+            }));
+            match result {
+                Ok(res) => match res {
                     Ok(()) => info!("isolate '{}' exited cleanly", isolate_name),
                     Err(e) => error!("isolate '{}' exited with error: {}", isolate_name, e),
                 }
-            });
+                Err(e) => error!("isolate '{}' panicked: {:?}", isolate_name, e),
+            }
         })
         .map_err(|e| anyhow::anyhow!("failed to spawn isolate thread: {e}"))?;
 

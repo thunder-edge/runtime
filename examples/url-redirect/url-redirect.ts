@@ -7,10 +7,10 @@ Deno.serve((req) => {
 
   // Redirect rules
   const redirects: Record<string, string> = {
-    "/old-page": "/new-page",
-    "/about-us": "/about",
-    "/contact-form": "/contact",
-    "/blog/2024": "/blog?year=2024",
+    "/old-page": "new-page",
+    "/about-us": "about",
+    "/contact-form": "contact",
+    "/blog/2024": "blog?year=2024",
   };
 
   // Check for redirects
