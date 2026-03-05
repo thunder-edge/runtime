@@ -6,6 +6,7 @@
 
 use deno_core::{JsRuntime, RuntimeOptions};
 use runtime_core::extensions;
+use runtime_core::permissions::Permissions;
 use std::fmt::Write as FmtWrite;
 
 static INIT: std::sync::Once = std::sync::Once::new();
@@ -23,7 +24,15 @@ fn make_runtime() -> JsRuntime {
         ..Default::default()
     };
     extensions::set_extension_transpiler(&mut opts);
-    JsRuntime::new(opts)
+    let mut runtime = JsRuntime::new(opts);
+
+    // Add Permissions to the op_state so that deno_web and other extensions can access it
+    {
+        let mut op_state = runtime.op_state();
+        op_state.borrow_mut().put(Permissions);
+    }
+
+    runtime
 }
 
 #[derive(Debug, Clone)]
@@ -341,6 +350,156 @@ fn define_checks() -> Vec<ApiCheck> {
             category: "Messaging API",
             api: "ImageData",
             js_check: r#"(() => { try { const id = new ImageData(2, 2); return (id.width === 2 && id.height === 2 && id.data.length === 16) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+
+        // ── HTMLRewriter API ──
+        ApiCheck {
+            category: "HTML Rewriter",
+            api: "HTMLRewriter",
+            js_check: r#"(() => { return typeof HTMLRewriter === 'function' ? 'full' : 'none'; })()"#,
+            status: String::new(),
+        },
+
+        // ── Typed Arrays ──
+        ApiCheck {
+            category: "Typed Arrays",
+            api: "Uint8Array",
+            js_check: r#"(() => { try { return (new Uint8Array(8).length === 8) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Typed Arrays",
+            api: "Int32Array / Float64Array",
+            js_check: r#"(() => { try { return (new Int32Array(4).length === 4 && new Float64Array(2).length === 2) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Typed Arrays",
+            api: "ArrayBuffer / DataView",
+            js_check: r#"(() => { try { return (new ArrayBuffer(16).byteLength === 16 && new DataView(new ArrayBuffer(8)).byteLength === 8) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+
+        // ── JSON API ──
+        ApiCheck {
+            category: "JSON API",
+            api: "JSON stringify / parse",
+            js_check: r#"(() => { try { return (JSON.parse(JSON.stringify({a: 1})).a === 1) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+
+        // ── Promise API ──
+        ApiCheck {
+            category: "Promise API",
+            api: "Promise constructor",
+            js_check: r#"(() => { try { return (new Promise(r => r(42)) instanceof Promise) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+
+        // ── Collections ──
+        ApiCheck {
+            category: "Collections",
+            api: "Map / Set",
+            js_check: r#"(() => { try { const m = new Map([['a', 1]]); const s = new Set([1, 2, 2]); return (m.get('a') === 1 && s.size === 2) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Collections",
+            api: "WeakMap / WeakSet",
+            js_check: r#"(() => { return (typeof WeakMap === 'function' && typeof WeakSet === 'function') ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+
+        // ── Symbol API ──
+        ApiCheck {
+            category: "Symbol API",
+            api: "Symbol",
+            js_check: r#"(() => { return (typeof Symbol === 'function' && typeof Symbol('test') === 'symbol') ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+
+        // ── Proxy & Reflect ──
+        ApiCheck {
+            category: "Proxy & Reflect",
+            api: "Proxy",
+            js_check: r#"(() => { try { return (typeof Proxy === 'function' && new Proxy({}, {}) !== undefined) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Proxy & Reflect",
+            api: "Reflect API",
+            js_check: r#"(() => { return (typeof Reflect === 'object' && typeof Reflect.get === 'function') ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+
+        // ── Generator & Async ──
+        ApiCheck {
+            category: "Generators & Async",
+            api: "Generator function",
+            js_check: r#"(() => { try { function* gen() { yield 1; } return (typeof gen() === 'object') ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Generators & Async",
+            api: "Async function",
+            js_check: r#"(() => { try { async function test() { return 42; } return (test() instanceof Promise) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
+            status: String::new(),
+        },
+
+        // ── String & Array methods ──
+        ApiCheck {
+            category: "String & Array Methods",
+            api: "String methods",
+            js_check: r#"(() => { const s = 'hello'; return (s.toUpperCase() === 'HELLO' && s.toLowerCase() === 'hello') ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "String & Array Methods",
+            api: "Array methods",
+            js_check: r#"(() => { const arr = [1,2,3]; return (arr.map(x => x * 2)[1] === 4 && arr.filter(x => x > 1).length === 2) ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "String & Array Methods",
+            api: "Object methods",
+            js_check: r#"(() => { const obj = {a: 1, b: 2}; return (Object.keys(obj).length === 2 && Object.values(obj)[0] === 1) ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+
+        // ── Intl API ──
+        ApiCheck {
+            category: "Intl API",
+            api: "Intl.Collator / DateTimeFormat / NumberFormat",
+            js_check: r#"(() => { return (typeof Intl === 'object' && typeof Intl.Collator === 'function' && typeof Intl.DateTimeFormat === 'function' && typeof Intl.NumberFormat === 'function') ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+
+        // ── URL enhancements ──
+        ApiCheck {
+            category: "URL API",
+            api: "URL.parse static method",
+            js_check: r#"(() => { return (typeof URL.parse === 'function' && URL.parse('https://example.com') !== null) ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+
+        // ── Math & Date ──
+        ApiCheck {
+            category: "Built-in Objects",
+            api: "Math object",
+            js_check: r#"(() => { return (typeof Math === 'object' && typeof Math.random === 'function') ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Built-in Objects",
+            api: "Date object",
+            js_check: r#"(() => { return (new Date().getFullYear() > 2020) ? 'full' : 'partial'; })()"#,
+            status: String::new(),
+        },
+        ApiCheck {
+            category: "Built-in Objects",
+            api: "RegExp support",
+            js_check: r#"(() => { return ((/test/).test('test') === true) ? 'full' : 'partial'; })()"#,
             status: String::new(),
         },
 
