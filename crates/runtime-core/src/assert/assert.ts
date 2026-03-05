@@ -312,19 +312,19 @@ export async function runSuite(
   for (const testCase of selectedTests) {
     if (testCase.ignore) {
       ignored += 1;
-      console.log(`ok - ${testCase.name}... ${gray("IGNORED")}`);
+      console.log(`${testCase.name}... ${gray("IGNORED")}`);
       continue;
     }
 
     try {
       await testCase.run();
       passed += 1;
-      console.log(`ok - ${testCase.name}... ${green("OK")}`);
+      console.log(`${testCase.name}... ${green("OK")}`);
     } catch (error) {
       failed += 1;
       const isError = error instanceof Error;
       const status = isError ? `${red("FAIL")} (${red("ERROR")})` : red("FAIL");
-      console.log(`ok - ${testCase.name}... ${status}`);
+      console.log(`${testCase.name}... ${status}`);
       failures.push(
         isError && error.message ? `${testCase.name}: ${error.message}` : `${testCase.name}: ${String(error)}`,
       );
