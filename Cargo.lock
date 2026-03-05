@@ -1376,6 +1376,7 @@ name = "edge-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bincode",
  "clap",
  "deno_ast",
  "deno_core",
@@ -1621,6 +1622,7 @@ name = "functions"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bincode",
  "bytes",
  "chrono",
  "dashmap",

@@ -8,7 +8,7 @@ for file in examples/**/*.ts; do
         ./target/debug/deno-edge-runtime bundle -e "$file" -o "$output"
 
         curl -X POST http://localhost:9000/_internal/functions \
-        -H "x-function-name: minha-funcao" \
+        -H "x-function-name: $(basename "$file" .ts)" \
         --data-binary @"$output"
     fi
 done

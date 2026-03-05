@@ -1,4 +1,7 @@
 **/*.eszip
 **/**/*.eszip
 *.eszip
+**/*.bundle
+**/**/*.bundle
+*.bundle
 target/

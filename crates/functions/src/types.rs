@@ -6,6 +6,76 @@ use chrono::{DateTime, Utc};
 use runtime_core::isolate::{IsolateConfig, IsolateHandle};
 use serde::{Deserialize, Serialize};
 
+/// Bundle format for function deployment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleFormat {
+    /// Traditional eszip bundle (modules loaded at startup).
+    Eszip,
+    /// V8 snapshot bundle (pre-initialized isolate state).
+    Snapshot,
+}
+
+impl std::fmt::Display for BundleFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BundleFormat::Eszip => write!(f, "eszip"),
+            BundleFormat::Snapshot => write!(f, "snapshot"),
+        }
+    }
+}
+
+impl Default for BundleFormat {
+    fn default() -> Self {
+        BundleFormat::Eszip
+    }
+}
+
+/// Packaged bundle containing either snapshot or eszip (with optional fallback).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BundlePackage {
+    /// Format of the primary bundle (snapshot or eszip).
+    pub format: BundleFormat,
+    /// V8 version that the snapshot was created with (for compatibility checking).
+    pub v8_version: String,
+    /// Primary bundle data (snapshot or eszip bytes).
+    pub bundle: Vec<u8>,
+    /// Fallback eszip bytes (used if snapshot fails to load).
+    pub fallback_eszip: Option<Vec<u8>>,
+}
+
+impl BundlePackage {
+    /// Create a new snapshot bundle with eszip fallback.
+    pub fn snapshot_with_fallback(snapshot: Vec<u8>, fallback_eszip: Vec<u8>) -> Self {
+        Self {
+            format: BundleFormat::Snapshot,
+            v8_version: get_v8_version().to_string(),
+            bundle: snapshot,
+            fallback_eszip: Some(fallback_eszip),
+        }
+    }
+
+    /// Create a new eszip-only bundle.
+    pub fn eszip_only(eszip: Vec<u8>) -> Self {
+        Self {
+            format: BundleFormat::Eszip,
+            v8_version: get_v8_version().to_string(),
+            bundle: eszip,
+            fallback_eszip: None,
+        }
+    }
+
+    /// Check if V8 version matches (for snapshot compatibility).
+    pub fn is_v8_compatible(&self) -> bool {
+        self.v8_version == get_v8_version()
+    }
+}
+
+/// Get current V8 version from deno_core.
+fn get_v8_version() -> &'static str {
+    deno_core::v8::VERSION_STRING
+}
+
 /// Status of a deployed function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -99,6 +169,8 @@ pub struct FunctionEntry {
     pub name: String,
     /// The raw eszip bundle bytes (kept for hot-reload).
     pub eszip_bytes: Bytes,
+    /// The original bundle format used.
+    pub bundle_format: BundleFormat,
     /// Handle to the running isolate (None if loading/error).
     pub isolate_handle: Option<IsolateHandle>,
     /// Current status.
@@ -146,6 +218,8 @@ pub struct DeployRequest {
     pub name: String,
     #[serde(default)]
     pub config: IsolateConfig,
+    #[serde(default)]
+    pub bundle_format: BundleFormat,
     /// The eszip bytes (set from multipart body, not from JSON).
     #[serde(skip)]
     pub eszip_bytes: Bytes,

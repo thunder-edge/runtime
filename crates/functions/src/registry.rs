@@ -42,7 +42,7 @@ impl FunctionRegistry {
 
         let entry = lifecycle::create_function(
             name.clone(),
-            eszip_bytes,
+            eszip_bytes.to_vec(),
             config,
             self.global_shutdown.child_token(),
         )
@@ -99,7 +99,7 @@ impl FunctionRegistry {
 
         let entry = lifecycle::create_function(
             name.to_string(),
-            eszip_bytes,
+            eszip_bytes.to_vec(),
             config,
             self.global_shutdown.child_token(),
         )
@@ -145,7 +145,7 @@ impl FunctionRegistry {
 
         let entry = lifecycle::create_function(
             name.to_string(),
-            eszip_bytes,
+            eszip_bytes.to_vec(),
             config,
             self.global_shutdown.child_token(),
         )

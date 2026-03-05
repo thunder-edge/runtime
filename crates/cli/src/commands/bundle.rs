@@ -4,6 +4,7 @@ use clap::Args;
 use deno_ast::{EmitOptions, TranspileOptions};
 use deno_graph::source::{LoadOptions, LoadResponse, Loader};
 use deno_graph::{BuildOptions, CapturingModuleAnalyzer, GraphKind, ModuleGraph};
+use functions::types::BundlePackage;
 use url::Url;
 
 #[derive(Args)]
@@ -12,9 +13,14 @@ pub struct BundleArgs {
     #[arg(short, long)]
     entrypoint: String,
 
-    /// Output eszip file path
+    /// Output bundle file path
     #[arg(short, long)]
     output: String,
+
+    /// Bundle format: eszip (default) or snapshot
+    /// NOTE: Snapshot support requires deno_core improvements for dynamic snapshot loading
+    #[arg(short, long, default_value = "eszip")]
+    format: String,
 }
 
 /// A simple file-system loader for deno_graph.
@@ -68,6 +74,17 @@ async fn run_async(args: BundleArgs) -> Result<(), anyhow::Error> {
 
     tracing::info!("bundling '{}' -> '{}'", root_url, args.output);
 
+    // Validate format
+    match args.format.as_str() {
+        "eszip" => {},
+        "snapshot" => {
+            return Err(anyhow::anyhow!(
+                "snapshot format not yet supported - deno_core needs improvements for dynamic snapshot loading. Use 'eszip' format instead."
+            ));
+        },
+        _ => return Err(anyhow::anyhow!("invalid format '{}', must be 'eszip' or 'snapshot'", args.format)),
+    };
+
     // 1. Build module graph
     let loader = FileLoader;
     let analyzer = CapturingModuleAnalyzer::default();
@@ -100,13 +117,18 @@ async fn run_async(args: BundleArgs) -> Result<(), anyhow::Error> {
         npm_packages: None,
     })?;
 
-    // 3. Serialize and write to output file
-    let bytes = eszip.into_bytes();
-    std::fs::write(&args.output, &bytes)?;
+    let eszip_bytes = eszip.into_bytes();
+
+    // 3. Package and write bundle
+    let pkg = BundlePackage::eszip_only(eszip_bytes);
+    let bundle_data = bincode::serialize(&pkg)?;
+
+    std::fs::write(&args.output, &bundle_data)
+        .map_err(|e| anyhow::anyhow!("failed to write bundle: {e}"))?;
 
     tracing::info!(
-        "wrote {} bytes to '{}'",
-        bytes.len(),
+        "wrote {} bytes to '{}' (eszip format)",
+        bundle_data.len(),
         args.output
     );
 
