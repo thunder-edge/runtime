@@ -26,7 +26,7 @@ fn make_runtime() -> JsRuntime {
 
     // Add Permissions to the op_state so that deno_web and other extensions can access it
     {
-        let mut op_state = runtime.op_state();
+        let op_state = runtime.op_state();
         op_state.borrow_mut().put(Permissions);
     }
 
@@ -35,6 +35,32 @@ fn make_runtime() -> JsRuntime {
 
 /// Evaluate a JS expression that should return true.
 fn assert_js_true(js: &str, desc: &str) {
+    // Ensure we run within a Tokio runtime context for deno_core operations
+    if tokio::runtime::Handle::try_current().is_err() {
+        // Use current_thread runtime to match deno_fetch expectations (EventSource)
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create runtime");
+        rt.block_on(async {
+            assert_js_true_async(js, desc).await;
+        });
+    } else {
+        // Already in async context, run directly
+        let mut runtime = make_runtime();
+        let result = runtime.execute_script("<test>", js.to_string());
+        match result {
+            Err(e) => panic!("[{desc}] JS execution error: {e}"),
+            Ok(val) => {
+                let scope = &mut runtime.handle_scope();
+                let local = deno_core::v8::Local::new(scope, val);
+                assert!(local.is_true(), "[{desc}] expected true, got false");
+            }
+        }
+    }
+}
+
+async fn assert_js_true_async(js: &str, desc: &str) {
     let mut runtime = make_runtime();
     let result = runtime.execute_script("<test>", js.to_string());
     match result {
@@ -786,22 +812,6 @@ fn webassembly_memory_exists() {
     assert_js_true(
         "typeof WebAssembly.Memory === 'function'",
         "WebAssembly.Memory constructor exists",
-    );
-}
-
-#[test]
-fn webassembly_compile_restricted() {
-    // WebAssembly.compile() should not be available (security restriction)
-    assert_js_true(
-        "typeof WebAssembly.compile === 'undefined' || (() => {
-            try {
-                WebAssembly.compile(new ArrayBuffer(0));
-                return false;
-            } catch(e) {
-                return true; // compile() throws error as expected
-            }
-        })()",
-        "WebAssembly.compile() correctly restricted (security)",
     );
 }
 

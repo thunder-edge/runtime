@@ -31,6 +31,32 @@ fn make_runtime() -> JsRuntime {
 }
 
 fn assert_js_true(js: &str, desc: &str) {
+    // Ensure we run within a Tokio runtime context for deno_core operations
+    if tokio::runtime::Handle::try_current().is_err() {
+        // Use current_thread runtime to match deno_fetch expectations (EventSource)
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create runtime");
+        rt.block_on(async {
+            assert_js_true_async(js, desc).await;
+        });
+    } else {
+        // Already in async context, run directly
+        let mut runtime = make_runtime();
+        let result = runtime.execute_script("<test>", js.to_string());
+        match result {
+            Err(e) => panic!("[{desc}] JS execution error: {e}"),
+            Ok(val) => {
+                let scope = &mut runtime.handle_scope();
+                let local = deno_core::v8::Local::new(scope, val);
+                assert!(local.is_true(), "[{desc}] expected true, got false");
+            }
+        }
+    }
+}
+
+async fn assert_js_true_async(js: &str, desc: &str) {
     let mut runtime = make_runtime();
     let result = runtime.execute_script("<test>", js.to_string());
     match result {
