@@ -3,7 +3,7 @@
 > Baseado na auditoria de segurança e arquitetura realizada em 05/03/2026.
 > Cada item referencia o finding correspondente no `AUDIT.md`.
 >
-> Última atualização: 06/03/2026 (base em `git log` + `git diff`).
+> Última atualização: 06/03/2026 (TLS 0.1 concluída + base em `git log` + `git diff`).
 > Commits de referência: `92aa473`, `6607a2b`, `4933dda`.
 > Inclui também mudanças locais ainda não commitadas em `functions/runtime-core`.
 
@@ -22,21 +22,28 @@
 - [x] Usar o `tls_acceptor` retornado por `build_tls_acceptor()` para envolver o TCP stream
 - [x] Chamar `tls_acceptor.accept(stream).await` antes de passar para hyper
 - [x] Servir plain HTTP apenas se TLS config não for fornecida
-- [ ] Adicionar teste E2E com conexão TLS real (self-signed cert)
-- [ ] Logar warning se servidor iniciar sem TLS
+- [x] Adicionar teste E2E com conexão TLS real (self-signed cert)
+- [x] Logar warning se servidor iniciar sem TLS
 
-**Status:** 🚧 Em progresso (3/5)
+**Status:** ✅ Concluído
 
 **Detalhes de implementação:**
 ```rust
-// No accept loop:
-let io = if let Some(ref acceptor) = tls_acceptor {
+// No accept loop (com fallback para HTTP plain):
+let maybe_stream = if let Some(acceptor) = tls_acceptor {
     let tls_stream = acceptor.accept(stream).await?;
-    TokioIo::new(tls_stream)
+    tls::MaybeHttpsStream::TcpTls(tls_stream)
 } else {
-    TokioIo::new(stream)
+    tls::MaybeHttpsStream::TcpPlain(stream)
 };
+
+let io = TokioIo::new(maybe_stream);
 ```
+
+**Validação adicionada:**
+- Teste E2E `tests::e2e_tls_accepts_https_connection` em `crates/server/src/lib.rs`
+- Certificado self-signed gerado em runtime de teste, handshake TLS real e request HTTP sobre canal criptografado
+- Warnings explícitos quando listeners iniciam sem TLS (admin, ingress TCP e legado)
 
 ---
 
@@ -77,13 +84,14 @@ let io = if let Some(ref acceptor) = tls_acceptor {
   - `192.168.0.0/16` (RFC 1918)
   - `169.254.0.0/16` (link-local / metadata de cloud)
   - `0.0.0.0/8`
-  - `::1`, `fc00::/7`, `fe80::/10` (IPv6 equivalentes)
-- [x] Adicionar `deny_net` com esses ranges na `create_permissions_container()`
+    - `[::1]` (IPv6 loopback)
+    - `fc00::/7`, `fe80::/10` (TODO: pendente por limitação do parser `deno_permissions` para CIDR IPv6 nesta versão)
+- [x] Adicionar `deny_net` com esses ranges na `create_permissions_with_ssrf_protection()`
 - [x] Manter `allow_net: Some(vec![])` para hosts públicos
-- [ ] Adicionar testes que confirmem bloqueio de `fetch("http://169.254.169.254/...")`
-- [ ] Adicionar testes que confirmem que `fetch("https://api.github.com/")` funciona
+- [x] Adicionar testes que confirmem bloqueio de `fetch("http://169.254.169.254/...")`
+- [x] Adicionar testes que confirmem que `fetch("https://api.github.com/")` funciona
 
-**Status:** 🚧 Em progresso (3/5)
+**Status:** ✅ Concluído (com ressalva IPv6 CIDR)
 
 ---
 
@@ -98,10 +106,10 @@ let io = if let Some(ref acceptor) = tls_acceptor {
 - [x] Se `Content-Length > MAX`, retornar `413 Payload Too Large` imediatamente
 - [x] Após iniciar coleta, impor limite de leitura também sem `Content-Length` (`http_body_util::Limited`)
 - [x] Definir `MAX_RESPONSE_BODY_BYTES` (default: 10 MiB) no handler
-- [ ] Truncar error messages em logs para max 1 KiB
+- [x] Truncar error messages em logs para max 1 KiB
 - [x] Adicionar testes com payloads oversized
 
-**Status:** 🚧 Em progresso (6/7)
+**Status:** ✅ Concluído
 
 ---
 
@@ -419,6 +427,207 @@ match permit {
 - [ ] Isolate panic → status muda para Error → auto-restart
 - [ ] Shutdown com request in-flight → request completa ou recebe erro
 - [ ] Deploy de bundle corrompido → erro 400, não crash
+
+---
+
+## Fase 5 — Compat Runtime (Vinext/Next.js, sem Cloud)
+
+> Escopo desta fase: **somente runtime de execução**.
+> Não inclui infraestrutura de cloud, storage distribuído, KV/Durable Objects, roteamento por manifest remoto ou deploy adapters.
+
+### 5.1 Node Compatibility Mínima para Frameworks
+
+**Objetivo:** habilitar superfície Node mínima exigida por toolchains e libs de SSR/RSC.
+
+- [ ] Expor `globalThis.process` (subset seguro e estável)
+- [ ] Expor `globalThis.Buffer` compatível (`node:buffer`)
+- [ ] Expor `setImmediate`/`clearImmediate`
+- [ ] Implementar suporte inicial aos módulos:
+    - [ ] `node:buffer`
+    - [ ] `node:events`
+    - [ ] `node:util`
+    - [ ] `node:path`
+    - [ ] `node:stream`
+    - [ ] `node:process`
+- [ ] Implementar `node:os` compatível por contrato (pode ser stub estável)
+
+**Critério de aceite:** app SSR simples com dependências Node utilitárias sobe sem erro de import em `node:*` básicos.
+
+---
+
+### 5.2 Interop de Módulos (ESM/CJS)
+
+**Objetivo:** reduzir quebras por dependências CommonJS ainda presentes no ecossistema Next.
+
+- [ ] Implementar `createRequire` básico para contexto ESM
+- [ ] Implementar interop parcial `module.exports` <-> `default` export
+- [ ] Suportar `require()` para built-ins permitidos
+- [ ] Definir política explícita para módulos Node não suportados (erro determinístico e mensagem clara)
+- [ ] Adicionar testes de resolução com pacotes híbridos ESM/CJS
+
+**Critério de aceite:** libs comuns que ainda chamam `require()` indiretamente não falham na inicialização.
+
+---
+
+### 5.3 Semântica de Streams para SSR
+
+**Objetivo:** compatibilizar pipeline de streaming usado por React SSR/Next.
+
+- [ ] Implementar ponte robusta Web Streams <-> Node Streams (quando necessário)
+- [ ] Garantir flush/backpressure corretos em resposta incremental
+- [ ] Validar `ReadableStream` em respostas longas sem buffering total em memória
+- [ ] Garantir comportamento consistente de cancelamento (`AbortSignal`) durante stream
+- [ ] Adicionar teste E2E de SSR streaming com chunked body
+
+**Critério de aceite:** SSR com streaming envia chunks progressivos, sem deadlock e sem corrupção de body.
+
+---
+
+### 5.4 Async Context por Request
+
+**Objetivo:** suportar isolamento de contexto assíncrono por request (essencial em stacks Next modernas).
+
+- [ ] Implementar camada compatível com `AsyncLocalStorage` (ou equivalente funcional)
+- [ ] Garantir propagação de contexto por awaits/promises/timers
+- [ ] Isolar contexto entre requests concorrentes
+- [ ] Adicionar testes de concorrência validando não-vazamento de contexto
+
+**Critério de aceite:** dois requests simultâneos não compartilham estado contextual.
+
+---
+
+### 5.5 HTTP/Web Semantics de Produção
+
+**Objetivo:** corrigir nuances de protocolo que quebram app real mesmo com APIs disponíveis.
+
+- [ ] Preservar múltiplos `Set-Cookie` sem flatten indevido
+- [ ] Garantir merge de headers sem perda de semântica
+- [ ] Validar clone/tee/locking de body em `Request`/`Response`
+- [ ] Revisar comportamento de compressão/encoding em proxy e rewrite
+- [ ] Adicionar suíte de regressão para casos reportados em ecossistemas SSR
+
+**Critério de aceite:** testes de cookie/header/body passam em dev e prod profile.
+
+---
+
+### 5.6 WebSocket Runtime (Opcional para Vinext, recomendado)
+
+**Objetivo:** habilitar cenários que dependem de upgrade e canais persistentes.
+
+- [ ] Carregar extensão de WebSocket (`deno_websocket`) no runtime
+- [ ] Expor `WebSocket` em `globalThis` no bootstrap
+- [ ] Implementar testes de handshake + troca de mensagens
+- [ ] Garantir limites de recurso e timeout para conexões WS
+
+**Critério de aceite:** cliente `WebSocket` conecta e troca mensagens com estabilidade.
+
+---
+
+### 5.7 Matriz de Compatibilidade (Runtime-Only)
+
+**Objetivo:** tornar explícito o nível de suporte para Vinext/Next sem cloud features.
+
+- [ ] Publicar matriz por feature:
+    - [ ] `Full` (funciona sem workaround)
+    - [ ] `Partial` (funciona com limite documentado)
+    - [ ] `None` (não suportado)
+- [ ] Incluir foco em: Node built-ins, SSR streaming, RSC, server actions, headers/cookies
+- [ ] Adicionar gate de CI para não regredir status `Full`
+
+**Critério de aceite:** decisão de adoção possível sem leitura de código-fonte.
+
+---
+
+### 5.8 Priorização Recomendada (ordem de entrega)
+
+1. Node globals + `node:buffer`/`node:process`/`node:util`/`node:path`
+2. Interop CJS (`createRequire` + require parcial)
+3. Streams SSR (bridge + cancelamento)
+4. Async context por request
+5. `node:os` compatível (stub estável)
+6. Semântica HTTP fina (`Set-Cookie`, headers, body)
+7. WebSocket
+
+---
+
+### 5.9 Modelo de Compatibilidade Inspirado em `nodejs_compat` (Cloudflare)
+
+**Objetivo:** adotar modelo explícito de suporte por módulo/API para evitar ambiguidades no ecossistema npm.
+
+- [ ] Definir 3 níveis oficiais por API Node:
+    - [ ] `Full`: implementação funcional
+    - [ ] `Partial`: implementação parcial com limitações documentadas
+    - [ ] `Stub`: importável, mas métodos `noop` ou erro determinístico
+- [ ] Padronizar erro de stub para métodos não implementados:
+    - [ ] Formato recomendado: `[edge-runtime] <api> is not implemented in this runtime profile`
+- [ ] Garantir que módulos `Stub` não quebrem no import (quebra apenas na chamada do método)
+- [ ] Publicar tabela no docs com status por módulo `node:*`
+
+**Critério de aceite:** qualquer pacote que apenas importa módulo Node não falha na carga por ausência de módulo.
+
+---
+
+### 5.10 Política de `fs` (Compat sem Acesso Real)
+
+**Objetivo:** permitir compatibilidade de ecossistema sem prometer filesystem real.
+
+- [ ] Implementar `node:fs` e `node:fs/promises` em modo `Stub/Partial` por perfil
+- [ ] Definir comportamento por categoria:
+    - [ ] Operações de leitura/escrita real -> erro determinístico (`EOPNOTSUPP`/mensagem clara)
+    - [ ] APIs utilitárias sem side-effect (ex.: normalização de paths em chamadas internas) -> permitido quando seguro
+    - [ ] APIs de watch/stream de arquivo -> `not implemented`
+- [ ] Garantir que erro indique claramente: "sem acesso real ao FS neste runtime"
+- [ ] Adicionar testes cobrindo:
+    - [ ] `import "node:fs"` não falha
+    - [ ] `readFile` falha com erro esperado
+    - [ ] chamadas não suportadas retornam erro estável (sem panic)
+
+**Critério de aceite:** bibliotecas que importam `fs` para feature detection não quebram bootstrap; uso real de disco falha de forma previsível.
+
+---
+
+### 5.11 Backlog de Módulos Node (Paridade por Etapas)
+
+**Objetivo:** transformar compatibilidade em backlog executável por sprint.
+
+- [ ] Etapa A (base de execução):
+    - [ ] `node:buffer`
+    - [ ] `node:process`
+    - [ ] `node:events`
+    - [ ] `node:util`
+    - [ ] `node:path`
+- [ ] Etapa B (SSR/RSC):
+    - [ ] `node:stream`
+    - [ ] `node:string_decoder`
+    - [ ] `node:module` (parcial)
+    - [ ] `node:os` (partial/stub)
+- [ ] Etapa C (rede e protocolos):
+    - [ ] `node:http` (parcial)
+    - [ ] `node:https` (parcial)
+    - [ ] `node:net` (parcial)
+    - [ ] `node:tls` (stub/partial)
+- [ ] Etapa D (baixo encaixe serverless):
+    - [ ] `node:child_process` (stub)
+    - [ ] `node:cluster` (stub)
+    - [ ] `node:repl` (stub)
+    - [ ] `node:dgram` (stub)
+
+**Critério de aceite:** cada etapa possui suíte de regressão e status atualizado em matriz `Full/Partial/Stub/None`.
+
+---
+
+### 5.12 Flags de Compatibilidade de Runtime
+
+**Objetivo:** permitir evolução incremental sem quebrar workloads existentes.
+
+- [ ] Adicionar flag de runtime para compat Node (ex.: `--node-compat`)
+- [ ] Adicionar variante mínima para contexto assíncrono (ex.: `--node-als`)
+- [ ] Definir defaults por modo:
+    - [ ] `start` produção: perfil conservador
+    - [ ] `dev/test`: perfil ampliado para DX
+- [ ] Documentar matriz de risco/segurança por flag
+
+**Critério de aceite:** usuário consegue habilitar compat gradualmente sem alterar código da aplicação.
 
 ---
 

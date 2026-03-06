@@ -21,9 +21,9 @@ pub const DEFAULT_DENY_RANGES: &[&str] = &[
     "169.254.0.0/16", // Link-local / Cloud metadata (AWS, GCP, Azure)
     "0.0.0.0/8",     // "This" network (reserved)
     // IPv6 equivalents
-    "::1/128",   // Loopback
-    "fc00::/7",  // Unique local addresses
-    "fe80::/10", // Link-local
+    "[::1]",     // Loopback
+    // NOTE: deno_permissions net descriptor parser in this version does not
+    // support IPv6 CIDR entries here (for example, fc00::/7, fe80::/10).
 ];
 
 /// SSRF protection configuration.

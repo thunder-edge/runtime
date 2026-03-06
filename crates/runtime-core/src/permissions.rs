@@ -162,6 +162,7 @@ pub fn create_permissions_with_ssrf_protection(ssrf_config: &SsrfConfig) -> Perm
 #[cfg(test)]
 mod tests {
     use super::*;
+    use url::Url;
 
     #[test]
     fn default_permissions_created_successfully() {
@@ -180,5 +181,29 @@ mod tests {
         let hosts = vec!["example.com".to_string(), "api.example.com:443".to_string()];
         // Just verify the container can be created without panic
         let _container = create_permissions_with_network_allowlist(hosts);
+    }
+
+    #[test]
+    fn ssrf_blocks_cloud_metadata_ip_for_fetch() {
+        let mut container = create_permissions_with_ssrf_protection(&SsrfConfig::default());
+        let url = Url::parse("http://169.254.169.254/latest/meta-data/").unwrap();
+
+        let result = container.check_net_url(&url, "fetch()");
+        assert!(
+            result.is_err(),
+            "expected SSRF protection to block metadata IP access"
+        );
+    }
+
+    #[test]
+    fn ssrf_allows_public_https_host_for_fetch() {
+        let mut container = create_permissions_with_ssrf_protection(&SsrfConfig::default());
+        let url = Url::parse("https://api.github.com/").unwrap();
+
+        let result = container.check_net_url(&url, "fetch()");
+        assert!(
+            result.is_ok(),
+            "expected public host to be allowed with SSRF protection enabled"
+        );
     }
 }

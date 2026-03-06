@@ -37,3 +37,6 @@ sysinfo.workspace = true
 
 [features]
 hot-reload = ["functions/hot-reload"]
+
+[dev-dependencies]
+rcgen = "0.12"

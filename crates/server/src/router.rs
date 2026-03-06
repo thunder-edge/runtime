@@ -4,6 +4,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
+use tracing::error;
 
 use functions::registry::FunctionRegistry;
 
@@ -13,6 +14,34 @@ use crate::body_limits::{
 };
 
 type BoxBody = Full<Bytes>;
+const MAX_LOG_ERROR_BYTES: usize = 1024;
+
+fn truncate_for_log(message: &str, max_bytes: usize) -> String {
+    if message.len() <= max_bytes {
+        return message.to_string();
+    }
+
+    if max_bytes == 0 {
+        return String::new();
+    }
+
+    let suffix = "... [truncated]";
+    if max_bytes <= suffix.len() {
+        return suffix[..max_bytes].to_string();
+    }
+
+    let mut cut = max_bytes - suffix.len();
+    while cut > 0 && !message.is_char_boundary(cut) {
+        cut -= 1;
+    }
+
+    format!("{}{}", &message[..cut], suffix)
+}
+
+fn log_truncated_error(context: &str, err: &impl std::fmt::Display) {
+    let truncated = truncate_for_log(&err.to_string(), MAX_LOG_ERROR_BYTES);
+    error!("{}: {}", context, truncated);
+}
 
 /// The top-level HTTP router.
 ///
@@ -138,10 +167,13 @@ impl Router {
                 }
                 Response::from_parts(parts, Full::new(body))
             }
-            Ok(Err(e)) => json_response(
-                StatusCode::BAD_GATEWAY,
-                &format!(r#"{{"error":"isolate error: {}"}}"#, e),
-            ),
+            Ok(Err(e)) => {
+                log_truncated_error("failed to handle ingress request in isolate", &e);
+                json_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!(r#"{{"error":"isolate error: {}"}}"#, e),
+                )
+            }
             Err(_) => json_response(
                 StatusCode::GATEWAY_TIMEOUT,
                 r#"{"error":"request timeout"}"#,
@@ -299,10 +331,13 @@ impl Router {
                 let json = serde_json::to_string(&info).unwrap_or_default();
                 json_response(StatusCode::CREATED, &json)
             }
-            Err(e) => json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!(r#"{{"error":"{}"}}"#, e),
-            ),
+            Err(e) => {
+                log_truncated_error("failed to deploy function", &e);
+                json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!(r#"{{"error":"{}"}}"#, e),
+                )
+            }
         }
     }
 
@@ -377,10 +412,13 @@ impl Router {
                         let json = serde_json::to_string(&info).unwrap_or_default();
                         json_response(StatusCode::OK, &json)
                     }
-                    Err(e) => json_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        &format!(r#"{{"error":"{}"}}"#, e),
-                    ),
+                    Err(e) => {
+                        log_truncated_error("failed to update function", &e);
+                        json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!(r#"{{"error":"{}"}}"#, e),
+                        )
+                    }
                 }
             }
 
@@ -388,10 +426,13 @@ impl Router {
             (Method::DELETE, None) => {
                 match self.registry.delete(name).await {
                     Ok(()) => json_response(StatusCode::OK, r#"{"status":"deleted"}"#),
-                    Err(e) => json_response(
-                        StatusCode::NOT_FOUND,
-                        &format!(r#"{{"error":"{}"}}"#, e),
-                    ),
+                    Err(e) => {
+                        log_truncated_error("failed to delete function", &e);
+                        json_response(
+                            StatusCode::NOT_FOUND,
+                            &format!(r#"{{"error":"{}"}}"#, e),
+                        )
+                    }
                 }
             }
 
@@ -404,10 +445,13 @@ impl Router {
                             let json = serde_json::to_string(&info).unwrap_or_default();
                             json_response(StatusCode::OK, &json)
                         }
-                        Err(e) => json_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!(r#"{{"error":"{}"}}"#, e),
-                        ),
+                        Err(e) => {
+                            log_truncated_error("failed to hot-reload function", &e);
+                            json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &format!(r#"{{"error":"{}"}}"#, e),
+                            )
+                        }
                     }
                 }
                 #[cfg(not(feature = "hot-reload"))]
@@ -488,5 +532,19 @@ mod tests {
     fn json_response_status() {
         let resp = json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#);
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn truncate_for_log_keeps_short_message() {
+        let msg = "short error";
+        assert_eq!(truncate_for_log(msg, 1024), msg);
+    }
+
+    #[test]
+    fn truncate_for_log_limits_to_1kib() {
+        let msg = "x".repeat(2000);
+        let truncated = truncate_for_log(&msg, 1024);
+        assert!(truncated.len() <= 1024);
+        assert!(truncated.ends_with("... [truncated]"));
     }
 }

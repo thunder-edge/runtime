@@ -192,6 +192,13 @@ async fn run_admin_listener(
         None
     };
 
+    if tls_acceptor.is_none() {
+        warn!(
+            "admin listener started without TLS on {}. Traffic is unencrypted.",
+            config.addr
+        );
+    }
+
     let scheme = if tls_acceptor.is_some() {
         "https"
     } else {
@@ -290,6 +297,13 @@ async fn run_tcp_ingress(
     } else {
         None
     };
+
+    if tls_acceptor.is_none() {
+        warn!(
+            "ingress listener started without TLS on {}. Traffic is unencrypted.",
+            addr
+        );
+    }
 
     let scheme = if tls_acceptor.is_some() {
         "https"
@@ -457,6 +471,13 @@ pub async fn run_server(
         None
     };
 
+    if tls_acceptor.is_none() {
+        warn!(
+            "server started without TLS on {}. Traffic is unencrypted.",
+            config.addr
+        );
+    }
+
     let scheme = if tls_acceptor.is_some() { "https" } else { "http" };
     info!("edge-runtime listening on {}://{}", scheme, config.addr);
 
@@ -526,4 +547,147 @@ pub async fn run_server(
     .await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::Arc;
+    use std::sync::Once;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use functions::registry::FunctionRegistry;
+    use rcgen::generate_simple_self_signed;
+    use rustls::pki_types::ServerName;
+    use rustls::{ClientConfig, RootCertStore};
+    use runtime_core::isolate::IsolateConfig;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    use tokio_rustls::TlsConnector;
+
+    static RUSTLS_INIT: Once = Once::new();
+
+    fn init_rustls_provider() {
+        RUSTLS_INIT.call_once(|| {
+            let provider = rustls::crypto::ring::default_provider();
+            provider
+                .install_default()
+                .expect("failed to install rustls crypto provider");
+        });
+    }
+
+    fn make_test_registry() -> Arc<FunctionRegistry> {
+        Arc::new(FunctionRegistry::new(
+            CancellationToken::new(),
+            IsolateConfig::default(),
+        ))
+    }
+
+    fn make_temp_tls_files() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+        let cert = generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("failed to generate self-signed certificate");
+
+        let cert_pem = cert.serialize_pem().expect("failed to serialize cert pem");
+        let key_pem = cert.serialize_private_key_pem();
+        let cert_der = cert.serialize_der().expect("failed to serialize cert der");
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("edge-server-tls-test-{unique}"));
+        std::fs::create_dir_all(&dir).expect("failed to create temp dir for tls test");
+
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        std::fs::write(&cert_path, cert_pem).expect("failed to write cert.pem");
+        std::fs::write(&key_path, key_pem).expect("failed to write key.pem");
+
+        (dir, cert_path, key_path, cert_der)
+    }
+
+    #[tokio::test]
+    async fn e2e_tls_accepts_https_connection() {
+        init_rustls_provider();
+
+        let (temp_dir, cert_path, key_path, cert_der) = make_temp_tls_files();
+
+        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind probe listener");
+        let addr = probe_listener
+            .local_addr()
+            .expect("failed to get local addr");
+        drop(probe_listener);
+
+        let registry = make_test_registry();
+        let shutdown = CancellationToken::new();
+
+        let server_config = ServerConfig {
+            addr,
+            tls: Some(TlsConfig {
+                cert_path: cert_path.to_string_lossy().to_string(),
+                key_path: key_path.to_string_lossy().to_string(),
+            }),
+            rate_limit_rps: None,
+            graceful_exit_deadline_secs: 1,
+            body_limits: BodyLimitsConfig::default(),
+            max_connections: 128,
+        };
+
+        let server_shutdown = shutdown.clone();
+        let server_handle = tokio::spawn(async move {
+            run_server(server_config, registry, server_shutdown).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(cert_der.into())
+            .expect("failed to add self-signed cert to root store");
+
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let tcp = TcpStream::connect(addr)
+            .await
+            .expect("failed to connect tcp to server");
+
+        let server_name = ServerName::try_from("localhost").expect("invalid server name");
+        let mut tls_stream = connector
+            .connect(server_name, tcp)
+            .await
+            .expect("tls handshake failed");
+
+        tls_stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("failed to write request over tls");
+
+        let mut response = vec![0_u8; 4096];
+        let n = tokio::time::timeout(Duration::from_secs(2), tls_stream.read(&mut response))
+            .await
+            .expect("timed out waiting for response")
+            .expect("failed to read response");
+
+        assert!(n > 0, "server returned empty response over TLS");
+        let response_text = String::from_utf8_lossy(&response[..n]);
+        assert!(
+            response_text.starts_with("HTTP/1.1"),
+            "expected HTTP response, got: {response_text}"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
+
+        std::fs::remove_dir_all(temp_dir).expect("failed to cleanup temp tls dir");
+    }
 }
