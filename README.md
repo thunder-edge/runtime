@@ -5,9 +5,7 @@
 <a href="https://github.com/ceelsoin/edge-runtime/actions/workflows/ci-cd.yml"><img src="https://github.com/ceelsoin/edge-runtime/actions/workflows/ci-cd.yml/badge.svg" /></a>
 
 
-
-
-An Edge Runtime and Ecossystem a.k.a Thunder written in Rust, based on the Deno ecosystem, to run JavaScript/TypeScript functions with a focus on modern Web APIs, per-function isolation, and CLI-based operations with included test framework.
+Thunder is a Rust-powered edge runtime and ecosystem built on the Deno stack, designed to run JavaScript and TypeScript functions with modern Web APIs, strong per-function isolation, and a CLI-first workflow with a built-in testing framework. ⚡
 
 ## Project Goal
 
