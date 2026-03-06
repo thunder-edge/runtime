@@ -158,14 +158,14 @@ match permit {
 **Crate:** `functions`
 **Arquivo:** `crates/functions/src/lifecycle.rs`
 
-- [ ] Envolver `handler::dispatch_request()` com `tokio::time::timeout()`
+- [x] Envolver `handler::dispatch_request()` com `tokio::time::timeout()`
 - [x] Usar `config.wall_clock_timeout_ms` como timeout
-- [ ] Retornar HTTP 504 Gateway Timeout quando exceder
+- [x] Retornar HTTP 504 Gateway Timeout quando exceder
 - [x] Logar timeout com nome da função e duração
 - [x] Incrementar `metrics.total_errors` em timeout
 - [x] Adicionar teste com handler que faz `while(true) {}`
 
-**Status:** 🚧 Em progresso (4/6)
+**Status:** ✅ Concluído
 
 ---
 

@@ -1,5 +1,6 @@
 use anyhow::Error;
 use bytes::Bytes;
+use chrono::Utc;
 use dashmap::DashMap;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -17,6 +18,28 @@ pub struct FunctionRegistry {
 }
 
 impl FunctionRegistry {
+    fn reconcile_entry_status(entry: &mut FunctionEntry) {
+        if entry.status != FunctionStatus::Running {
+            return;
+        }
+
+        let is_dead = entry
+            .isolate_handle
+            .as_ref()
+            .map(|handle| !handle.is_alive())
+            .unwrap_or(true);
+
+        if is_dead {
+            entry.status = FunctionStatus::Error;
+            entry.updated_at = Utc::now();
+            if entry.last_error.is_none() {
+                entry.last_error = Some(
+                    "isolate terminated unexpectedly (panic or resource limit)".to_string(),
+                );
+            }
+        }
+    }
+
     pub fn new(global_shutdown: CancellationToken, default_config: IsolateConfig) -> Self {
         Self {
             functions: DashMap::new(),
@@ -59,7 +82,8 @@ impl FunctionRegistry {
         &self,
         name: &str,
     ) -> Option<runtime_core::isolate::IsolateHandle> {
-        self.functions.get(name).and_then(|entry| {
+        self.functions.get_mut(name).and_then(|mut entry| {
+            Self::reconcile_entry_status(&mut entry);
             if entry.status == FunctionStatus::Running {
                 // Also check if isolate is still alive (hasn't panicked or exited)
                 if let Some(ref handle) = entry.isolate_handle {
@@ -79,15 +103,24 @@ impl FunctionRegistry {
 
     /// List all functions.
     pub fn list(&self) -> Vec<FunctionInfo> {
-        self.functions
+        let names: Vec<String> = self
+            .functions
             .iter()
-            .map(|entry| entry.value().to_info())
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        names
+            .into_iter()
+            .filter_map(|name| self.get_info(&name))
             .collect()
     }
 
     /// Get info about a specific function.
     pub fn get_info(&self, name: &str) -> Option<FunctionInfo> {
-        self.functions.get(name).map(|entry| entry.value().to_info())
+        self.functions.get_mut(name).map(|mut entry| {
+            Self::reconcile_entry_status(&mut entry);
+            entry.to_info()
+        })
     }
 
     /// Update a function with a new eszip bundle.
@@ -184,6 +217,12 @@ impl FunctionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use chrono::Utc;
+
+    use crate::types::{BundleFormat, FunctionEntry, FunctionMetrics, FunctionStatus};
 
     fn make_registry() -> FunctionRegistry {
         let shutdown = CancellationToken::new();
@@ -224,5 +263,41 @@ mod tests {
         let result = rt.block_on(reg.delete("nonexistent"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn dead_isolate_is_marked_as_error_in_registry() {
+        let reg = make_registry();
+
+        let (request_tx, _request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let alive = Arc::new(AtomicBool::new(false));
+        let handle = runtime_core::isolate::IsolateHandle {
+            request_tx,
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive,
+        };
+
+        let entry = FunctionEntry {
+            name: "dead-fn".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(handle),
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig::default(),
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+
+        reg.functions.insert("dead-fn".to_string(), entry);
+
+        assert!(reg.get_handle("dead-fn").is_none());
+
+        let info = reg.get_info("dead-fn").expect("missing function info");
+        assert_eq!(info.status, FunctionStatus::Error);
+        assert!(info.last_error.is_some());
     }
 }

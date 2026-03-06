@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
+use functions::registry::FunctionRegistry;
+use functions::types::{BundlePackage, FunctionStatus};
 use runtime_core::extensions;
 use runtime_core::isolate::IsolateConfig;
 use runtime_core::module_loader::EszipModuleLoader;
@@ -282,6 +284,105 @@ fn test_isolate_timeout_returns_504() {
         }
 
         functions::lifecycle::destroy_function(&entry).await;
+        Ok(())
+    });
+
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
+/// Test roadmap 1.2 requirement: infinite allocation should terminate isolate
+/// and mark the function as Error in registry.
+#[test]
+fn test_heap_limit_infinite_allocation_marks_function_error() {
+    deno_core::JsRuntime::init_platform(None);
+
+    let eszip_bytes = build_eszip(
+        "file:///test_heap_oom.js",
+        r#"
+        Deno.serve(async (_req) => {
+            const chunks = [];
+            while (true) {
+                chunks.push(new Uint8Array(1024 * 1024));
+            }
+        });
+        "#,
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let result: Result<(), String> = rt.block_on(async {
+        let bundle = BundlePackage::eszip_only(eszip_bytes);
+        let bundle_data = bincode::serialize(&bundle)
+            .map_err(|e| format!("serialize bundle: {e}"))?;
+
+        let mut config = IsolateConfig::default();
+        config.max_heap_size_bytes = 8 * 1024 * 1024;
+        config.wall_clock_timeout_ms = 0;
+
+        let registry = FunctionRegistry::new(CancellationToken::new(), IsolateConfig::default());
+        let _ = registry
+            .deploy(
+                "heap-limit-test".to_string(),
+                bytes::Bytes::from(bundle_data),
+                Some(config),
+            )
+            .await
+            .map_err(|e| format!("deploy: {e}"))?;
+
+        let handle = registry
+            .get_handle("heap-limit-test")
+            .ok_or_else(|| "missing handle after deploy".to_string())?;
+
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("/heap")
+            .header("host", "localhost:9000")
+            .body(bytes::Bytes::new())
+            .map_err(|e| format!("build request: {e}"))?;
+
+        let send_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handle.send_request(request),
+        )
+        .await;
+
+        match send_result {
+            Ok(Ok(resp)) => {
+                return Err(format!(
+                    "expected isolate termination error, got response status {}",
+                    resp.status()
+                ));
+            }
+            Ok(Err(_)) => {
+                // Expected: isolate terminated and request channel failed.
+            }
+            Err(_) => {
+                return Err("timed out waiting for heap-limit request outcome".to_string());
+            }
+        }
+
+        // Poll until registry reconciles dead isolate to Error.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Some(info) = registry.get_info("heap-limit-test") {
+                if info.status == FunctionStatus::Error {
+                    break;
+                }
+            }
+            if std::time::Instant::now() > deadline {
+                return Err("function was not marked Error after heap-limit termination".to_string());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        registry
+            .delete("heap-limit-test")
+            .await
+            .map_err(|e| format!("delete function: {e}"))?;
+
         Ok(())
     });
 
