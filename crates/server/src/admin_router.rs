@@ -16,7 +16,7 @@ use crate::body_limits::{
 };
 use crate::router::{
     METRICS_CACHE_TTL_SECS, MetricsCache, build_metrics_body, is_valid_function_name,
-    json_response, normalize_function_name,
+    json_response, normalize_function_name, sanitize_internal_error,
 };
 
 type BoxBody = Full<Bytes>;
@@ -201,9 +201,10 @@ impl AdminRouter {
                 let json = serde_json::to_string(&info).unwrap_or_default();
                 json_response(StatusCode::CREATED, &json)
             }
-            Err(e) => json_response(
+            Err(e) => sanitize_internal_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!(r#"{{"error":"{}"}}"#, e),
+                "admin deploy failed",
+                &e,
             ),
         }
     }
@@ -284,9 +285,10 @@ impl AdminRouter {
                         let json = serde_json::to_string(&info).unwrap_or_default();
                         json_response(StatusCode::OK, &json)
                     }
-                    Err(e) => json_response(
+                    Err(e) => sanitize_internal_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        &format!(r#"{{"error":"{}"}}"#, e),
+                        "admin update failed",
+                        &e,
                     ),
                 }
             }
@@ -294,10 +296,7 @@ impl AdminRouter {
             // DELETE /_internal/functions/{name}
             (Method::DELETE, None) => match self.registry.delete(name).await {
                 Ok(()) => json_response(StatusCode::OK, r#"{"status":"deleted"}"#),
-                Err(e) => json_response(
-                    StatusCode::NOT_FOUND,
-                    &format!(r#"{{"error":"{}"}}"#, e),
-                ),
+                Err(_e) => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
             },
 
             // POST /_internal/functions/{name}/reload
@@ -309,9 +308,10 @@ impl AdminRouter {
                             let json = serde_json::to_string(&info).unwrap_or_default();
                             json_response(StatusCode::OK, &json)
                         }
-                        Err(e) => json_response(
+                        Err(e) => sanitize_internal_error(
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!(r#"{{"error":"{}"}}"#, e),
+                            "admin hot-reload failed",
+                            &e,
                         ),
                     }
                 }

@@ -17,7 +17,7 @@ use crate::body_limits::{
     payload_too_large_response, BodyLimitError, BodyLimitsConfig,
 };
 use crate::middleware::{RateLimitLayer, rate_limit_layer, rate_limited_response};
-use crate::router::{is_valid_function_name, json_response};
+use crate::router::{is_valid_function_name, json_response, sanitize_internal_error};
 
 type BoxBody = Full<Bytes>;
 
@@ -168,9 +168,10 @@ impl IngressRouter {
                 }
                 Response::from_parts(parts, Full::new(body))
             }
-            Ok(Err(e)) => json_response(
+            Ok(Err(e)) => sanitize_internal_error(
                 StatusCode::BAD_GATEWAY,
-                &format!(r#"{{"error":"isolate error: {}"}}"#, e),
+                "failed to handle ingress request in isolate",
+                &e,
             ),
             Err(_) => json_response(
                 StatusCode::GATEWAY_TIMEOUT,

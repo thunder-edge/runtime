@@ -2241,6 +2241,7 @@ dependencies = [
  "tower-http",
  "tower-service",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

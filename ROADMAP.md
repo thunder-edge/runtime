@@ -307,10 +307,12 @@ Nota: benchmark comparativo adicionado como teste `#[ignore]` em `crates/runtime
 **Crate:** `server`
 **Arquivo:** `crates/server/src/router.rs`
 
-- [ ] Criar enum `ClientError` com mensagens genéricas
-- [ ] Logar stack trace internamente com `tracing::error!`
-- [ ] Retornar ao cliente apenas: `{"error": "internal_error", "request_id": "..."}`
-- [ ] Incluir `request_id` (UUID) para correlação
+- [x] Criar enum `ClientError` com mensagens genéricas
+- [x] Logar stack trace internamente com `tracing::error!`
+- [x] Retornar ao cliente apenas: `{"error": "internal_error", "request_id": "..."}`
+- [x] Incluir `request_id` (UUID) para correlação
+
+**Status:** ✅ Concluído
 
 ---
 
