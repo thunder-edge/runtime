@@ -1,13 +1,19 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::net::TcpListener;
+use std::io::ErrorKind;
+use std::thread;
 
 use anyhow::Error;
 use bytes::Bytes;
 use chrono::Utc;
 use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
+use deno_core::{InspectorMsg, InspectorSessionChannels, InspectorSessionKind, InspectorSessionProxy};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use tungstenite::{Message, WebSocket};
 
 use runtime_core::extensions;
 use runtime_core::isolate::{determine_root_specifier, IsolateConfig, IsolateHandle, IsolateRequest};
@@ -16,6 +22,20 @@ use runtime_core::permissions::create_permissions_container;
 
 use crate::handler;
 use crate::types::*;
+
+struct InspectorServerGuard {
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for InspectorServerGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
 
 /// Create a FunctionEntry: parse bundle (snapshot or eszip), boot isolate on a dedicated thread.
 pub async fn create_function(
@@ -169,6 +189,48 @@ async fn run_isolate(
         BundleFormat::Eszip => load_from_eszip_with_init(&eszip, &root_specifier, &config).await?,
     };
 
+    let _inspector_guard = if let Some(port) = config.inspect_port {
+        // Inspector was already initialized inside load_from_eszip_with_init
+        // (before module loading), so V8 tracks the script from compilation time.
+        let inspector = js_runtime.inspector();
+        let session_sender = inspector.get_session_sender();
+        let (guard, target_id) = start_inspector_server(session_sender, port, name.clone(), root_specifier.as_str().to_string())?;
+        info!(
+            "function '{}' inspector listening on ws://127.0.0.1:{}/{}",
+            name,
+            port,
+            target_id
+        );
+
+        if config.inspect_brk {
+            info!(
+                "function '{}' waiting for debugger session (inspect-brk)",
+                name
+            );
+            inspector.wait_for_session_and_break_on_next_statement();
+        } else {
+            inspector.wait_for_session();
+        }
+
+        // After the session is established, give VS Code ~150ms to send its
+        // initialization messages (Runtime.enable, Debugger.enable, etc.).
+        // Then flush them through the event loop so V8 processes Debugger.enable
+        // and sends Debugger.scriptParsed to VS Code BEFORE any debugger; pause
+        // occurs. Without this, scriptParsed only arrives after Debugger.paused
+        // and VS Code shows "Unknown Source" instead of opening the file.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let _ = js_runtime
+            .run_event_loop(PollEventLoopOptions {
+                wait_for_inspector: false,
+                pump_v8_message_loop: true,
+            })
+            .await;
+
+        Some(guard)
+    } else {
+        None
+    };
+
     // Record cold start time
     let cold_start_duration_ms = cold_start_timer.elapsed().as_millis() as u64;
     metrics.cold_start_count.fetch_add(1, Ordering::Relaxed);
@@ -256,7 +318,10 @@ async fn load_from_eszip_with_init(
     };
 
     // Create JsRuntime with the eszip module loader
-    let module_loader = std::rc::Rc::new(EszipModuleLoader::new(eszip.clone()));
+    let module_loader = std::rc::Rc::new(EszipModuleLoader::new_with_source_maps(
+        eszip.clone(),
+        config.enable_source_maps,
+    ));
 
     let mut runtime_opts = RuntimeOptions {
         module_loader: Some(module_loader),
@@ -277,6 +342,14 @@ async fn load_from_eszip_with_init(
     // Register the request handler bridge in the JS global scope
     handler::inject_request_bridge(&mut js_runtime)?;
 
+    // Initialize the inspector BEFORE loading user modules so V8 is in debug
+    // mode during script compilation. This guarantees that when a debugger
+    // session later sends Debugger.enable, V8 can retroactively send
+    // Debugger.scriptParsed for all compiled scripts (including the user module).
+    if config.inspect_port.is_some() {
+        js_runtime.maybe_init_inspector();
+    }
+
     // Load and evaluate the main module
     let module_id = js_runtime.load_main_es_module(root_specifier).await?;
     let eval_result = js_runtime.mod_evaluate(module_id);
@@ -291,6 +364,212 @@ async fn load_from_eszip_with_init(
     eval_result.await?;
 
     Ok(js_runtime)
+}
+
+fn start_inspector_server(
+    session_sender: deno_core::futures::channel::mpsc::UnboundedSender<InspectorSessionProxy>,
+    port: u16,
+    target_name: String,
+    root_url: String,
+) -> Result<(InspectorServerGuard, String), Error> {
+    let target_id = uuid::Uuid::new_v4().to_string();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_thread = stop.clone();
+    let target_id_for_thread = target_id.clone();
+    let root_url_for_thread = root_url.clone();
+
+    // On watch hot-reload, the previous isolate may still be tearing down and
+    // releasing this port. Retry briefly to avoid spurious reload failures.
+    let listener = bind_inspector_listener_with_retry(port, 30, std::time::Duration::from_millis(100))?;
+
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| anyhow::anyhow!("failed to configure inspector listener: {}", e))?;
+
+    let handle = thread::spawn(move || {
+        let target_id = target_id_for_thread;
+        let root_url = root_url_for_thread;
+        let ws_path = format!("/{}", target_id);
+
+        while !stop_for_thread.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _addr)) => {
+                    let mut peek_buf = [0u8; 2048];
+                    let peek_len = match stream.peek(&mut peek_buf) {
+                        Ok(n) => n,
+                        Err(_) => continue,
+                    };
+
+                    let req = String::from_utf8_lossy(&peek_buf[..peek_len]).to_string();
+                    let first_line = req.lines().next().unwrap_or_default();
+                    let path = first_line.split_whitespace().nth(1).unwrap_or("/");
+                    let is_upgrade = req.to_ascii_lowercase().contains("upgrade: websocket");
+
+                    // Accept WebSocket upgrade on the UUID path or the legacy /ws path
+                    if is_upgrade && (path == ws_path.as_str() || path == "/ws") {
+                        handle_websocket_session(&mut stream, &session_sender);
+                        continue;
+                    }
+
+                    if path == "/json" || path == "/json/list" {
+                        let body = format!(
+                            "[{{\"description\":\"deno-edge-runtime\",\"id\":\"{id}\",\"title\":\"{title}\",\"type\":\"node\",\"url\":\"{url}\",\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}/{id}\",\"devtoolsFrontendUrl\":\"devtools://devtools/bundled/inspector.html?ws=127.0.0.1:{port}/{id}\"}}]",
+                            id = target_id,
+                            title = target_name,
+                            url = root_url,
+                            port = port,
+                        );
+                        let _ = write_http_json_response(&mut stream, &body);
+                        continue;
+                    }
+
+                    if path == "/json/version" {
+                        let body = "{\"Browser\":\"node.js/v18.0.0\",\"Protocol-Version\":\"1.1\"}";
+                        let _ = write_http_json_response(&mut stream, body);
+                        continue;
+                    }
+
+                    let _ = write_http_not_found(&mut stream);
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(_) => {
+                    thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+    });
+
+    Ok((InspectorServerGuard {
+        stop,
+        handle: Some(handle),
+    }, target_id))
+}
+
+fn bind_inspector_listener_with_retry(
+    port: u16,
+    max_attempts: usize,
+    retry_delay: std::time::Duration,
+) -> Result<TcpListener, Error> {
+    let addr = ("127.0.0.1", port);
+    for attempt in 1..=max_attempts {
+        match TcpListener::bind(addr) {
+            Ok(listener) => return Ok(listener),
+            Err(e) if e.kind() == ErrorKind::AddrInUse && attempt < max_attempts => {
+                thread::sleep(retry_delay);
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to bind inspector server on 127.0.0.1:{}: {}",
+                    port,
+                    e
+                ));
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "failed to bind inspector server on 127.0.0.1:{}: address still in use after {} attempts",
+        port,
+        max_attempts
+    ))
+}
+
+fn write_http_json_response(stream: &mut std::net::TcpStream, body: &str) -> std::io::Result<()> {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    std::io::Write::write_all(stream, response.as_bytes())
+}
+
+fn write_http_not_found(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
+    let body = "not found";
+    let response = format!(
+        "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    std::io::Write::write_all(stream, response.as_bytes())
+}
+
+fn handle_websocket_session(
+    stream: &mut std::net::TcpStream,
+    session_sender: &deno_core::futures::channel::mpsc::UnboundedSender<InspectorSessionProxy>,
+) {
+    let cloned = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let mut ws = match tungstenite::accept(cloned) {
+        Ok(socket) => socket,
+        Err(_) => return,
+    };
+
+    if ws.get_mut().set_nonblocking(true).is_err() {
+        return;
+    }
+
+    let (to_runtime_tx, to_runtime_rx) = deno_core::futures::channel::mpsc::unbounded::<String>();
+    let (from_runtime_tx, mut from_runtime_rx) =
+        deno_core::futures::channel::mpsc::unbounded::<InspectorMsg>();
+
+    let proxy = InspectorSessionProxy {
+        channels: InspectorSessionChannels::Regular {
+            tx: from_runtime_tx,
+            rx: to_runtime_rx,
+        },
+        kind: InspectorSessionKind::NonBlocking {
+            wait_for_disconnect: false,
+        },
+    };
+
+    if session_sender.unbounded_send(proxy).is_err() {
+        return;
+    }
+
+    pump_websocket(&mut ws, to_runtime_tx, &mut from_runtime_rx);
+}
+
+fn pump_websocket(
+    ws: &mut WebSocket<std::net::TcpStream>,
+    to_runtime_tx: deno_core::futures::channel::mpsc::UnboundedSender<String>,
+    from_runtime_rx: &mut deno_core::futures::channel::mpsc::UnboundedReceiver<InspectorMsg>,
+) {
+    loop {
+        loop {
+            match from_runtime_rx.try_recv() {
+                Ok(msg) => {
+                    if ws.send(Message::Text(msg.content.into())).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        match ws.read() {
+            Ok(msg) => {
+                if msg.is_close() {
+                    return;
+                }
+                if let Message::Text(text) = msg {
+                    if to_runtime_tx.unbounded_send(text.to_string()).is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(tungstenite::Error::ConnectionClosed)
+            | Err(tungstenite::Error::AlreadyClosed) => return,
+            Err(_) => return,
+        }
+
+        thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 /// Destroy a function: cancel its isolate and wait for cleanup.
