@@ -153,6 +153,19 @@ impl IsolateHandle {
             *guard = None;
         }
     }
+
+    /// Returns true when the request channel is closed or unavailable.
+    pub fn is_request_channel_closed(&self) -> bool {
+        let guard = match self.request_tx.lock() {
+            Ok(g) => g,
+            Err(_) => return true,
+        };
+
+        match guard.as_ref() {
+            Some(sender) => sender.is_closed(),
+            None => true,
+        }
+    }
 }
 
 /// Module specifier for the function's entrypoint.

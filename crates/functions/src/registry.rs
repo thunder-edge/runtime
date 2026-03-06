@@ -3,7 +3,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use dashmap::DashMap;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 use runtime_core::isolate::IsolateConfig;
 
@@ -18,6 +18,16 @@ pub struct FunctionRegistry {
 }
 
 impl FunctionRegistry {
+        fn all_request_channels_closed(&self) -> bool {
+            self.functions.iter().all(|entry| {
+                entry
+                    .isolate_handle
+                    .as_ref()
+                    .map(|h| h.is_request_channel_closed())
+                    .unwrap_or(true)
+            })
+        }
+
     fn reconcile_entry_status(entry: &mut FunctionEntry) {
         let is_dead = entry
             .isolate_handle
@@ -200,10 +210,63 @@ impl FunctionRegistry {
 
     /// Shut down all functions gracefully.
     pub async fn shutdown_all(&self) {
-        info!("shutting down all functions ({} total)", self.functions.len());
+        self.shutdown_all_with_deadline(std::time::Duration::from_secs(2))
+            .await;
+    }
+
+    /// Shut down all functions with explicit deadline.
+    ///
+    /// Steps:
+    /// 1) mark entries as shutting down and cancel each isolate token
+    /// 2) wait until request channels are closed
+    /// 3) on deadline, force clear with warning
+    pub async fn shutdown_all_with_deadline(&self, deadline: std::time::Duration) {
+        let total = self.functions.len();
+        info!(
+            "shutting down all functions ({} total, deadline={}ms)",
+            total,
+            deadline.as_millis()
+        );
+
         self.global_shutdown.cancel();
-        // Give isolates time to drain
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        for mut entry in self.functions.iter_mut() {
+            entry.status = FunctionStatus::ShuttingDown;
+            entry.updated_at = Utc::now();
+            if let Some(handle) = &entry.isolate_handle {
+                handle.shutdown.cancel();
+            }
+        }
+
+        let started = std::time::Instant::now();
+        while started.elapsed() < deadline {
+            if self.all_request_channels_closed() {
+                self.functions.clear();
+                info!("all function channels closed before shutdown deadline");
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        let still_open = self
+            .functions
+            .iter()
+            .filter(|entry| {
+                entry
+                    .isolate_handle
+                    .as_ref()
+                    .map(|h| !h.is_request_channel_closed())
+                    .unwrap_or(false)
+            })
+            .count();
+
+        if still_open > 0 {
+            warn!(
+                "shutdown deadline reached with {} function(s) still open; forcing clear",
+                still_open
+            );
+        }
+
         self.functions.clear();
     }
 
@@ -298,5 +361,42 @@ mod tests {
         let info = reg.get_info("dead-fn").expect("missing function info");
         assert_eq!(info.status, FunctionStatus::Error);
         assert!(info.last_error.is_some());
+    }
+
+    #[test]
+    fn shutdown_all_with_deadline_closes_registry_entries() {
+        let reg = make_registry();
+
+        let (request_tx, _request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let alive = Arc::new(AtomicBool::new(true));
+        let handle = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(request_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive,
+        };
+
+        let entry = FunctionEntry {
+            name: "shutdown-fn".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(handle),
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig::default(),
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+        reg.functions.insert("shutdown-fn".to_string(), entry);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(reg.shutdown_all_with_deadline(std::time::Duration::from_millis(20)));
+
+        assert_eq!(reg.count(), 0);
     }
 }

@@ -276,11 +276,13 @@ Nota: benchmark comparativo adicionado como teste `#[ignore]` em `crates/runtime
 **Crates:** `server`, `functions`
 **Arquivos:** `crates/server/src/lib.rs`, `crates/functions/src/registry.rs`
 
-- [ ] No shutdown, enviar `CancellationToken` para cada isolate
-- [ ] Esperar com deadline (ex: 10s) que todos os isolates terminem
-- [ ] Verificar `request_tx.is_closed()` para cada função
-- [ ] Após deadline, forçar clear com log warning
-- [ ] Adicionar teste de shutdown com requests in-flight
+- [x] No shutdown, enviar `CancellationToken` para cada isolate
+- [x] Esperar com deadline (ex: 10s) que todos os isolates terminem
+- [x] Verificar `request_tx.is_closed()` para cada função
+- [x] Após deadline, forçar clear com log warning
+- [x] Adicionar teste de shutdown com requests in-flight
+
+**Status:** ✅ Concluído
 
 ---
 

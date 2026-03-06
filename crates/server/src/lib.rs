@@ -179,6 +179,10 @@ pub async fn run_dual_server(
         config.graceful_exit_deadline_secs
     );
 
+    registry
+        .shutdown_all_with_deadline(Duration::from_secs(config.graceful_exit_deadline_secs))
+        .await;
+
     Ok(())
 }
 
@@ -457,7 +461,11 @@ pub async fn run_server(
     registry: Arc<FunctionRegistry>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
-    let router = router::Router::new(registry, config.body_limits, config.rate_limit_rps);
+    let router = router::Router::new(
+        registry.clone(),
+        config.body_limits,
+        config.rate_limit_rps,
+    );
     let svc = service::EdgeService::new(router);
 
     let listener = TcpListener::bind(config.addr).await?;
@@ -550,6 +558,10 @@ pub async fn run_server(
         config.graceful_exit_deadline_secs,
     ))
     .await;
+
+    registry
+        .shutdown_all_with_deadline(Duration::from_secs(config.graceful_exit_deadline_secs))
+        .await;
 
     Ok(())
 }

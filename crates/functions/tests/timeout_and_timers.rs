@@ -491,6 +491,101 @@ fn test_panic_followed_by_request_marks_error_and_fails_fast() {
     assert!(result.is_ok(), "test failed: {:?}", result.err());
 }
 
+/// Test roadmap 2.2 requirement: graceful shutdown with request in-flight.
+#[test]
+fn test_graceful_shutdown_with_in_flight_request() {
+    deno_core::JsRuntime::init_platform(None);
+
+    let eszip_bytes = build_eszip(
+        "file:///test_shutdown_inflight.js",
+        r#"
+        Deno.serve(async (_req) => {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            return new Response("done");
+        });
+        "#,
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let result: Result<(), String> = rt.block_on(async {
+        let bundle = BundlePackage::eszip_only(eszip_bytes);
+        let bundle_data = bincode::serialize(&bundle)
+            .map_err(|e| format!("serialize bundle: {e}"))?;
+
+        let registry = Arc::new(FunctionRegistry::new(
+            CancellationToken::new(),
+            IsolateConfig::default(),
+        ));
+
+        let _ = registry
+            .deploy(
+                "shutdown-inflight-test".to_string(),
+                bytes::Bytes::from(bundle_data),
+                None,
+            )
+            .await
+            .map_err(|e| format!("deploy: {e}"))?;
+
+        let handle = registry
+            .get_handle("shutdown-inflight-test")
+            .ok_or_else(|| "missing handle after deploy".to_string())?;
+
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("/inflight")
+            .header("host", "localhost:9000")
+            .body(bytes::Bytes::new())
+            .map_err(|e| format!("build request: {e}"))?;
+
+        let send_task = tokio::spawn(async move { handle.send_request(request).await });
+
+        // Ensure request starts before shutdown signal.
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let shutdown_started = std::time::Instant::now();
+        registry
+            .shutdown_all_with_deadline(std::time::Duration::from_secs(2))
+            .await;
+        let shutdown_elapsed = shutdown_started.elapsed();
+        if shutdown_elapsed > std::time::Duration::from_secs(3) {
+            return Err(format!(
+                "graceful shutdown exceeded expected upper bound: {:?}",
+                shutdown_elapsed
+            ));
+        }
+
+        // Request may complete or fail during shutdown; both are acceptable.
+        let request_result = tokio::time::timeout(std::time::Duration::from_secs(2), send_task)
+            .await
+            .map_err(|_| "timed out waiting in-flight request task".to_string())
+            .and_then(|join| join.map_err(|e| format!("join error: {e}")))?;
+
+        if let Ok(resp) = request_result {
+            if resp.status() != 200 && resp.status() != 504 {
+                return Err(format!(
+                    "unexpected in-flight response status during shutdown: {}",
+                    resp.status()
+                ));
+            }
+        }
+
+        if registry.count() != 0 {
+            return Err(format!(
+                "expected registry to be empty after shutdown, got {} entries",
+                registry.count()
+            ));
+        }
+
+        Ok(())
+    });
+
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
 /// Test 2: Timer tracking registers timers by execution ID.
 #[test]
 fn test_timer_tracking_registration() {

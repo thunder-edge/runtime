@@ -246,9 +246,6 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
         // Run the dual-listener server (blocks until shutdown)
         edge_server::run_dual_server(config, registry.clone(), shutdown.clone()).await?;
 
-        // Shutdown all functions
-        registry.shutdown_all().await;
-
         info!("deno-edge-runtime stopped");
         Ok(())
     })
