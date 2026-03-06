@@ -9,10 +9,12 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full, StreamBody};
+use runtime_core::isolate::IsolateResponseBody;
 use tracing::info;
 
 use functions::registry::FunctionRegistry;
+use crate::service::BoxBody;
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
@@ -24,7 +26,10 @@ use crate::trace_context::{
     add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
 };
 
-type BoxBody = Full<Bytes>;
+fn boxed_full_response(response: Response<Full<Bytes>>) -> Response<BoxBody> {
+    let (parts, body) = response.into_parts();
+    Response::from_parts(parts, body.boxed())
+}
 
 /// Ingress router for function invocation.
 ///
@@ -60,7 +65,7 @@ impl IngressRouter {
 
         if let Some(limiter) = &self.rate_limiter {
             if let Some(retry_after_secs) = limiter.check_limit() {
-                let mut resp = rate_limited_response(retry_after_secs);
+                let mut resp = boxed_full_response(rate_limited_response(retry_after_secs));
                 add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
                 return Ok(resp);
             }
@@ -132,7 +137,9 @@ impl IngressRouter {
         if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
             check_content_length(&req, self.body_limits.max_request_body_bytes)
         {
-            return payload_too_large_response(self.body_limits.max_request_body_bytes);
+            return boxed_full_response(payload_too_large_response(
+                self.body_limits.max_request_body_bytes,
+            ));
         }
 
         // Collect body bytes with size limit
@@ -142,7 +149,9 @@ impl IngressRouter {
                 Ok(bytes) => bytes,
                 Err(BodyLimitError::LimitExceeded)
                 | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                    return payload_too_large_response(self.body_limits.max_request_body_bytes);
+                    return boxed_full_response(payload_too_large_response(
+                        self.body_limits.max_request_body_bytes,
+                    ));
                 }
                 Err(_) => {
                     return json_response(
@@ -177,14 +186,30 @@ impl IngressRouter {
         .await
         {
             Ok(Ok(resp)) => {
-                let (parts, body) = resp.into_parts();
-                // Check response body size
-                if let Some(error_resp) =
-                    check_response_body_size(&body, self.body_limits.max_response_body_bytes)
-                {
-                    return error_resp;
+                let (parts, body) = (resp.parts, resp.body);
+                match body {
+                    IsolateResponseBody::Full(bytes) => {
+                        if let Some(error_resp) =
+                            check_response_body_size(&bytes, self.body_limits.max_response_body_bytes)
+                        {
+                            return boxed_full_response(error_resp);
+                        }
+                        Response::from_parts(parts, Full::new(bytes).boxed())
+                    }
+                    IsolateResponseBody::Stream(receiver) => {
+                        let stream = futures_util::stream::unfold(receiver, |mut rx| async move {
+                            match rx.recv().await {
+                                Some(Ok(chunk)) => Some((Ok(http_body::Frame::data(chunk)), rx)),
+                                Some(Err(err)) => {
+                                    tracing::error!("streaming response chunk failed: {}", err);
+                                    None
+                                }
+                                None => None,
+                            }
+                        });
+                        Response::from_parts(parts, StreamBody::new(stream).boxed())
+                    }
                 }
-                Response::from_parts(parts, Full::new(body))
             }
             Ok(Err(e)) => sanitize_internal_error(
                 StatusCode::BAD_GATEWAY,

@@ -6,3 +6,16 @@
 *.bundle
 target/
 bundles/
+.DS_Store
+node_modules/
+dist/
+build/
+coverage/
+*.log
+*.tmp
+*.cache
+*.bak
+*.swp
+*.swo
+*.tsbuildinfo
+*.env

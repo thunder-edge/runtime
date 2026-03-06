@@ -163,12 +163,26 @@ fn watch_mode_allows_fetch_to_private_localhost() {
             .await
             .map_err(|e| format!("send_request: {e}"))?;
 
-        if resp.status() != 200 {
-            return Err(format!("expected 200 from function, got {}", resp.status()));
+        if resp.parts.status != 200 {
+            return Err(format!(
+                "expected 200 from function, got {}",
+                resp.parts.status
+            ));
         }
 
-        let body = String::from_utf8(resp.body().to_vec())
-            .map_err(|e| format!("response body utf8: {e}"))?;
+        let body = match resp.body {
+            runtime_core::isolate::IsolateResponseBody::Full(bytes) => {
+                String::from_utf8(bytes.to_vec()).map_err(|e| format!("response body utf8: {e}"))?
+            }
+            runtime_core::isolate::IsolateResponseBody::Stream(mut rx) => {
+                let mut buf = Vec::new();
+                while let Some(next) = rx.recv().await {
+                    let chunk = next.map_err(|e| format!("stream chunk error: {e}"))?;
+                    buf.extend_from_slice(&chunk);
+                }
+                String::from_utf8(buf).map_err(|e| format!("response body utf8: {e}"))?
+            }
+        };
         if body != "ok:pong" {
             return Err(format!("unexpected function body: '{body}'"));
         }

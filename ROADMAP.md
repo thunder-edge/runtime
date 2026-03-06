@@ -391,9 +391,17 @@ Implementação atual:
 
 ### 3.2 Streaming de Response Body
 
-- [ ] Substituir `bytes::Bytes` por `hyper::body::Body` streaming
-- [ ] Suportar `ReadableStream` no response do user code
-- [ ] Permitir Server-Sent Events e chunked transfer
+- [x] Substituir `bytes::Bytes` por body streaming no caminho de resposta HTTP
+- [x] Suportar `ReadableStream` no response do user code
+- [x] Permitir Server-Sent Events e chunked transfer
+
+**Status:** ✅ Concluido
+
+Implementacao atual:
+- Pipeline isolate -> router retorna `IsolateResponseBody::{Full, Stream}`
+- `ReadableStream` do user handler e drenado em chunks para o HTTP body
+- Routers (`admin`/`ingress`) usam body boxeado compativel com full body e stream
+- Documentacao de uso adicionada em `docs/streaming-response-body.md`
 
 ### 3.3 Isolate Pooling / Reuse
 

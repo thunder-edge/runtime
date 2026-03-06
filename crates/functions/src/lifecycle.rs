@@ -22,7 +22,7 @@ use tungstenite::{Message, WebSocket};
 use runtime_core::cpu_timer::CpuTimer;
 use runtime_core::extensions;
 use runtime_core::isolate::{
-    determine_root_specifier, IsolateConfig, IsolateHandle, IsolateRequest,
+    determine_root_specifier, IsolateConfig, IsolateHandle, IsolateRequest, IsolateResponse,
 };
 use runtime_core::manifest::ResolvedFunctionManifest;
 use runtime_core::mem_check::{near_heap_limit_callback, HeapLimitState};
@@ -48,12 +48,13 @@ fn fail_pending_requests(request_rx: &mut mpsc::UnboundedReceiver<IsolateRequest
     }
 }
 
-fn timeout_response() -> http::Response<bytes::Bytes> {
-    http::Response::builder()
+fn timeout_response() -> IsolateResponse {
+    let response = http::Response::builder()
         .status(StatusCode::GATEWAY_TIMEOUT)
         .header("content-type", "application/json")
         .body(bytes::Bytes::from_static(br#"{"error":"request timeout"}"#))
-        .expect("failed to build timeout response")
+        .expect("failed to build timeout response");
+    IsolateResponse::from_full_response(response)
 }
 
 impl Drop for InspectorServerGuard {
@@ -419,6 +420,8 @@ async fn run_isolate(
 
     // Keep one CPU timer per isolate and reset it for each incoming request.
     let mut cpu_timer = CpuTimer::new(config.cpu_time_limit_ms);
+    let mut runtime_tick = tokio::time::interval(Duration::from_millis(10));
+    runtime_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // Request handling loop
     loop {
@@ -591,6 +594,18 @@ async fn run_isolate(
                     }
                 }
             }
+            _ = runtime_tick.tick() => {
+                // Keep runtime tasks moving between requests so ReadableStream/SSE
+                // producers can continue pushing chunks.
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(5),
+                    js_runtime.run_event_loop(PollEventLoopOptions {
+                        wait_for_inspector: false,
+                        pump_v8_message_loop: true,
+                    }),
+                )
+                .await;
+            }
             _ = shutdown.cancelled() => {
                 info!("isolate '{}' received shutdown signal", name);
                 break;
@@ -657,15 +672,19 @@ async fn load_from_eszip_with_init(
         config.enable_source_maps,
     ));
 
+    let mut runtime_extensions = extensions::get_extensions();
+    runtime_extensions.push(handler::response_stream_extension());
+
     let mut runtime_opts = RuntimeOptions {
         module_loader: Some(module_loader),
         create_params,
-        extensions: extensions::get_extensions(),
+        extensions: runtime_extensions,
         ..Default::default()
     };
     extensions::set_extension_transpiler(&mut runtime_opts);
 
     let mut js_runtime = JsRuntime::new(runtime_opts);
+    handler::ensure_response_stream_registry(&mut js_runtime);
 
     // Register near-heap-limit callback if heap limit is configured
     let heap_limit_state_ptr = if config.max_heap_size_bytes > 0 {

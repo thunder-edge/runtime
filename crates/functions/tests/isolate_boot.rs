@@ -12,15 +12,19 @@ use runtime_core::module_loader::EszipModuleLoader;
 /// Helper: create a JsRuntime with the same config as production isolates.
 fn make_runtime_with_eszip(eszip: Arc<eszip::EszipV2>) -> JsRuntime {
     let module_loader = Rc::new(EszipModuleLoader::new(eszip));
+    let mut runtime_extensions = extensions::get_extensions();
+    runtime_extensions.push(functions::handler::response_stream_extension());
 
     let mut opts = RuntimeOptions {
         module_loader: Some(module_loader),
-        extensions: extensions::get_extensions(),
+        extensions: runtime_extensions,
         ..Default::default()
     };
     extensions::set_extension_transpiler(&mut opts);
 
-    JsRuntime::new(opts)
+    let mut runtime = JsRuntime::new(opts);
+    functions::handler::ensure_response_stream_registry(&mut runtime);
+    runtime
 }
 
 /// Helper: build an eszip from inline JS source.
@@ -274,7 +278,19 @@ fn test_full_request_cycle() {
             .await
             .map_err(|e| format!("dispatch_request: {e}"))?;
 
-        let body = String::from_utf8_lossy(response.body()).to_string();
+        let body = match response.body {
+            runtime_core::isolate::IsolateResponseBody::Full(bytes) => {
+                String::from_utf8_lossy(&bytes).to_string()
+            }
+            runtime_core::isolate::IsolateResponseBody::Stream(mut rx) => {
+                let mut buf = Vec::new();
+                while let Some(next) = rx.recv().await {
+                    let chunk = next.map_err(|e| format!("stream chunk error: {e}"))?;
+                    buf.extend_from_slice(&chunk);
+                }
+                String::from_utf8(buf).map_err(|e| format!("stream utf8 body: {e}"))?
+            }
+        };
         Ok(body)
     });
 

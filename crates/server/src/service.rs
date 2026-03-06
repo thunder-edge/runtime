@@ -6,13 +6,12 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use http::{Request, Response};
-use http_body_util::Full;
 
 use crate::admin_router::AdminRouter;
 use crate::ingress_router::IngressRouter;
 use crate::router::Router;
 
-type BoxBody = Full<Bytes>;
+pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
 
 /// Trait for routers that can handle HTTP requests.
 pub trait HttpRouter: Clone + Send + Sync + 'static {

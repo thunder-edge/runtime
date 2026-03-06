@@ -2613,12 +2613,14 @@ name = "functions"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bincode",
  "bytes",
  "chrono",
  "dashmap",
  "deno_ast",
  "deno_core",
+ "deno_error",
  "deno_graph",
  "eszip",
  "futures-util",

@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use anyhow::Error;
 use deno_core::ModuleSpecifier;
+use http::response::Parts;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -83,7 +84,32 @@ pub struct IsolateRequest {
     /// The HTTP request to process.
     pub request: http::Request<bytes::Bytes>,
     /// Channel to send the response back on.
-    pub response_tx: oneshot::Sender<Result<http::Response<bytes::Bytes>, Error>>,
+    pub response_tx: oneshot::Sender<Result<IsolateResponse, Error>>,
+}
+
+/// Streaming body channel returned by an isolate.
+pub type ResponseChunkReceiver = mpsc::UnboundedReceiver<Result<bytes::Bytes, Error>>;
+
+/// Response body variants produced by an isolate.
+pub enum IsolateResponseBody {
+    Full(bytes::Bytes),
+    Stream(ResponseChunkReceiver),
+}
+
+/// HTTP response returned by an isolate.
+pub struct IsolateResponse {
+    pub parts: Parts,
+    pub body: IsolateResponseBody,
+}
+
+impl IsolateResponse {
+    pub fn from_full_response(response: http::Response<bytes::Bytes>) -> Self {
+        let (parts, body) = response.into_parts();
+        Self {
+            parts,
+            body: IsolateResponseBody::Full(body),
+        }
+    }
 }
 
 /// Handle to communicate with a running isolate.
@@ -111,7 +137,7 @@ impl IsolateHandle {
     pub async fn send_request(
         &self,
         request: http::Request<bytes::Bytes>,
-    ) -> Result<http::Response<bytes::Bytes>, Error> {
+    ) -> Result<IsolateResponse, Error> {
         // Check if isolate is alive before attempting to send
         if !self.is_alive() {
             return Err(anyhow::anyhow!(

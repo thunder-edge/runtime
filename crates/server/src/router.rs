@@ -6,12 +6,14 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full, StreamBody};
+use runtime_core::isolate::IsolateResponseBody;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 use uuid::Uuid;
 
 use functions::registry::FunctionRegistry;
+use crate::service::BoxBody;
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
@@ -22,7 +24,6 @@ use crate::trace_context::{
     add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
 };
 
-type BoxBody = Full<Bytes>;
 const MAX_LOG_ERROR_BYTES: usize = 1024;
 const MAX_FUNCTION_NAME_LEN: usize = 63;
 pub const METRICS_CACHE_TTL_SECS: u64 = 15;
@@ -109,6 +110,11 @@ fn truncate_for_log(message: &str, max_bytes: usize) -> String {
 fn log_truncated_error(context: &str, err: &impl std::fmt::Display) {
     let truncated = truncate_for_log(&err.to_string(), MAX_LOG_ERROR_BYTES);
     error!("{}: {}", context, truncated);
+}
+
+fn boxed_full_response(response: Response<Full<Bytes>>) -> Response<BoxBody> {
+    let (parts, body) = response.into_parts();
+    Response::from_parts(parts, body.boxed())
 }
 
 pub fn sanitize_internal_error<E>(status: StatusCode, context: &str, err: &E) -> Response<BoxBody>
@@ -239,7 +245,7 @@ impl Router {
     ) -> Response<BoxBody> {
         if let Some(limiter) = &self.rate_limiter {
             if let Some(retry_after_secs) = limiter.check_limit() {
-                return rate_limited_response(retry_after_secs);
+                return boxed_full_response(rate_limited_response(retry_after_secs));
             }
         }
 
@@ -289,7 +295,9 @@ impl Router {
         if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
             check_content_length(&req, self.body_limits.max_request_body_bytes)
         {
-            return payload_too_large_response(self.body_limits.max_request_body_bytes);
+            return boxed_full_response(payload_too_large_response(
+                self.body_limits.max_request_body_bytes,
+            ));
         }
 
         // Collect body bytes with size limit
@@ -299,7 +307,9 @@ impl Router {
                 Ok(bytes) => bytes,
                 Err(BodyLimitError::LimitExceeded)
                 | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                    return payload_too_large_response(self.body_limits.max_request_body_bytes);
+                    return boxed_full_response(payload_too_large_response(
+                        self.body_limits.max_request_body_bytes,
+                    ));
                 }
                 Err(_) => {
                     return json_response(
@@ -334,14 +344,32 @@ impl Router {
         .await
         {
             Ok(Ok(resp)) => {
-                let (parts, body) = resp.into_parts();
-                // Check response body size
-                if let Some(error_resp) =
-                    check_response_body_size(&body, self.body_limits.max_response_body_bytes)
-                {
-                    return error_resp;
+                let (parts, body) = (resp.parts, resp.body);
+                match body {
+                    IsolateResponseBody::Full(bytes) => {
+                        if let Some(error_resp) =
+                            check_response_body_size(&bytes, self.body_limits.max_response_body_bytes)
+                        {
+                            return boxed_full_response(error_resp);
+                        }
+                        Response::from_parts(parts, Full::new(bytes).boxed())
+                    }
+                    IsolateResponseBody::Stream(receiver) => {
+                        let stream = futures_util::stream::unfold(receiver, |mut rx| async move {
+                            match rx.recv().await {
+                                Some(Ok(chunk)) => {
+                                    Some((Ok(http_body::Frame::data(chunk)), rx))
+                                }
+                                Some(Err(err)) => {
+                                    error!("streaming response chunk failed: {}", err);
+                                    None
+                                }
+                                None => None,
+                            }
+                        });
+                        Response::from_parts(parts, StreamBody::new(stream).boxed())
+                    }
                 }
-                Response::from_parts(parts, Full::new(body))
             }
             Ok(Err(e)) => sanitize_internal_error(
                 StatusCode::BAD_GATEWAY,
@@ -417,7 +445,9 @@ impl Router {
         if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
             check_content_length(&req, self.body_limits.max_request_body_bytes)
         {
-            return payload_too_large_response(self.body_limits.max_request_body_bytes);
+            return boxed_full_response(payload_too_large_response(
+                self.body_limits.max_request_body_bytes,
+            ));
         }
 
         let (parts, body) = req.into_parts();
@@ -461,7 +491,9 @@ impl Router {
                 Ok(bytes) => bytes,
                 Err(BodyLimitError::LimitExceeded)
                 | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                    return payload_too_large_response(self.body_limits.max_request_body_bytes);
+                    return boxed_full_response(payload_too_large_response(
+                        self.body_limits.max_request_body_bytes,
+                    ));
                 }
                 Err(_) => {
                     return json_response(
@@ -546,7 +578,9 @@ impl Router {
                 if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
                     check_content_length(&req, self.body_limits.max_request_body_bytes)
                 {
-                    return payload_too_large_response(self.body_limits.max_request_body_bytes);
+                    return boxed_full_response(payload_too_large_response(
+                        self.body_limits.max_request_body_bytes,
+                    ));
                 }
 
                 let (parts, body) = req.into_parts();
@@ -569,9 +603,9 @@ impl Router {
                         Ok(bytes) => bytes,
                         Err(BodyLimitError::LimitExceeded)
                         | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                            return payload_too_large_response(
+                            return boxed_full_response(payload_too_large_response(
                                 self.body_limits.max_request_body_bytes,
-                            );
+                            ));
                         }
                         Err(_) => {
                             return json_response(
@@ -787,7 +821,7 @@ pub fn json_response(status: StatusCode, body: &str) -> Response<BoxBody> {
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(body.to_string())))
+    .body(Full::new(Bytes::from(body.to_string())).boxed())
         .unwrap()
 }
 

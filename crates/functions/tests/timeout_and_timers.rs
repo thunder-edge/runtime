@@ -21,15 +21,19 @@ use tokio_util::sync::CancellationToken;
 /// Helper: create a JsRuntime with the same config as production isolates.
 fn make_runtime_with_eszip(eszip: Arc<eszip::EszipV2>) -> JsRuntime {
     let module_loader = Rc::new(EszipModuleLoader::new(eszip));
+    let mut runtime_extensions = extensions::get_extensions();
+    runtime_extensions.push(functions::handler::response_stream_extension());
 
     let mut opts = RuntimeOptions {
         module_loader: Some(module_loader),
-        extensions: extensions::get_extensions(),
+        extensions: runtime_extensions,
         ..Default::default()
     };
     extensions::set_extension_transpiler(&mut opts);
 
-    JsRuntime::new(opts)
+    let mut runtime = JsRuntime::new(opts);
+    functions::handler::ensure_response_stream_registry(&mut runtime);
+    runtime
 }
 
 /// Helper: build an eszip from inline JS source.
@@ -275,11 +279,23 @@ fn test_isolate_timeout_returns_504() {
             .await
             .map_err(|e| format!("send_request: {e}"))?;
 
-        let body_text = String::from_utf8_lossy(response.body()).to_string();
-        if response.status() != 504 {
+        let body_text = match response.body {
+            runtime_core::isolate::IsolateResponseBody::Full(bytes) => {
+                String::from_utf8_lossy(&bytes).to_string()
+            }
+            runtime_core::isolate::IsolateResponseBody::Stream(mut rx) => {
+                let mut buf = Vec::new();
+                while let Some(next) = rx.recv().await {
+                    let chunk = next.map_err(|e| format!("stream chunk error: {e}"))?;
+                    buf.extend_from_slice(&chunk);
+                }
+                String::from_utf8(buf).map_err(|e| format!("stream utf8 body: {e}"))?
+            }
+        };
+        if response.parts.status != 504 {
             return Err(format!(
                 "expected 504, got {} body={}",
-                response.status(),
+                response.parts.status,
                 body_text
             ));
         }
@@ -359,10 +375,10 @@ fn test_heap_limit_infinite_allocation_marks_function_error() {
             Ok(Ok(resp)) => {
                 // Depending on timing, JS may throw OOM first (500) before isolate exits.
                 // The key assertion for this roadmap item is the registry Error transition.
-                if resp.status() != 500 && resp.status() != 504 {
+                if resp.parts.status != 500 && resp.parts.status != 504 {
                     return Err(format!(
                         "unexpected response status for heap-limit path: {}",
-                        resp.status()
+                        resp.parts.status
                     ));
                 }
             }
@@ -575,10 +591,10 @@ fn test_graceful_shutdown_with_in_flight_request() {
             .and_then(|join| join.map_err(|e| format!("join error: {e}")))?;
 
         if let Ok(resp) = request_result {
-            if resp.status() != 200 && resp.status() != 504 {
+            if resp.parts.status != 200 && resp.parts.status != 504 {
                 return Err(format!(
                     "unexpected in-flight response status during shutdown: {}",
-                    resp.status()
+                    resp.parts.status
                 ));
             }
         }
@@ -1015,12 +1031,24 @@ fn test_isolate_reusable_after_timeout() {
             )
             .map_err(|e| format!("endExecution 2: {e}"))?;
 
-        let body = String::from_utf8_lossy(result2.body()).to_string();
+        let body = match result2.body {
+            runtime_core::isolate::IsolateResponseBody::Full(bytes) => {
+                String::from_utf8_lossy(&bytes).to_string()
+            }
+            runtime_core::isolate::IsolateResponseBody::Stream(mut rx) => {
+                let mut buf = Vec::new();
+                while let Some(next) = rx.recv().await {
+                    let chunk = next.map_err(|e| format!("stream chunk error: {e}"))?;
+                    buf.extend_from_slice(&chunk);
+                }
+                String::from_utf8(buf).map_err(|e| format!("stream utf8 body: {e}"))?
+            }
+        };
         assert_eq!(
             body, "ok",
             "second request should succeed after first timeout"
         );
-        assert_eq!(result2.status(), 200, "second request should return 200");
+        assert_eq!(result2.parts.status, 200, "second request should return 200");
 
         Ok(())
     });
@@ -1653,10 +1681,22 @@ fn test_multiple_requests_after_timeout() {
                 )
                 .map_err(|e| format!("endExecution {}: {e}", i))?;
 
-            let body = String::from_utf8_lossy(result.body()).to_string();
+            let body = match result.body {
+                runtime_core::isolate::IsolateResponseBody::Full(bytes) => {
+                    String::from_utf8_lossy(&bytes).to_string()
+                }
+                runtime_core::isolate::IsolateResponseBody::Stream(mut rx) => {
+                    let mut buf = Vec::new();
+                    while let Some(next) = rx.recv().await {
+                        let chunk = next.map_err(|e| format!("stream chunk error: {e}"))?;
+                        buf.extend_from_slice(&chunk);
+                    }
+                    String::from_utf8(buf).map_err(|e| format!("stream utf8 body: {e}"))?
+                }
+            };
             let expected = format!("count:{}", i - 1);
             assert_eq!(body, expected, "request {} should return {}", i, expected);
-            assert_eq!(result.status(), 200, "request {} should return 200", i);
+            assert_eq!(result.parts.status, 200, "request {} should return 200", i);
         }
 
         Ok(())

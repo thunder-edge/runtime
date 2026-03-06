@@ -9,7 +9,7 @@ use base64::Engine;
 use bytes::Bytes;
 use http::header::HeaderMap;
 use http::{Method, Request, Response, StatusCode};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 
 use functions::registry::FunctionRegistry;
 
@@ -21,8 +21,12 @@ use crate::router::{
     build_metrics_body, is_valid_function_name, json_response, normalize_function_name,
     sanitize_internal_error, MetricsCache, METRICS_CACHE_TTL_SECS,
 };
+use crate::service::BoxBody;
 
-type BoxBody = Full<Bytes>;
+fn boxed_full_response(response: Response<Full<Bytes>>) -> Response<BoxBody> {
+    let (parts, body) = response.into_parts();
+    Response::from_parts(parts, body.boxed())
+}
 
 fn parse_manifest_from_headers(
     headers: &HeaderMap,
@@ -193,7 +197,9 @@ impl AdminRouter {
         if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
             check_content_length(&req, self.body_limits.max_request_body_bytes)
         {
-            return payload_too_large_response(self.body_limits.max_request_body_bytes);
+            return boxed_full_response(payload_too_large_response(
+                self.body_limits.max_request_body_bytes,
+            ));
         }
 
         let (parts, body) = req.into_parts();
@@ -237,7 +243,9 @@ impl AdminRouter {
                 Ok(bytes) => bytes,
                 Err(BodyLimitError::LimitExceeded)
                 | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                    return payload_too_large_response(self.body_limits.max_request_body_bytes);
+                    return boxed_full_response(payload_too_large_response(
+                        self.body_limits.max_request_body_bytes,
+                    ));
                 }
                 Err(_) => {
                     return json_response(
@@ -319,7 +327,9 @@ impl AdminRouter {
                 if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
                     check_content_length(&req, self.body_limits.max_request_body_bytes)
                 {
-                    return payload_too_large_response(self.body_limits.max_request_body_bytes);
+                    return boxed_full_response(payload_too_large_response(
+                        self.body_limits.max_request_body_bytes,
+                    ));
                 }
 
                 let (parts, body) = req.into_parts();
@@ -342,9 +352,9 @@ impl AdminRouter {
                         Ok(bytes) => bytes,
                         Err(BodyLimitError::LimitExceeded)
                         | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                            return payload_too_large_response(
+                            return boxed_full_response(payload_too_large_response(
                                 self.body_limits.max_request_body_bytes,
-                            );
+                            ));
                         }
                         Err(_) => {
                             return json_response(

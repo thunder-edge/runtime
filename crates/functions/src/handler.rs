@@ -1,5 +1,83 @@
 use anyhow::Error;
-use deno_core::JsRuntime;
+use base64::Engine;
+use deno_core::{op2, Extension, JsRuntime, OpState};
+use runtime_core::isolate::{IsolateResponse, IsolateResponseBody};
+use tokio::sync::mpsc;
+use uuid::Uuid;
+
+#[derive(Default)]
+struct ResponseStreamRegistry {
+    streams: std::collections::HashMap<String, mpsc::UnboundedSender<Result<bytes::Bytes, Error>>>,
+}
+
+#[op2(fast)]
+fn op_edge_stream_chunk(
+    state: &mut OpState,
+    #[string] stream_id: String,
+    #[buffer] chunk: &[u8],
+) -> Result<(), deno_error::JsErrorBox> {
+    let registry = state.borrow_mut::<ResponseStreamRegistry>();
+    if let Some(sender) = registry.streams.get(&stream_id) {
+        let _ = sender.send(Ok(bytes::Bytes::copy_from_slice(chunk)));
+    }
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_edge_stream_end(
+    state: &mut OpState,
+    #[string] stream_id: String,
+) -> Result<(), deno_error::JsErrorBox> {
+    let registry = state.borrow_mut::<ResponseStreamRegistry>();
+    registry.streams.remove(&stream_id);
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_edge_stream_error(
+    state: &mut OpState,
+    #[string] stream_id: String,
+    #[string] message: String,
+) -> Result<(), deno_error::JsErrorBox> {
+    let registry = state.borrow_mut::<ResponseStreamRegistry>();
+    if let Some(sender) = registry.streams.remove(&stream_id) {
+        let _ = sender.send(Err(anyhow::anyhow!(message)));
+    }
+    Ok(())
+}
+
+deno_core::extension!(
+    edge_response_stream,
+    ops = [op_edge_stream_chunk, op_edge_stream_end, op_edge_stream_error],
+);
+
+pub fn response_stream_extension() -> Extension {
+    edge_response_stream::init()
+}
+
+pub fn ensure_response_stream_registry(js_runtime: &mut JsRuntime) {
+    let op_state = js_runtime.op_state();
+    let mut state = op_state.borrow_mut();
+    state.put(ResponseStreamRegistry::default());
+}
+
+fn register_response_stream(
+    js_runtime: &mut JsRuntime,
+    stream_id: String,
+    sender: mpsc::UnboundedSender<Result<bytes::Bytes, Error>>,
+) {
+    let op_state = js_runtime.op_state();
+    let mut state = op_state.borrow_mut();
+    let registry = state.borrow_mut::<ResponseStreamRegistry>();
+    registry.streams.insert(stream_id, sender);
+}
+
+fn unregister_response_stream(js_runtime: &mut JsRuntime, stream_id: &str) {
+    let op_state = js_runtime.op_state();
+    let mut state = op_state.borrow_mut();
+    let registry = state.borrow_mut::<ResponseStreamRegistry>();
+    registry.streams.remove(stream_id);
+}
 
 /// Inject the request/response bridge into the JS global scope.
 ///
@@ -351,13 +429,14 @@ pub fn inject_request_bridge(js_runtime: &mut JsRuntime) -> Result<(), Error> {
             };
 
             // Expose a function for Rust to call
-            globalThis.__edgeRuntime.handleRequest = async function(method, url, headersJson, body) {
+            globalThis.__edgeRuntime.handleRequest = async function(method, url, headersJson, body, streamId) {
                 const handler = globalThis.__edgeRuntime.handler;
                 if (!handler) {
                     return JSON.stringify({
                         status: 503,
                         headers: { "content-type": "application/json" },
-                        body: '{"error":"no handler registered"}',
+                        body_kind: 'inline',
+                        body_base64: btoa('{"error":"no handler registered"}'),
                     });
                 }
 
@@ -378,18 +457,46 @@ pub fn inject_request_bridge(js_runtime: &mut JsRuntime) -> Result<(), Error> {
                         respHeaders[key] = value;
                     });
 
-                    const respBody = await response.text();
+                    const hasBody =
+                        response.body && method !== 'HEAD' && response.status !== 204 && response.status !== 304;
+
+                    if (hasBody) {
+                        const reader = response.body.getReader();
+                        (async () => {
+                            try {
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) {
+                                        Deno.core.ops.op_edge_stream_end(streamId);
+                                        break;
+                                    }
+                                    Deno.core.ops.op_edge_stream_chunk(streamId, value);
+                                }
+                            } catch (streamErr) {
+                                Deno.core.ops.op_edge_stream_error(streamId, String(streamErr));
+                            }
+                        })();
+
+                        return JSON.stringify({
+                            status: response.status,
+                            headers: respHeaders,
+                            body_kind: 'stream',
+                            stream_id: streamId,
+                        });
+                    }
 
                     return JSON.stringify({
                         status: response.status,
                         headers: respHeaders,
-                        body: respBody,
+                        body_kind: 'inline',
+                        body_base64: '',
                     });
                 } catch (err) {
                     return JSON.stringify({
                         status: 500,
                         headers: { "content-type": "application/json" },
-                        body: JSON.stringify({ error: String(err) }),
+                        body_kind: 'inline',
+                        body_base64: btoa(JSON.stringify({ error: String(err) })),
                     });
                 }
             };
@@ -404,14 +511,18 @@ pub fn inject_request_bridge(js_runtime: &mut JsRuntime) -> Result<(), Error> {
 struct JsResponse {
     status: u16,
     headers: std::collections::HashMap<String, String>,
-    body: String,
+    body_kind: String,
+    #[serde(default)]
+    body_base64: String,
+    #[serde(default)]
+    stream_id: Option<String>,
 }
 
 /// Dispatch an HTTP request into the JS fetch handler and return the response.
 pub async fn dispatch_request(
     js_runtime: &mut JsRuntime,
     request: http::Request<bytes::Bytes>,
-) -> Result<http::Response<bytes::Bytes>, Error> {
+) -> Result<IsolateResponse, Error> {
     let method = request.method().to_string();
 
     // Build an absolute URL — `new Request(url)` in JS requires one.
@@ -434,6 +545,9 @@ pub async fn dispatch_request(
     let headers_json = serde_json::to_string(&headers_map)?;
 
     let body = request.into_body();
+    let stream_id = Uuid::new_v4().to_string();
+    let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<Result<bytes::Bytes, Error>>();
+    register_response_stream(js_runtime, stream_id.clone(), chunk_tx);
 
     // Call globalThis.__edgeRuntime.handleRequest(...) directly via V8 API,
     // avoiding dynamic execute_script frames on every request.
@@ -474,6 +588,8 @@ pub async fn dispatch_request(
             .ok_or_else(|| anyhow::anyhow!("failed to allocate uri string"))?;
         let headers_v8 = deno_core::v8::String::new(scope, &headers_json)
             .ok_or_else(|| anyhow::anyhow!("failed to allocate headers string"))?;
+        let stream_id_v8 = deno_core::v8::String::new(scope, &stream_id)
+            .ok_or_else(|| anyhow::anyhow!("failed to allocate stream id string"))?;
 
         let body_arg: deno_core::v8::Local<deno_core::v8::Value> = if body.is_empty() {
             deno_core::v8::null(scope).into()
@@ -489,8 +605,13 @@ pub async fn dispatch_request(
             uint8.into()
         };
 
-        let args: [deno_core::v8::Local<deno_core::v8::Value>; 4] =
-            [method_v8.into(), uri_v8.into(), headers_v8.into(), body_arg];
+        let args: [deno_core::v8::Local<deno_core::v8::Value>; 5] = [
+            method_v8.into(),
+            uri_v8.into(),
+            headers_v8.into(),
+            body_arg,
+            stream_id_v8.into(),
+        ];
 
         let result = handle_request_fn
             .call(scope, edge_runtime_obj.into(), &args)
@@ -512,24 +633,25 @@ pub async fn dispatch_request(
 
     let resolved_value = resolved.await?;
 
-    // Extract the JSON string from the resolved value
-    // Create a HandleScope and ContextScope for V8 operations
-    let context = js_runtime.main_context();
-    let isolate = js_runtime.v8_isolate();
-    let mut handle_scope = deno_core::v8::HandleScope::new(isolate);
-    let mut handle_scope = {
-        let pinned = unsafe { std::pin::Pin::new_unchecked(&mut handle_scope) };
-        pinned.init()
-    };
-    let scope = &mut handle_scope;
-    let context = deno_core::v8::Local::new(scope, context);
-    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
+    // Extract the JSON string from the resolved value.
+    let json_str = {
+        let context = js_runtime.main_context();
+        let isolate = js_runtime.v8_isolate();
+        let mut handle_scope = deno_core::v8::HandleScope::new(isolate);
+        let mut handle_scope = {
+            let pinned = unsafe { std::pin::Pin::new_unchecked(&mut handle_scope) };
+            pinned.init()
+        };
+        let scope = &mut handle_scope;
+        let context = deno_core::v8::Local::new(scope, context);
+        let scope = &mut deno_core::v8::ContextScope::new(scope, context);
 
-    let local = deno_core::v8::Local::new(scope, resolved_value);
-    let json_str = local
-        .to_string(scope)
-        .ok_or_else(|| anyhow::anyhow!("failed to convert JS result to string"))?
-        .to_rust_string_lossy(scope);
+        let local = deno_core::v8::Local::new(scope, resolved_value);
+        local
+            .to_string(scope)
+            .ok_or_else(|| anyhow::anyhow!("failed to convert JS result to string"))?
+            .to_rust_string_lossy(scope)
+    };
 
     // Parse the JSON response
     let js_response: JsResponse = serde_json::from_str(&json_str)
@@ -542,11 +664,50 @@ pub async fn dispatch_request(
         builder = builder.header(key.as_str(), value.as_str());
     }
 
-    let response = builder
-        .body(bytes::Bytes::from(js_response.body))
-        .map_err(|e| anyhow::anyhow!("failed to build HTTP response: {e}"))?;
+    let response_parts = builder
+        .body(())
+        .map_err(|e| anyhow::anyhow!("failed to build HTTP response: {e}"))?
+        .into_parts()
+        .0;
 
-    Ok(response)
+    match js_response.body_kind.as_str() {
+        "stream" => {
+            let returned_stream_id = js_response
+                .stream_id
+                .ok_or_else(|| anyhow::anyhow!("missing stream_id for streaming response"))?;
+            if returned_stream_id != stream_id {
+                unregister_response_stream(js_runtime, &stream_id);
+                return Err(anyhow::anyhow!(
+                    "stream id mismatch: expected {stream_id}, got {returned_stream_id}"
+                ));
+            }
+
+            Ok(IsolateResponse {
+                parts: response_parts,
+                body: IsolateResponseBody::Stream(chunk_rx),
+            })
+        }
+        "inline" => {
+            unregister_response_stream(js_runtime, &stream_id);
+            let decoded = if js_response.body_base64.is_empty() {
+                bytes::Bytes::new()
+            } else {
+                let raw = base64::engine::general_purpose::STANDARD
+                    .decode(js_response.body_base64)
+                    .map_err(|e| anyhow::anyhow!("invalid base64 response body: {e}"))?;
+                bytes::Bytes::from(raw)
+            };
+
+            Ok(IsolateResponse {
+                parts: response_parts,
+                body: IsolateResponseBody::Full(decoded),
+            })
+        }
+        other => {
+            unregister_response_stream(js_runtime, &stream_id);
+            Err(anyhow::anyhow!("unknown JS response body kind: {other}"))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -565,12 +726,16 @@ mod tests {
 
     fn make_runtime() -> JsRuntime {
         init_v8();
+        let mut runtime_extensions = extensions::get_extensions();
+        runtime_extensions.push(response_stream_extension());
         let mut opts = RuntimeOptions {
-            extensions: extensions::get_extensions(),
+            extensions: runtime_extensions,
             ..Default::default()
         };
         extensions::set_extension_transpiler(&mut opts);
-        JsRuntime::new(opts)
+        let mut runtime = JsRuntime::new(opts);
+        ensure_response_stream_registry(&mut runtime);
+        runtime
     }
 
     #[test]
@@ -634,7 +799,7 @@ mod tests {
 
         let response = result.expect("dispatch_request should not error");
         assert_eq!(
-            response.status(),
+            response.parts.status,
             503,
             "should return 503 when no handler registered"
         );
@@ -691,5 +856,81 @@ mod tests {
         deno_core::scope!(scope, runtime);
         let local = val.open(scope);
         assert!(local.is_true(), "expected warning log for blocked request");
+    }
+
+    #[test]
+    fn dispatch_stream_response_returns_chunks() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let mut runtime = make_runtime();
+            inject_request_bridge(&mut runtime).expect("inject_request_bridge failed");
+
+            runtime
+                .execute_script(
+                    "<test>",
+                    deno_core::ascii_str!(
+                        r#"
+                        Deno.serve((_req) => {
+                          const enc = new TextEncoder();
+                          return new Response(
+                            new ReadableStream({
+                              start(controller) {
+                                controller.enqueue(enc.encode("a"));
+                                controller.enqueue(enc.encode("b"));
+                                controller.close();
+                              },
+                            }),
+                            { headers: { "content-type": "text/plain" } },
+                          );
+                        });
+                        "#
+                    ),
+                )
+                .unwrap();
+
+            let request = http::Request::builder()
+                .method("GET")
+                .uri("/stream")
+                .header("host", "localhost:9000")
+                .body(bytes::Bytes::new())
+                .unwrap();
+
+            let response = dispatch_request(&mut runtime, request)
+                .await
+                .expect("dispatch_request should succeed");
+
+            let mut body_rx = match response.body {
+                IsolateResponseBody::Stream(rx) => rx,
+                IsolateResponseBody::Full(_) => panic!("expected stream body"),
+            };
+
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                runtime.run_event_loop(deno_core::PollEventLoopOptions {
+                    wait_for_inspector: false,
+                    pump_v8_message_loop: true,
+                }),
+            )
+            .await;
+
+            let mut out = Vec::new();
+            while let Some(chunk) = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                body_rx.recv(),
+            )
+            .await
+            .expect("timed out receiving stream chunk")
+            {
+                let chunk = chunk.expect("chunk error");
+                out.extend_from_slice(&chunk);
+            }
+
+            assert_eq!(out, b"ab");
+        });
     }
 }
