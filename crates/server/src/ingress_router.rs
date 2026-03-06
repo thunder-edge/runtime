@@ -18,7 +18,7 @@ use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
     payload_too_large_response, BodyLimitError, BodyLimitsConfig,
 };
-use crate::middleware::{RateLimitLayer, rate_limit_layer, rate_limited_response};
+use crate::middleware::{rate_limit_layer, rate_limited_response, RateLimitLayer};
 use crate::router::{is_valid_function_name, json_response, sanitize_internal_error};
 use crate::trace_context::{
     add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
@@ -70,10 +70,7 @@ impl IngressRouter {
 
         // Reject /_internal/* on ingress port
         if path.starts_with("/_internal") {
-            let mut resp = json_response(
-                StatusCode::NOT_FOUND,
-                r#"{"error":"not found"}"#,
-            );
+            let mut resp = json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#);
             add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
             return Ok(resp);
         }
@@ -94,11 +91,7 @@ impl IngressRouter {
         // Extract function name from first path segment
         let segments: Vec<&str> = path.splitn(3, '/').collect();
         // segments: ["", "function_name", "rest/of/path"]
-        let function_name = if segments.len() >= 2 {
-            segments[1]
-        } else {
-            ""
-        };
+        let function_name = if segments.len() >= 2 { segments[1] } else { "" };
 
         if function_name.is_empty() {
             return json_response(
@@ -177,7 +170,12 @@ impl IngressRouter {
         let req_started = Instant::now();
         apply_trace_headers(forwarded_req.headers_mut(), trace_ctx);
 
-        let response = match tokio::time::timeout(timeout_duration, handle.send_request(forwarded_req)).await {
+        let response = match tokio::time::timeout(
+            timeout_duration,
+            handle.send_request(forwarded_req),
+        )
+        .await
+        {
             Ok(Ok(resp)) => {
                 let (parts, body) = resp.into_parts();
                 // Check response body size

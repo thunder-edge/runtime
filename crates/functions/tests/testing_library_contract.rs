@@ -62,7 +62,11 @@ fn run_cli_test(path: &str) -> (i32, String, String) {
                 thread::sleep(Duration::from_millis(200));
             }
             Err(e) => {
-                return (-1, String::new(), format!("failed while waiting for child process: {e}"));
+                return (
+                    -1,
+                    String::new(),
+                    format!("failed while waiting for child process: {e}"),
+                );
             }
         }
     }

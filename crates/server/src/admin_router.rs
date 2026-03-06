@@ -15,8 +15,8 @@ use crate::body_limits::{
     BodyLimitsConfig,
 };
 use crate::router::{
-    METRICS_CACHE_TTL_SECS, MetricsCache, build_metrics_body, is_valid_function_name,
-    json_response, normalize_function_name, sanitize_internal_error,
+    build_metrics_body, is_valid_function_name, json_response, normalize_function_name,
+    sanitize_internal_error, MetricsCache, METRICS_CACHE_TTL_SECS,
 };
 
 type BoxBody = Full<Bytes>;
@@ -49,7 +49,9 @@ impl AdminRouter {
             registry,
             api_key,
             body_limits,
-            metrics_cache: Arc::new(MetricsCache::new(Duration::from_secs(METRICS_CACHE_TTL_SECS))),
+            metrics_cache: Arc::new(MetricsCache::new(Duration::from_secs(
+                METRICS_CACHE_TTL_SECS,
+            ))),
         }
     }
 
@@ -81,10 +83,7 @@ impl AdminRouter {
             return Ok(());
         };
 
-        let provided = req
-            .headers()
-            .get("X-API-Key")
-            .and_then(|v| v.to_str().ok());
+        let provided = req.headers().get("X-API-Key").and_then(|v| v.to_str().ok());
 
         match provided {
             Some(key) if key == expected => Ok(()),
@@ -190,10 +189,7 @@ impl AdminRouter {
             };
 
         if body_bytes.is_empty() {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                r#"{"error":"empty eszip bundle"}"#,
-            );
+            return json_response(StatusCode::BAD_REQUEST, r#"{"error":"empty eszip bundle"}"#);
         }
 
         match self.registry.deploy(name, body_bytes, None).await {
@@ -231,7 +227,10 @@ impl AdminRouter {
         };
 
         if name.is_empty() {
-            return json_response(StatusCode::BAD_REQUEST, r#"{"error":"empty function name"}"#);
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"empty function name"}"#,
+            );
         }
 
         if !is_valid_function_name(name) {
@@ -261,24 +260,24 @@ impl AdminRouter {
                 }
 
                 let (_, body) = req.into_parts();
-                let body_bytes = match collect_body_with_limit(
-                    body,
-                    self.body_limits.max_request_body_bytes,
-                )
-                .await
-                {
-                    Ok(bytes) => bytes,
-                    Err(BodyLimitError::LimitExceeded)
-                    | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                        return payload_too_large_response(self.body_limits.max_request_body_bytes);
-                    }
-                    Err(_) => {
-                        return json_response(
-                            StatusCode::BAD_REQUEST,
-                            r#"{"error":"failed to read request body"}"#,
-                        )
-                    }
-                };
+                let body_bytes =
+                    match collect_body_with_limit(body, self.body_limits.max_request_body_bytes)
+                        .await
+                    {
+                        Ok(bytes) => bytes,
+                        Err(BodyLimitError::LimitExceeded)
+                        | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
+                            return payload_too_large_response(
+                                self.body_limits.max_request_body_bytes,
+                            );
+                        }
+                        Err(_) => {
+                            return json_response(
+                                StatusCode::BAD_REQUEST,
+                                r#"{"error":"failed to read request body"}"#,
+                            )
+                        }
+                    };
 
                 match self.registry.update(name, body_bytes, None).await {
                     Ok(info) => {

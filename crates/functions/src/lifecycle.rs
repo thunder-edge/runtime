@@ -1,26 +1,30 @@
+use std::io::ErrorKind;
+use std::net::TcpListener;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::net::TcpListener;
-use std::io::ErrorKind;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::Error;
 use bytes::Bytes;
 use chrono::Utc;
+use deno_core::{
+    InspectorMsg, InspectorSessionChannels, InspectorSessionKind, InspectorSessionProxy,
+};
 use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
-use deno_core::{InspectorMsg, InspectorSessionChannels, InspectorSessionKind, InspectorSessionProxy};
 use http::StatusCode;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tungstenite::{Message, WebSocket};
 
-use runtime_core::extensions;
 use runtime_core::cpu_timer::CpuTimer;
-use runtime_core::isolate::{determine_root_specifier, IsolateConfig, IsolateHandle, IsolateRequest};
-use runtime_core::mem_check::{HeapLimitState, near_heap_limit_callback};
+use runtime_core::extensions;
+use runtime_core::isolate::{
+    determine_root_specifier, IsolateConfig, IsolateHandle, IsolateRequest,
+};
+use runtime_core::mem_check::{near_heap_limit_callback, HeapLimitState};
 use runtime_core::module_loader::EszipModuleLoader;
 use runtime_core::permissions::create_permissions_with_ssrf_protection;
 
@@ -34,10 +38,7 @@ struct InspectorServerGuard {
 
 const MAX_ISOLATE_RESTARTS: u32 = 5;
 
-fn fail_pending_requests(
-    request_rx: &mut mpsc::UnboundedReceiver<IsolateRequest>,
-    reason: &str,
-) {
+fn fail_pending_requests(request_rx: &mut mpsc::UnboundedReceiver<IsolateRequest>, reason: &str) {
     request_rx.close();
     while let Ok(req) = request_rx.try_recv() {
         let _ = req
@@ -90,7 +91,8 @@ pub async fn create_function(
     };
 
     // Parse eszip asynchronously
-    let reader = futures_util::io::BufReader::new(futures_util::io::Cursor::new(eszip_bytes_vec.clone()));
+    let reader =
+        futures_util::io::BufReader::new(futures_util::io::Cursor::new(eszip_bytes_vec.clone()));
     let (eszip, loader_fut) = eszip::EszipV2::parse(reader)
         .await
         .map_err(|e| anyhow::anyhow!("failed to parse eszip: {e}"))?;
@@ -153,20 +155,23 @@ pub async fn create_function(
             loop {
                 let local = tokio::task::LocalSet::new();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    local.block_on(&rt, run_isolate(
-                        isolate_name.clone(),
-                        eszip.clone(),
-                        root_specifier.clone(),
-                        isolate_config.clone(),
-                        &mut request_rx,
-                        shutdown.clone(),
-                        isolate_metrics.clone(),
-                        bundle_format,
-                        snapshot_bytes.clone(),
-                        bundle_package.v8_version.clone(),
-                        inspector_stop_for_thread.clone(),
-                        supervisor_handle.clone(),
-                    ))
+                    local.block_on(
+                        &rt,
+                        run_isolate(
+                            isolate_name.clone(),
+                            eszip.clone(),
+                            root_specifier.clone(),
+                            isolate_config.clone(),
+                            &mut request_rx,
+                            shutdown.clone(),
+                            isolate_metrics.clone(),
+                            bundle_format,
+                            snapshot_bytes.clone(),
+                            bundle_package.v8_version.clone(),
+                            inspector_stop_for_thread.clone(),
+                            supervisor_handle.clone(),
+                        ),
+                    )
                 }));
 
                 match result {
@@ -200,8 +205,7 @@ pub async fn create_function(
                         if restart_count >= MAX_ISOLATE_RESTARTS {
                             error!(
                                 "isolate '{}' exceeded max restart attempts ({}), giving up",
-                                isolate_name,
-                                MAX_ISOLATE_RESTARTS
+                                isolate_name, MAX_ISOLATE_RESTARTS
                             );
                             break;
                         }
@@ -210,10 +214,7 @@ pub async fn create_function(
                         let backoff_secs = (1_u64 << (restart_count.saturating_sub(1))).min(60);
                         warn!(
                             "restarting isolate '{}' after panic (attempt {}/{}), backoff={}s",
-                            isolate_name,
-                            restart_count,
-                            MAX_ISOLATE_RESTARTS,
-                            backoff_secs
+                            isolate_name, restart_count, MAX_ISOLATE_RESTARTS, backoff_secs
                         );
 
                         std::thread::sleep(Duration::from_secs(backoff_secs));
@@ -279,7 +280,8 @@ async fn run_isolate(
                         Ok(rt) => (rt, None),
                         Err(e) => {
                             warn!("failed to load snapshot: {}, trying fallback eszip", e);
-                            load_from_eszip_with_init(&eszip, &root_specifier, &config, &name).await?
+                            load_from_eszip_with_init(&eszip, &root_specifier, &config, &name)
+                                .await?
                         }
                     }
                 } else {
@@ -295,7 +297,9 @@ async fn run_isolate(
                 load_from_eszip_with_init(&eszip, &root_specifier, &config, &name).await?
             }
         }
-        BundleFormat::Eszip => load_from_eszip_with_init(&eszip, &root_specifier, &config, &name).await?,
+        BundleFormat::Eszip => {
+            load_from_eszip_with_init(&eszip, &root_specifier, &config, &name).await?
+        }
     };
 
     let _inspector_guard = if let Some(port) = config.inspect_port {
@@ -303,7 +307,9 @@ async fn run_isolate(
         // (before module loading), so V8 tracks the script from compilation time.
         let inspector = js_runtime.inspector();
         let session_sender = inspector.get_session_sender();
-        let stop = inspector_stop.clone().expect("inspector_stop must be Some when inspect_port is Some");
+        let stop = inspector_stop
+            .clone()
+            .expect("inspector_stop must be Some when inspect_port is Some");
         let (guard, target_id) = start_inspector_server(
             session_sender,
             port,
@@ -319,9 +325,7 @@ async fn run_isolate(
         };
         warn!(
             "function '{}' inspector is enabled on {}:{} (debug-only; do not use in production)",
-            name,
-            inspector_host,
-            port
+            name, inspector_host, port
         );
         if config.inspect_allow_remote {
             warn!(
@@ -331,10 +335,7 @@ async fn run_isolate(
         }
         info!(
             "function '{}' inspector listening on ws://{}:{}/{}",
-            name,
-            inspector_host,
-            port,
-            target_id
+            name, inspector_host, port, target_id
         );
 
         if config.inspect_brk {
@@ -377,7 +378,10 @@ async fn run_isolate(
         name, cold_start_duration_ms, bundle_format
     );
 
-    info!("function '{}' isolate initialized, entering request loop", name);
+    info!(
+        "function '{}' isolate initialized, entering request loop",
+        name
+    );
     liveness_handle.mark_alive();
 
     // Keep one CPU timer per isolate and reset it for each incoming request.
@@ -593,7 +597,9 @@ async fn load_from_snapshot(
     // 1. Pre-compile snapshots at build time
     // 2. Wait for deno_core to support owned snapshot data
     // 3. Store snapshots in mmap'd files
-    Err(anyhow::anyhow!("snapshot loading not yet supported - using eszip fallback"))
+    Err(anyhow::anyhow!(
+        "snapshot loading not yet supported - using eszip fallback"
+    ))
 }
 
 /// Load a JsRuntime from an eszip bundle and initialize it completely.
@@ -765,10 +771,13 @@ fn start_inspector_server(
         }
     });
 
-    Ok((InspectorServerGuard {
-        stop,
-        handle: Some(handle),
-    }, target_id))
+    Ok((
+        InspectorServerGuard {
+            stop,
+            handle: Some(handle),
+        },
+        target_id,
+    ))
 }
 
 fn bind_inspector_listener_with_retry(
@@ -892,8 +901,9 @@ fn pump_websocket(
                 }
             }
             Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => {}
-            Err(tungstenite::Error::ConnectionClosed)
-            | Err(tungstenite::Error::AlreadyClosed) => return,
+            Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
+                return
+            }
             Err(_) => return,
         }
 

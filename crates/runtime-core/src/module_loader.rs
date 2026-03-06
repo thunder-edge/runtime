@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use base64::Engine;
 use deno_core::{
-    ModuleLoadResponse, ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
-    ResolutionKind, ModuleLoadOptions, ModuleLoadReferrer, error::ModuleLoaderError,
+    error::ModuleLoaderError, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse,
+    ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind,
 };
 use eszip::EszipV2;
 
@@ -36,10 +36,12 @@ impl ModuleLoader for EszipModuleLoader {
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        deno_core::resolve_import(specifier, referrer)
-            .map_err(|e| ModuleLoaderError::from(
-                deno_error::JsErrorBox::generic(format!("module resolution failed: {}", e))
-            ))
+        deno_core::resolve_import(specifier, referrer).map_err(|e| {
+            ModuleLoaderError::from(deno_error::JsErrorBox::generic(format!(
+                "module resolution failed: {}",
+                e
+            )))
+        })
     }
 
     fn load(
@@ -53,18 +55,19 @@ impl ModuleLoader for EszipModuleLoader {
         let inline_source_maps = self.inline_source_maps;
 
         ModuleLoadResponse::Async(Box::pin(async move {
-            let module = eszip
-                .get_module(specifier.as_str())
-                .ok_or_else(|| ModuleLoaderError::from(
-                    deno_error::JsErrorBox::generic(format!("module not found in eszip: {}", specifier))
-                ))?;
+            let module = eszip.get_module(specifier.as_str()).ok_or_else(|| {
+                ModuleLoaderError::from(deno_error::JsErrorBox::generic(format!(
+                    "module not found in eszip: {}",
+                    specifier
+                )))
+            })?;
 
-            let source = module
-                .take_source()
-                .await
-                .ok_or_else(|| ModuleLoaderError::from(
-                    deno_error::JsErrorBox::generic(format!("module source unavailable: {}", specifier))
-                ))?;
+            let source = module.take_source().await.ok_or_else(|| {
+                ModuleLoaderError::from(deno_error::JsErrorBox::generic(format!(
+                    "module source unavailable: {}",
+                    specifier
+                )))
+            })?;
 
             // eszip stores source maps separately. Attach them as inline
             // sourceMappingURL so debuggers can map transpiled JS back to TS.
@@ -102,5 +105,3 @@ impl ModuleLoader for EszipModuleLoader {
         }))
     }
 }
-
-

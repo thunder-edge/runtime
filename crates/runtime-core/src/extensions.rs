@@ -5,8 +5,10 @@ use std::sync::Arc;
 
 use deno_ast::{EmitOptions, MediaType, ParseParams, TranspileModuleOptions, TranspileOptions};
 use deno_core::url::Url;
-use deno_core::{Extension, ModuleCodeString, ModuleName, RuntimeOptions, SourceMapData, op2};
-use node_resolver::errors::{PackageFolderResolveError, PackageFolderResolveErrorKind, PackageNotFoundError};
+use deno_core::{op2, Extension, ModuleCodeString, ModuleName, RuntimeOptions, SourceMapData};
+use node_resolver::errors::{
+    PackageFolderResolveError, PackageFolderResolveErrorKind, PackageNotFoundError,
+};
 use node_resolver::{InNpmPackageChecker, NpmPackageFolderResolver, UrlOrPathRef};
 
 // Bootstrap extension: imports all extension ESM modules so they get evaluated.
@@ -90,11 +92,7 @@ fn op_tls_peer_certificate(_rid: u32) -> Result<Option<Vec<Vec<u8>>>, deno_error
 // Note: op_is_terminal is already provided by deno_core
 deno_core::extension!(
     edge_stubs,
-    ops = [
-        op_set_raw,
-        op_console_size,
-        op_tls_peer_certificate,
-    ],
+    ops = [op_set_raw, op_console_size, op_tls_peer_certificate,],
 );
 
 // === Stub types for deno_node (no npm support in edge runtime) ===
@@ -124,7 +122,7 @@ impl NpmPackageFolderResolver for NoNpmPackageFolderResolver {
                 package_name: name.to_string(),
                 referrer: referrer.display(),
                 referrer_extra: None,
-            })
+            }),
         )))
     }
 
@@ -161,41 +159,31 @@ pub fn get_extensions_with_edge_assert(include_edge_assert: bool) -> Vec<Extensi
     let mut extensions = vec![
         // 0. Stub ops for edge runtime (TTY ops not needed in serverless)
         edge_stubs::init(),
-
         // 1. Core (no deps)
         deno_webidl::deno_webidl::init(),
-
         // 2. Web (depends on webidl) - includes console, URL, events, streams, etc.
         deno_web::deno_web::init(
             Arc::new(deno_web::BlobStore::default()),
             None,
             deno_web::InMemoryBroadcastChannel::default(),
         ),
-
         // 3. TLS (no deps) - required by deno_net
         deno_tls::deno_tls::init(),
-
         // 4. IO (depends on web) - stdio handling
         deno_io::deno_io::init(Some(deno_io::Stdio::default())),
-
         // 5. FS (depends on web) - filesystem ops (access controlled by permissions)
         deno_fs::deno_fs::init(fs.clone()),
-
         // 6. Net (depends on web) - network ops (access controlled by permissions)
         deno_net::deno_net::init(
             None, // root_cert_store_provider - uses default webpki roots
             None, // unsafely_ignore_certificate_errors
         ),
-
         // 7. Telemetry
         deno_telemetry::deno_telemetry::init(),
-
         // 8. Fetch (depends on web, net, tls) - fetch API
         deno_fetch::deno_fetch::init(deno_fetch::Options::default()),
-
         // 9. Node shim - provides minimal constants for deno_crypto
         deno_node::init(),
-
         // 10. Crypto (depends on webidl, web, node shim) - Web Crypto API
         deno_crypto::deno_crypto::init(None), // maybe_seed
     ];
@@ -221,66 +209,68 @@ pub fn get_extensions() -> Vec<Extension> {
 /// V8 cannot execute directly. This configures TS → JS transpilation during
 /// JsRuntime initialisation.
 pub fn set_extension_transpiler(opts: &mut RuntimeOptions) {
-    opts.extension_transpiler = Some(Rc::new(
-        |name: ModuleName, code: ModuleCodeString| {
-            let specifier_str: &str = &name;
+    opts.extension_transpiler = Some(Rc::new(|name: ModuleName, code: ModuleCodeString| {
+        let specifier_str: &str = &name;
 
-            // Handle different specifier formats:
-            // - Regular URLs (file:, https:, ext:)
-            // - Node.js built-in modules (node:*)
-            let media_type = if specifier_str.starts_with("node:") {
-                // Node.js polyfills from deno_node are TypeScript
-                MediaType::TypeScript
-            } else {
-                let url = deno_core::url::Url::parse(specifier_str)
-                    .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap());
-                MediaType::from_specifier_and_headers(&url, None)
-            };
+        // Handle different specifier formats:
+        // - Regular URLs (file:, https:, ext:)
+        // - Node.js built-in modules (node:*)
+        let media_type = if specifier_str.starts_with("node:") {
+            // Node.js polyfills from deno_node are TypeScript
+            MediaType::TypeScript
+        } else {
+            let url = deno_core::url::Url::parse(specifier_str)
+                .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap());
+            MediaType::from_specifier_and_headers(&url, None)
+        };
 
-            if !matches!(
-                media_type,
-                MediaType::TypeScript | MediaType::Mts | MediaType::Cts | MediaType::Tsx
-            ) {
-                return Ok((code, None));
-            }
+        if !matches!(
+            media_type,
+            MediaType::TypeScript | MediaType::Mts | MediaType::Cts | MediaType::Tsx
+        ) {
+            return Ok((code, None));
+        }
 
-            // Create a synthetic URL for parsing (required by deno_ast)
-            let url = if specifier_str.starts_with("node:") {
-                // Convert node: specifier to a parseable URL
-                deno_core::url::Url::parse(&format!("file:///{}.ts", &specifier_str[5..]))
-                    .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap())
-            } else {
-                deno_core::url::Url::parse(specifier_str)
-                    .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap())
-            };
+        // Create a synthetic URL for parsing (required by deno_ast)
+        let url = if specifier_str.starts_with("node:") {
+            // Convert node: specifier to a parseable URL
+            deno_core::url::Url::parse(&format!("file:///{}.ts", &specifier_str[5..]))
+                .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap())
+        } else {
+            deno_core::url::Url::parse(specifier_str)
+                .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap())
+        };
 
-            let source_text: &str = &code;
-            let parsed = deno_ast::parse_module(ParseParams {
-                specifier: url,
-                text: source_text.into(),
-                media_type,
-                capture_tokens: false,
-                scope_analysis: false,
-                maybe_syntax: None,
-            })
-            .map_err(|e| deno_error::JsErrorBox::generic(format!("failed to parse {specifier_str}: {e}")))?;
+        let source_text: &str = &code;
+        let parsed = deno_ast::parse_module(ParseParams {
+            specifier: url,
+            text: source_text.into(),
+            media_type,
+            capture_tokens: false,
+            scope_analysis: false,
+            maybe_syntax: None,
+        })
+        .map_err(|e| {
+            deno_error::JsErrorBox::generic(format!("failed to parse {specifier_str}: {e}"))
+        })?;
 
-            let transpiled = parsed
-                .transpile(
-                    &TranspileOptions::default(),
-                    &TranspileModuleOptions::default(),
-                    &EmitOptions::default(),
-                )
-                .map_err(|e| deno_error::JsErrorBox::generic(format!("failed to transpile {specifier_str}: {e}")))?;
+        let transpiled = parsed
+            .transpile(
+                &TranspileOptions::default(),
+                &TranspileModuleOptions::default(),
+                &EmitOptions::default(),
+            )
+            .map_err(|e| {
+                deno_error::JsErrorBox::generic(format!("failed to transpile {specifier_str}: {e}"))
+            })?;
 
-            let emitted = transpiled.into_source();
-            let source_map = emitted
-                .source_map
-                .map(|sm| Cow::Owned(sm.into_bytes()) as SourceMapData);
+        let emitted = transpiled.into_source();
+        let source_map = emitted
+            .source_map
+            .map(|sm| Cow::Owned(sm.into_bytes()) as SourceMapData);
 
-            Ok((ModuleCodeString::from(emitted.text), source_map))
-        },
-    ));
+        Ok((ModuleCodeString::from(emitted.text), source_map))
+    }));
 }
 
 #[cfg(test)]

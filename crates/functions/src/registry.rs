@@ -18,15 +18,15 @@ pub struct FunctionRegistry {
 }
 
 impl FunctionRegistry {
-        fn all_request_channels_closed(&self) -> bool {
-            self.functions.iter().all(|entry| {
-                entry
-                    .isolate_handle
-                    .as_ref()
-                    .map(|h| h.is_request_channel_closed())
-                    .unwrap_or(true)
-            })
-        }
+    fn all_request_channels_closed(&self) -> bool {
+        self.functions.iter().all(|entry| {
+            entry
+                .isolate_handle
+                .as_ref()
+                .map(|h| h.is_request_channel_closed())
+                .unwrap_or(true)
+        })
+    }
 
     fn reconcile_entry_status(entry: &mut FunctionEntry) {
         let is_dead = entry
@@ -39,9 +39,8 @@ impl FunctionRegistry {
             entry.status = FunctionStatus::Error;
             entry.updated_at = Utc::now();
             if entry.last_error.is_none() {
-                entry.last_error = Some(
-                    "isolate terminated unexpectedly (panic or resource limit)".to_string(),
-                );
+                entry.last_error =
+                    Some("isolate terminated unexpectedly (panic or resource limit)".to_string());
             }
         } else if !is_dead && entry.status == FunctionStatus::Error {
             entry.status = FunctionStatus::Running;
@@ -65,7 +64,10 @@ impl FunctionRegistry {
         config: Option<IsolateConfig>,
     ) -> Result<FunctionInfo, Error> {
         if self.functions.contains_key(&name) {
-            return Err(anyhow::anyhow!("function '{}' already exists, use PUT to update", name));
+            return Err(anyhow::anyhow!(
+                "function '{}' already exists, use PUT to update",
+                name
+            ));
         }
 
         let config = config.unwrap_or_else(|| self.default_config.clone());
@@ -87,10 +89,7 @@ impl FunctionRegistry {
 
     /// Get a handle to route a request to.
     /// Returns None if function doesn't exist, isn't running, or the isolate is dead.
-    pub fn get_handle(
-        &self,
-        name: &str,
-    ) -> Option<runtime_core::isolate::IsolateHandle> {
+    pub fn get_handle(&self, name: &str) -> Option<runtime_core::isolate::IsolateHandle> {
         self.functions.get_mut(name).and_then(|mut entry| {
             Self::reconcile_entry_status(&mut entry);
             if entry.status == FunctionStatus::Running {
@@ -279,8 +278,8 @@ impl FunctionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
 
     use chrono::Utc;
 

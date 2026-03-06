@@ -15,7 +15,7 @@ use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
     payload_too_large_response, BodyLimitError, BodyLimitsConfig,
 };
-use crate::middleware::{RateLimitLayer, rate_limit_layer, rate_limited_response};
+use crate::middleware::{rate_limit_layer, rate_limited_response, RateLimitLayer};
 use crate::trace_context::{
     add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
 };
@@ -109,11 +109,7 @@ fn log_truncated_error(context: &str, err: &impl std::fmt::Display) {
     error!("{}: {}", context, truncated);
 }
 
-pub fn sanitize_internal_error<E>(
-    status: StatusCode,
-    context: &str,
-    err: &E,
-) -> Response<BoxBody>
+pub fn sanitize_internal_error<E>(status: StatusCode, context: &str, err: &E) -> Response<BoxBody>
 where
     E: std::fmt::Display + std::fmt::Debug,
 {
@@ -167,7 +163,9 @@ impl Router {
             registry,
             body_limits,
             rate_limiter: rate_limit_rps.map(rate_limit_layer),
-            metrics_cache: Arc::new(MetricsCache::new(Duration::from_secs(METRICS_CACHE_TTL_SECS))),
+            metrics_cache: Arc::new(MetricsCache::new(Duration::from_secs(
+                METRICS_CACHE_TTL_SECS,
+            ))),
         }
     }
 
@@ -206,11 +204,7 @@ impl Router {
         // Extract function name from first path segment
         let segments: Vec<&str> = path.splitn(3, '/').collect();
         // segments: ["", "function_name", "rest/of/path"]
-        let function_name = if segments.len() >= 2 {
-            segments[1]
-        } else {
-            ""
-        };
+        let function_name = if segments.len() >= 2 { segments[1] } else { "" };
 
         if function_name.is_empty() {
             return json_response(
@@ -289,7 +283,12 @@ impl Router {
         let req_started = Instant::now();
         apply_trace_headers(forwarded_req.headers_mut(), trace_ctx);
 
-        let response = match tokio::time::timeout(timeout_duration, handle.send_request(forwarded_req)).await {
+        let response = match tokio::time::timeout(
+            timeout_duration,
+            handle.send_request(forwarded_req),
+        )
+        .await
+        {
             Ok(Ok(resp)) => {
                 let (parts, body) = resp.into_parts();
                 // Check response body size
@@ -300,13 +299,11 @@ impl Router {
                 }
                 Response::from_parts(parts, Full::new(body))
             }
-            Ok(Err(e)) => {
-                sanitize_internal_error(
-                    StatusCode::BAD_GATEWAY,
-                    "failed to handle ingress request in isolate",
-                    &e,
-                )
-            }
+            Ok(Err(e)) => sanitize_internal_error(
+                StatusCode::BAD_GATEWAY,
+                "failed to handle ingress request in isolate",
+                &e,
+            ),
             Err(_) => json_response(
                 StatusCode::GATEWAY_TIMEOUT,
                 r#"{"error":"request timeout"}"#,
@@ -326,10 +323,7 @@ impl Router {
     }
 
     /// Route internal management API.
-    async fn handle_internal(
-        &self,
-        req: Request<hyper::body::Incoming>,
-    ) -> Response<BoxBody> {
+    async fn handle_internal(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let path = req.uri().path().to_string();
         let method = req.method().clone();
 
@@ -340,9 +334,7 @@ impl Router {
             }
 
             // Metrics
-            (Method::GET, "/_internal/metrics") => {
-                self.handle_metrics().await
-            }
+            (Method::GET, "/_internal/metrics") => self.handle_metrics().await,
 
             // List functions
             (Method::GET, "/_internal/functions") => {
@@ -352,9 +344,7 @@ impl Router {
             }
 
             // Deploy new function
-            (Method::POST, "/_internal/functions") => {
-                self.handle_deploy(req).await
-            }
+            (Method::POST, "/_internal/functions") => self.handle_deploy(req).await,
 
             // Routes with function name in path
             _ if path.starts_with("/_internal/functions/") => {
@@ -424,10 +414,7 @@ impl Router {
             };
 
         if body_bytes.is_empty() {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                r#"{"error":"empty eszip bundle"}"#,
-            );
+            return json_response(StatusCode::BAD_REQUEST, r#"{"error":"empty eszip bundle"}"#);
         }
 
         match self.registry.deploy(name, body_bytes, None).await {
@@ -468,7 +455,10 @@ impl Router {
         };
 
         if name.is_empty() {
-            return json_response(StatusCode::BAD_REQUEST, r#"{"error":"empty function name"}"#);
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"empty function name"}"#,
+            );
         }
 
         if !is_valid_function_name(name) {
@@ -480,15 +470,13 @@ impl Router {
 
         match (method, sub_route) {
             // GET /_internal/functions/{name}
-            (Method::GET, None) => {
-                match self.registry.get_info(name) {
-                    Some(info) => {
-                        let json = serde_json::to_string(&info).unwrap_or_default();
-                        json_response(StatusCode::OK, &json)
-                    }
-                    None => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
+            (Method::GET, None) => match self.registry.get_info(name) {
+                Some(info) => {
+                    let json = serde_json::to_string(&info).unwrap_or_default();
+                    json_response(StatusCode::OK, &json)
                 }
-            }
+                None => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
+            },
 
             // PUT /_internal/functions/{name}
             (Method::PUT, None) => {
@@ -500,24 +488,24 @@ impl Router {
                 }
 
                 let (_, body) = req.into_parts();
-                let body_bytes = match collect_body_with_limit(
-                    body,
-                    self.body_limits.max_request_body_bytes,
-                )
-                .await
-                {
-                    Ok(bytes) => bytes,
-                    Err(BodyLimitError::LimitExceeded)
-                    | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                        return payload_too_large_response(self.body_limits.max_request_body_bytes);
-                    }
-                    Err(_) => {
-                        return json_response(
-                            StatusCode::BAD_REQUEST,
-                            r#"{"error":"failed to read request body"}"#,
-                        )
-                    }
-                };
+                let body_bytes =
+                    match collect_body_with_limit(body, self.body_limits.max_request_body_bytes)
+                        .await
+                    {
+                        Ok(bytes) => bytes,
+                        Err(BodyLimitError::LimitExceeded)
+                        | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
+                            return payload_too_large_response(
+                                self.body_limits.max_request_body_bytes,
+                            );
+                        }
+                        Err(_) => {
+                            return json_response(
+                                StatusCode::BAD_REQUEST,
+                                r#"{"error":"failed to read request body"}"#,
+                            )
+                        }
+                    };
 
                 match self.registry.update(name, body_bytes, None).await {
                     Ok(info) => {
@@ -536,15 +524,13 @@ impl Router {
             }
 
             // DELETE /_internal/functions/{name}
-            (Method::DELETE, None) => {
-                match self.registry.delete(name).await {
-                    Ok(()) => json_response(StatusCode::OK, r#"{"status":"deleted"}"#),
-                    Err(e) => {
-                        log_truncated_error("failed to delete function", &e);
-                        json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#)
-                    }
+            (Method::DELETE, None) => match self.registry.delete(name).await {
+                Ok(()) => json_response(StatusCode::OK, r#"{"status":"deleted"}"#),
+                Err(e) => {
+                    log_truncated_error("failed to delete function", &e);
+                    json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#)
                 }
-            }
+            },
 
             // POST /_internal/functions/{name}/reload
             (Method::POST, Some("reload")) => {
@@ -574,7 +560,10 @@ impl Router {
                 }
             }
 
-            _ => json_response(StatusCode::METHOD_NOT_ALLOWED, r#"{"error":"method not allowed"}"#),
+            _ => json_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                r#"{"error":"method not allowed"}"#,
+            ),
         }
     }
 }
@@ -698,7 +687,9 @@ pub fn slugify_function_name(raw: &str) -> String {
     if trimmed.len() <= MAX_FUNCTION_NAME_LEN {
         trimmed
     } else {
-        trimmed[..MAX_FUNCTION_NAME_LEN].trim_matches('-').to_string()
+        trimmed[..MAX_FUNCTION_NAME_LEN]
+            .trim_matches('-')
+            .to_string()
     }
 }
 
@@ -759,7 +750,10 @@ mod tests {
     fn json_response_content_type() {
         let resp = json_response(StatusCode::OK, r#"{"ok":true}"#);
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(resp.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "application/json"
+        );
     }
 
     #[test]
@@ -809,8 +803,14 @@ mod tests {
     #[test]
     fn slugify_normalizes_to_url_safe_slug() {
         assert_eq!(slugify_function_name(" My Func_v2 "), "my-func-v2");
-        assert_eq!(slugify_function_name("api..gateway///edge"), "api-gateway-edge");
-        assert_eq!(normalize_function_name("___hello___"), Some("hello".to_string()));
+        assert_eq!(
+            slugify_function_name("api..gateway///edge"),
+            "api-gateway-edge"
+        );
+        assert_eq!(
+            normalize_function_name("___hello___"),
+            Some("hello".to_string())
+        );
     }
 
     #[tokio::test]

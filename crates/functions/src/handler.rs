@@ -427,8 +427,9 @@ pub async fn dispatch_request(
         let handle_request_val = edge_runtime_obj
             .get(scope, handle_request_key.into())
             .ok_or_else(|| anyhow::anyhow!("__edgeRuntime.handleRequest is missing"))?;
-        let handle_request_fn = deno_core::v8::Local::<deno_core::v8::Function>::try_from(handle_request_val)
-            .map_err(|_| anyhow::anyhow!("__edgeRuntime.handleRequest is not a function"))?;
+        let handle_request_fn =
+            deno_core::v8::Local::<deno_core::v8::Function>::try_from(handle_request_val)
+                .map_err(|_| anyhow::anyhow!("__edgeRuntime.handleRequest is not a function"))?;
 
         let method_v8 = deno_core::v8::String::new(scope, &method)
             .ok_or_else(|| anyhow::anyhow!("failed to allocate method string"))?;
@@ -444,18 +445,15 @@ pub async fn dispatch_request(
                 body.to_vec().into_boxed_slice(),
             );
             let backing_store = backing_store.make_shared();
-            let array_buffer = deno_core::v8::ArrayBuffer::with_backing_store(scope, &backing_store);
+            let array_buffer =
+                deno_core::v8::ArrayBuffer::with_backing_store(scope, &backing_store);
             let uint8 = deno_core::v8::Uint8Array::new(scope, array_buffer, 0, body.len())
                 .ok_or_else(|| anyhow::anyhow!("failed to allocate Uint8Array body"))?;
             uint8.into()
         };
 
-        let args: [deno_core::v8::Local<deno_core::v8::Value>; 4] = [
-            method_v8.into(),
-            uri_v8.into(),
-            headers_v8.into(),
-            body_arg,
-        ];
+        let args: [deno_core::v8::Local<deno_core::v8::Value>; 4] =
+            [method_v8.into(), uri_v8.into(), headers_v8.into(), body_arg];
 
         let result = handle_request_fn
             .call(scope, edge_runtime_obj.into(), &args)
@@ -552,7 +550,10 @@ mod tests {
 
         deno_core::scope!(scope, runtime);
         let local = val.open(scope);
-        assert!(local.is_true(), "__edgeRuntime should be an object on globalThis");
+        assert!(
+            local.is_true(),
+            "__edgeRuntime should be an object on globalThis"
+        );
     }
 
     #[test]
@@ -595,6 +596,10 @@ mod tests {
         });
 
         let response = result.expect("dispatch_request should not error");
-        assert_eq!(response.status(), 503, "should return 503 when no handler registered");
+        assert_eq!(
+            response.status(),
+            503,
+            "should return 503 when no handler registered"
+        );
     }
 }

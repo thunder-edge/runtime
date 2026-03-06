@@ -103,10 +103,7 @@ fn fetch_response_constructor() {
 
 #[test]
 fn fetch_function_exists() {
-    assert_js_true(
-        "typeof fetch === 'function'",
-        "fetch function",
-    );
+    assert_js_true("typeof fetch === 'function'", "fetch function");
 }
 
 #[test]
@@ -140,10 +137,7 @@ fn fetch_formdata_constructor() {
 
 #[test]
 fn fetch_eventsource_constructor() {
-    assert_js_true(
-        "typeof EventSource === 'function'",
-        "EventSource exists",
-    );
+    assert_js_true("typeof EventSource === 'function'", "EventSource exists");
 }
 
 // ── URL API ───────────────────────────────────────────────────────────
@@ -166,10 +160,7 @@ fn url_search_params() {
 
 #[test]
 fn url_pattern() {
-    assert_js_true(
-        "typeof URLPattern === 'function'",
-        "URLPattern exists",
-    );
+    assert_js_true("typeof URLPattern === 'function'", "URLPattern exists");
 }
 
 // ── Streams API ────────────────────────────────────────────────────────
@@ -234,10 +225,7 @@ fn encoding_text_decoder() {
 
 #[test]
 fn encoding_atob_btoa() {
-    assert_js_true(
-        "atob(btoa('hello')) === 'hello'",
-        "atob/btoa round trip",
-    );
+    assert_js_true("atob(btoa('hello')) === 'hello'", "atob/btoa round trip");
 }
 
 #[test]
@@ -284,10 +272,7 @@ fn crypto_subtle_exists() {
 
 #[test]
 fn crypto_crypto_key_exists() {
-    assert_js_true(
-        "typeof CryptoKey === 'function'",
-        "CryptoKey",
-    );
+    assert_js_true("typeof CryptoKey === 'function'", "CryptoKey");
 }
 
 // ── Console API ───────────────────────────────────────────────────────
@@ -312,44 +297,29 @@ fn console_error_warn() {
 
 #[test]
 fn timers_set_timeout() {
-    assert_js_true(
-        "typeof setTimeout === 'function'",
-        "setTimeout",
-    );
+    assert_js_true("typeof setTimeout === 'function'", "setTimeout");
 }
 
 #[test]
 fn timers_set_interval() {
-    assert_js_true(
-        "typeof setInterval === 'function'",
-        "setInterval",
-    );
+    assert_js_true("typeof setInterval === 'function'", "setInterval");
 }
 
 #[test]
 fn timers_clear_timeout() {
-    assert_js_true(
-        "typeof clearTimeout === 'function'",
-        "clearTimeout",
-    );
+    assert_js_true("typeof clearTimeout === 'function'", "clearTimeout");
 }
 
 #[test]
 fn timers_clear_interval() {
-    assert_js_true(
-        "typeof clearInterval === 'function'",
-        "clearInterval",
-    );
+    assert_js_true("typeof clearInterval === 'function'", "clearInterval");
 }
 
 // ── Events API ────────────────────────────────────────────────────────
 
 #[test]
 fn events_event_constructor() {
-    assert_js_true(
-        "new Event('click').type === 'click'",
-        "Event constructor",
-    );
+    assert_js_true("new Event('click').type === 'click'", "Event constructor");
 }
 
 #[test]
@@ -404,26 +374,17 @@ fn dom_structured_clone() {
 
 #[test]
 fn dom_blob() {
-    assert_js_true(
-        "new Blob(['hello']).size === 5",
-        "Blob",
-    );
+    assert_js_true("new Blob(['hello']).size === 5", "Blob");
 }
 
 #[test]
 fn dom_file() {
-    assert_js_true(
-        "new File(['data'], 'test.txt').name === 'test.txt'",
-        "File",
-    );
+    assert_js_true("new File(['data'], 'test.txt').name === 'test.txt'", "File");
 }
 
 #[test]
 fn dom_file_reader() {
-    assert_js_true(
-        "typeof FileReader === 'function'",
-        "FileReader",
-    );
+    assert_js_true("typeof FileReader === 'function'", "FileReader");
 }
 
 // ── Compression API ──────────────────────────────────────────────────
@@ -456,10 +417,7 @@ fn performance_now() {
 
 #[test]
 fn performance_mark() {
-    assert_js_true(
-        "typeof PerformanceMark === 'function'",
-        "PerformanceMark",
-    );
+    assert_js_true("typeof PerformanceMark === 'function'", "PerformanceMark");
 }
 
 // ── Messaging API ────────────────────────────────────────────────────
@@ -474,18 +432,12 @@ fn messaging_message_channel() {
 
 #[test]
 fn messaging_message_port() {
-    assert_js_true(
-        "typeof MessagePort === 'function'",
-        "MessagePort",
-    );
+    assert_js_true("typeof MessagePort === 'function'", "MessagePort");
 }
 
 #[test]
 fn messaging_image_data() {
-    assert_js_true(
-        "typeof ImageData === 'function'",
-        "ImageData",
-    );
+    assert_js_true("typeof ImageData === 'function'", "ImageData");
 }
 
 // ── HTMLRewriter API ──────────────────────────────────────
@@ -504,34 +456,22 @@ fn messaging_image_data() {
 
 #[test]
 fn typed_array_uint8array() {
-    assert_js_true(
-        "new Uint8Array(8).length === 8",
-        "Uint8Array",
-    );
+    assert_js_true("new Uint8Array(8).length === 8", "Uint8Array");
 }
 
 #[test]
 fn typed_array_int32array() {
-    assert_js_true(
-        "new Int32Array(4).length === 4",
-        "Int32Array",
-    );
+    assert_js_true("new Int32Array(4).length === 4", "Int32Array");
 }
 
 #[test]
 fn typed_array_float64array() {
-    assert_js_true(
-        "new Float64Array(2).length === 2",
-        "Float64Array",
-    );
+    assert_js_true("new Float64Array(2).length === 2", "Float64Array");
 }
 
 #[test]
 fn array_buffer_constructor() {
-    assert_js_true(
-        "new ArrayBuffer(16).byteLength === 16",
-        "ArrayBuffer",
-    );
+    assert_js_true("new ArrayBuffer(16).byteLength === 16", "ArrayBuffer");
 }
 
 #[test]
@@ -566,18 +506,12 @@ fn promise_constructor() {
 
 #[test]
 fn weak_map_constructor() {
-    assert_js_true(
-        "typeof WeakMap === 'function'",
-        "WeakMap",
-    );
+    assert_js_true("typeof WeakMap === 'function'", "WeakMap");
 }
 
 #[test]
 fn weak_set_constructor() {
-    assert_js_true(
-        "typeof WeakSet === 'function'",
-        "WeakSet",
-    );
+    assert_js_true("typeof WeakSet === 'function'", "WeakSet");
 }
 
 // ── Map / Set ────────────────────────────────────────
@@ -650,10 +584,7 @@ fn async_function() {
 
 #[test]
 fn url_parse_method() {
-    assert_js_true(
-        "typeof URL.parse === 'function'",
-        "URL.parse static method",
-    );
+    assert_js_true("typeof URL.parse === 'function'", "URL.parse static method");
 }
 
 // ── Math object ───────────────────────────────────────
@@ -670,20 +601,14 @@ fn math_operations() {
 
 #[test]
 fn date_constructor() {
-    assert_js_true(
-        "new Date().getFullYear() > 2020",
-        "Date constructor",
-    );
+    assert_js_true("new Date().getFullYear() > 2020", "Date constructor");
 }
 
 // ── RegExp support ────────────────────────────────────
 
 #[test]
 fn regex_constructor() {
-    assert_js_true(
-        "(/test/).test('test') === true",
-        "RegExp support",
-    );
+    assert_js_true("(/test/).test('test') === true", "RegExp support");
 }
 
 // ── Error types ───────────────────────────────────────
@@ -746,10 +671,7 @@ fn array_methods() {
 
 #[test]
 fn array_includes() {
-    assert_js_true(
-        "[1, 2, 3].includes(2) === true",
-        "Array includes method",
-    );
+    assert_js_true("[1, 2, 3].includes(2) === true", "Array includes method");
 }
 
 // ── Object methods ────────────────────────────────────
@@ -764,10 +686,7 @@ fn object_methods() {
 
 #[test]
 fn object_entries() {
-    assert_js_true(
-        "Object.entries({a: 1}).length === 1",
-        "Object.entries",
-    );
+    assert_js_true("Object.entries({a: 1}).length === 1", "Object.entries");
 }
 
 // ── Intl API ──────────────────────────────────────────

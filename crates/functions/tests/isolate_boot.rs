@@ -104,8 +104,7 @@ async fn build_eszip_async(specifier: &str, source: &str) -> Vec<u8> {
 
 /// Parse eszip bytes into an EszipV2.
 async fn parse_eszip(bytes: &[u8]) -> eszip::EszipV2 {
-    let reader =
-        futures_util::io::BufReader::new(futures_util::io::Cursor::new(bytes.to_vec()));
+    let reader = futures_util::io::BufReader::new(futures_util::io::Cursor::new(bytes.to_vec()));
     let (eszip, loader_fut) = eszip::EszipV2::parse(reader).await.unwrap();
     tokio::spawn(loader_fut);
     eszip

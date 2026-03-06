@@ -38,8 +38,8 @@ pub fn create_permissions_container() -> PermissionsContainer {
         prompt: false, // No interactive prompts
     };
 
-    let permissions = Permissions::from_options(parser.as_ref(), &options)
-        .expect("failed to create permissions");
+    let permissions =
+        Permissions::from_options(parser.as_ref(), &options).expect("failed to create permissions");
 
     PermissionsContainer::new(parser, permissions)
 }
@@ -85,8 +85,8 @@ pub fn create_permissions_with_network_allowlist(
         prompt: false,
     };
 
-    let permissions = Permissions::from_options(parser.as_ref(), &options)
-        .expect("failed to create permissions");
+    let permissions =
+        Permissions::from_options(parser.as_ref(), &options).expect("failed to create permissions");
 
     PermissionsContainer::new(parser, permissions)
 }

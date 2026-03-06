@@ -1,5 +1,5 @@
-use std::io::Write;
 use std::io::ErrorKind;
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -10,10 +10,10 @@ use std::time::Instant;
 
 use clap::{ArgAction, Args};
 use deno_ast::{EmitOptions, TranspileOptions};
-use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use deno_core::{
     InspectorMsg, InspectorSessionChannels, InspectorSessionKind, InspectorSessionProxy,
 };
+use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use deno_graph::ast::CapturingModuleAnalyzer;
 use deno_graph::source::{LoadError, LoadOptions, LoadResponse, Loader};
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph};
@@ -220,14 +220,18 @@ fn rewrite_edge_assert_imports(content: Vec<u8>) -> Result<Vec<u8>, LoadError> {
     let user_mod_path = cwd.join("crates/runtime-core/src/assert/user_mod.ts");
     let assert_path = cwd.join("crates/runtime-core/src/assert/assert.ts");
 
-    let user_mod_url = Url::from_file_path(&user_mod_path)
-        .map_err(|()| LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(
-            format!("failed to convert '{}' to file URL", user_mod_path.display())
-        ))))?;
-    let assert_url = Url::from_file_path(&assert_path)
-        .map_err(|()| LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(
-            format!("failed to convert '{}' to file URL", assert_path.display())
-        ))))?;
+    let user_mod_url = Url::from_file_path(&user_mod_path).map_err(|()| {
+        LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+            "failed to convert '{}' to file URL",
+            user_mod_path.display()
+        ))))
+    })?;
+    let assert_url = Url::from_file_path(&assert_path).map_err(|()| {
+        LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+            "failed to convert '{}' to file URL",
+            assert_path.display()
+        ))))
+    })?;
 
     let rewritten = source
         .replace("edge://assert/mod.ts", user_mod_url.as_str())
@@ -241,10 +245,7 @@ fn load_edge_assert_module(
 ) -> Result<Option<Vec<u8>>, LoadError> {
     let relative_path = match specifier.as_str() {
         "edge://assert/mod.ts" => {
-            return Ok(Some(
-                b"export * from 'edge://assert/assert.ts';\n"
-                    .to_vec(),
-            ));
+            return Ok(Some(b"export * from 'edge://assert/assert.ts';\n".to_vec()));
         }
         "edge://assert/assert.ts" => "crates/runtime-core/src/assert/assert.ts",
         "ext:edge_assert/mod.ts" => "crates/runtime-core/src/assert/mod.ts",
@@ -300,9 +301,7 @@ pub fn run(args: TestArgs) -> Result<(), anyhow::Error> {
         }
 
         if args.inspect_allow_remote && args.inspect.is_none() {
-            return Err(anyhow::anyhow!(
-                "--inspect-allow-remote requires --inspect"
-            ));
+            return Err(anyhow::anyhow!("--inspect-allow-remote requires --inspect"));
         }
 
         if let Some(port) = args.inspect {
@@ -420,7 +419,11 @@ pub fn run(args: TestArgs) -> Result<(), anyhow::Error> {
         if !failures.is_empty() {
             println!("\n{}", style.bold("Failures:"));
             for (idx, (file, err)) in failures.iter().enumerate() {
-                println!("{} {}", style.red(&format!("{}. {}", idx + 1, file)), style.dim(""));
+                println!(
+                    "{} {}",
+                    style.red(&format!("{}. {}", idx + 1, file)),
+                    style.dim("")
+                );
                 println!("   {}", err);
             }
         }
@@ -433,7 +436,10 @@ pub fn run(args: TestArgs) -> Result<(), anyhow::Error> {
     })
 }
 
-fn discover_test_files(path_or_pattern: &str, ignore_patterns: &[String]) -> Result<Vec<PathBuf>, anyhow::Error> {
+fn discover_test_files(
+    path_or_pattern: &str,
+    ignore_patterns: &[String],
+) -> Result<Vec<PathBuf>, anyhow::Error> {
     let cwd = std::env::current_dir()?;
     let candidate = Path::new(path_or_pattern);
 
@@ -452,7 +458,9 @@ fn discover_test_files(path_or_pattern: &str, ignore_patterns: &[String]) -> Res
 
     let ignore_matchers = compile_patterns(ignore_patterns)?;
 
-    files.retain(|path| is_supported_test_file(path) && !matches_ignore(path, &cwd, &ignore_matchers));
+    files.retain(|path| {
+        is_supported_test_file(path) && !matches_ignore(path, &cwd, &ignore_matchers)
+    });
 
     files.sort();
     files.dedup();
@@ -466,7 +474,9 @@ fn is_glob_pattern(input: &str) -> bool {
 
 fn collect_glob_matches(pattern: &str) -> Result<Vec<PathBuf>, anyhow::Error> {
     let mut matches = Vec::new();
-    for entry in glob::glob(pattern).map_err(|e| anyhow::anyhow!("invalid glob pattern '{}': {e}", pattern))? {
+    for entry in glob::glob(pattern)
+        .map_err(|e| anyhow::anyhow!("invalid glob pattern '{}': {e}", pattern))?
+    {
         let path = entry.map_err(|e| anyhow::anyhow!("glob read error: {e}"))?;
         if path.is_file() {
             matches.push(path);
@@ -494,7 +504,9 @@ fn is_supported_test_file(path: &Path) -> bool {
 fn compile_patterns(patterns: &[String]) -> Result<Vec<Pattern>, anyhow::Error> {
     patterns
         .iter()
-        .map(|p| Pattern::new(p).map_err(|e| anyhow::anyhow!("invalid ignore pattern '{}': {e}", p)))
+        .map(|p| {
+            Pattern::new(p).map_err(|e| anyhow::anyhow!("invalid ignore pattern '{}': {e}", p))
+        })
         .collect()
 }
 
@@ -544,7 +556,10 @@ fn read_test_stats(js_runtime: &mut JsRuntime) -> TestRunStats {
     }
 
     let parse = |idx: usize| -> usize {
-        parts.get(idx).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0)
+        parts
+            .get(idx)
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0)
     };
 
     TestRunStats {
@@ -583,7 +598,9 @@ async fn run_single_test_file(
         )
         .await;
 
-    graph.valid().map_err(|e| anyhow::anyhow!("module graph error: {e}"))?;
+    graph
+        .valid()
+        .map_err(|e| anyhow::anyhow!("module graph error: {e}"))?;
 
     let eszip = eszip::EszipV2::from_graph(eszip::FromGraphOptions {
         graph,
@@ -631,8 +648,7 @@ async fn run_single_test_file(
         );
         println!(
             "Open VS Code and attach debugger after reading target list at http://{}:{}/json/list",
-            inspector_host,
-            port
+            inspector_host, port
         );
 
         // Wait for debugger client and pause on first statement for reliable attach.
@@ -728,7 +744,8 @@ fn start_inspector_server(
                     }
 
                     if path == "/json/version" {
-                        let body = "{\"Browser\":\"deno-edge-runtime\",\"Protocol-Version\":\"1.3\"}";
+                        let body =
+                            "{\"Browser\":\"deno-edge-runtime\",\"Protocol-Version\":\"1.3\"}";
                         let _ = write_http_json_response(&mut stream, body);
                         continue;
                     }
@@ -840,8 +857,9 @@ fn pump_websocket(
                 }
             }
             Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => {}
-            Err(tungstenite::Error::ConnectionClosed)
-            | Err(tungstenite::Error::AlreadyClosed) => return,
+            Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
+                return
+            }
             Err(_) => return,
         }
 

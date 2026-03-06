@@ -155,9 +155,13 @@ pub async fn run_dual_server(
     let ingress_config = config.ingress.clone();
     let ingress_semaphore = connection_semaphore.clone();
     let ingress_handle = tokio::spawn(async move {
-        if let Err(e) =
-            run_ingress_listener(ingress_config, ingress_router, ingress_shutdown, ingress_semaphore)
-                .await
+        if let Err(e) = run_ingress_listener(
+            ingress_config,
+            ingress_router,
+            ingress_shutdown,
+            ingress_semaphore,
+        )
+        .await
         {
             error!("ingress listener error: {}", e);
         }
@@ -443,7 +447,11 @@ async fn run_unix_ingress(
 
     // Cleanup socket file
     if let Err(e) = std::fs::remove_file(&cleanup_path) {
-        warn!("failed to remove Unix socket {}: {}", cleanup_path.display(), e);
+        warn!(
+            "failed to remove Unix socket {}: {}",
+            cleanup_path.display(),
+            e
+        );
     }
 
     Ok(())
@@ -462,11 +470,7 @@ pub async fn run_server(
     registry: Arc<FunctionRegistry>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
-    let router = router::Router::new(
-        registry.clone(),
-        config.body_limits,
-        config.rate_limit_rps,
-    );
+    let router = router::Router::new(registry.clone(), config.body_limits, config.rate_limit_rps);
     let svc = service::EdgeService::new(router);
 
     let listener = TcpListener::bind(config.addr).await?;
@@ -492,7 +496,11 @@ pub async fn run_server(
         );
     }
 
-    let scheme = if tls_acceptor.is_some() { "https" } else { "http" };
+    let scheme = if tls_acceptor.is_some() {
+        "https"
+    } else {
+        "http"
+    };
     info!("edge-runtime listening on {}://{}", scheme, config.addr);
 
     loop {
@@ -577,9 +585,9 @@ mod tests {
 
     use functions::registry::FunctionRegistry;
     use rcgen::generate_simple_self_signed;
+    use runtime_core::isolate::IsolateConfig;
     use rustls::pki_types::ServerName;
     use rustls::{ClientConfig, RootCertStore};
-    use runtime_core::isolate::IsolateConfig;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio_rustls::TlsConnector;
@@ -602,7 +610,12 @@ mod tests {
         ))
     }
 
-    fn make_temp_tls_files() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+    fn make_temp_tls_files() -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Vec<u8>,
+    ) {
         let cert = generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("failed to generate self-signed certificate");
 
@@ -655,9 +668,8 @@ mod tests {
         };
 
         let server_shutdown = shutdown.clone();
-        let server_handle = tokio::spawn(async move {
-            run_server(server_config, registry, server_shutdown).await
-        });
+        let server_handle =
+            tokio::spawn(async move { run_server(server_config, registry, server_shutdown).await });
 
         tokio::time::sleep(Duration::from_millis(120)).await;
 

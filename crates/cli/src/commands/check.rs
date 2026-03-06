@@ -34,10 +34,7 @@ pub fn run(args: CheckArgs) -> Result<(), anyhow::Error> {
 }
 
 pub(crate) fn deno_binary_exists() -> bool {
-    Command::new("deno")
-        .arg("--version")
-        .output()
-        .is_ok()
+    Command::new("deno").arg("--version").output().is_ok()
 }
 
 pub(crate) fn run_deno_check_for_files(files: &[PathBuf]) -> Result<(), anyhow::Error> {
@@ -54,7 +51,9 @@ pub(crate) fn run_deno_check_for_files(files: &[PathBuf]) -> Result<(), anyhow::
         cmd.arg(file);
     }
 
-    let output = cmd.output().map_err(|e| anyhow::anyhow!("failed to run deno check: {e}"))?;
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to run deno check: {e}"))?;
 
     if output.status.success() {
         println!("Check passed for {} file(s)", files.len());
@@ -96,16 +95,18 @@ impl Loader for FileLoader {
                 return Ok(None);
             }
 
-            let path = specifier
-                .to_file_path()
-                .map_err(|()| LoadError::Other(Arc::new(
-                    deno_error::JsErrorBox::generic(format!("invalid file URL: {specifier}"))
-                )))?;
+            let path = specifier.to_file_path().map_err(|()| {
+                LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+                    "invalid file URL: {specifier}"
+                ))))
+            })?;
 
-            let content = std::fs::read(&path)
-                .map_err(|e| LoadError::Other(Arc::new(
-                    deno_error::JsErrorBox::generic(format!("failed to read '{}': {e}", path.display()))
-                )))?;
+            let content = std::fs::read(&path).map_err(|e| {
+                LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+                    "failed to read '{}': {e}",
+                    path.display()
+                ))))
+            })?;
 
             let content = rewrite_edge_assert_imports(content)?;
 
@@ -127,14 +128,17 @@ fn run_syntax_check_for_files(files: &[PathBuf]) -> Result<(), anyhow::Error> {
     rt.block_on(run_syntax_check_for_files_async(files))
 }
 
-pub(crate) async fn run_syntax_check_for_files_async(files: &[PathBuf]) -> Result<(), anyhow::Error> {
+pub(crate) async fn run_syntax_check_for_files_async(
+    files: &[PathBuf],
+) -> Result<(), anyhow::Error> {
     let mut checked = 0usize;
     for file in files {
         let entrypoint = file
             .canonicalize()
             .map_err(|e| anyhow::anyhow!("cannot resolve '{}': {e}", file.display()))?;
-        let root_url = Url::from_file_path(&entrypoint)
-            .map_err(|()| anyhow::anyhow!("cannot convert path to URL: {}", entrypoint.display()))?;
+        let root_url = Url::from_file_path(&entrypoint).map_err(|()| {
+            anyhow::anyhow!("cannot convert path to URL: {}", entrypoint.display())
+        })?;
 
         let loader = FileLoader;
         let analyzer = CapturingModuleAnalyzer::default();
@@ -152,9 +156,9 @@ pub(crate) async fn run_syntax_check_for_files_async(files: &[PathBuf]) -> Resul
             )
             .await;
 
-        graph
-            .valid()
-            .map_err(|e| anyhow::anyhow!("syntax/module graph error for '{}': {e}", file.display()))?;
+        graph.valid().map_err(|e| {
+            anyhow::anyhow!("syntax/module graph error for '{}': {e}", file.display())
+        })?;
 
         checked += 1;
     }
@@ -182,14 +186,18 @@ fn rewrite_edge_assert_imports(content: Vec<u8>) -> Result<Vec<u8>, LoadError> {
     let user_mod_path = cwd.join("crates/runtime-core/src/assert/user_mod.ts");
     let assert_path = cwd.join("crates/runtime-core/src/assert/assert.ts");
 
-    let user_mod_url = Url::from_file_path(&user_mod_path)
-        .map_err(|()| LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(
-            format!("failed to convert '{}' to file URL", user_mod_path.display())
-        ))))?;
-    let assert_url = Url::from_file_path(&assert_path)
-        .map_err(|()| LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(
-            format!("failed to convert '{}' to file URL", assert_path.display())
-        ))))?;
+    let user_mod_url = Url::from_file_path(&user_mod_path).map_err(|()| {
+        LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+            "failed to convert '{}' to file URL",
+            user_mod_path.display()
+        ))))
+    })?;
+    let assert_url = Url::from_file_path(&assert_path).map_err(|()| {
+        LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+            "failed to convert '{}' to file URL",
+            assert_path.display()
+        ))))
+    })?;
 
     let rewritten = source
         .replace("edge://assert/mod.ts", user_mod_url.as_str())
@@ -203,9 +211,7 @@ fn load_edge_assert_module(
 ) -> Result<Option<Vec<u8>>, LoadError> {
     let relative_path = match specifier.as_str() {
         "edge://assert/mod.ts" => {
-            return Ok(Some(
-                b"export * from 'edge://assert/assert.ts';\n".to_vec(),
-            ));
+            return Ok(Some(b"export * from 'edge://assert/assert.ts';\n".to_vec()));
         }
         "edge://assert/assert.ts" => "crates/runtime-core/src/assert/assert.ts",
         _ => return Ok(None),
@@ -228,7 +234,10 @@ fn load_edge_assert_module(
     Ok(Some(content))
 }
 
-fn discover_source_files(path_or_pattern: &str, ignore_patterns: &[String]) -> Result<Vec<PathBuf>, anyhow::Error> {
+fn discover_source_files(
+    path_or_pattern: &str,
+    ignore_patterns: &[String],
+) -> Result<Vec<PathBuf>, anyhow::Error> {
     let cwd = std::env::current_dir()?;
     let candidate = Path::new(path_or_pattern);
 
@@ -247,7 +256,9 @@ fn discover_source_files(path_or_pattern: &str, ignore_patterns: &[String]) -> R
 
     let ignore_matchers = compile_patterns(ignore_patterns)?;
 
-    files.retain(|path| is_supported_source_file(path) && !matches_ignore(path, &cwd, &ignore_matchers));
+    files.retain(|path| {
+        is_supported_source_file(path) && !matches_ignore(path, &cwd, &ignore_matchers)
+    });
 
     files.sort();
     files.dedup();
@@ -261,7 +272,9 @@ fn is_glob_pattern(input: &str) -> bool {
 
 fn collect_glob_matches(pattern: &str) -> Result<Vec<PathBuf>, anyhow::Error> {
     let mut matches = Vec::new();
-    for entry in glob::glob(pattern).map_err(|e| anyhow::anyhow!("invalid glob pattern '{}': {e}", pattern))? {
+    for entry in glob::glob(pattern)
+        .map_err(|e| anyhow::anyhow!("invalid glob pattern '{}': {e}", pattern))?
+    {
         let path = entry.map_err(|e| anyhow::anyhow!("glob read error: {e}"))?;
         if path.is_file() {
             matches.push(path);
@@ -282,14 +295,23 @@ fn walk_directory_for_sources(dir: &Path) -> Vec<PathBuf> {
 fn is_supported_source_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("ts") | Some("js") | Some("mts") | Some("mjs") | Some("tsx") | Some("jsx") | Some("cjs") | Some("cts")
+        Some("ts")
+            | Some("js")
+            | Some("mts")
+            | Some("mjs")
+            | Some("tsx")
+            | Some("jsx")
+            | Some("cjs")
+            | Some("cts")
     )
 }
 
 fn compile_patterns(patterns: &[String]) -> Result<Vec<Pattern>, anyhow::Error> {
     patterns
         .iter()
-        .map(|p| Pattern::new(p).map_err(|e| anyhow::anyhow!("invalid ignore pattern '{}': {e}", p)))
+        .map(|p| {
+            Pattern::new(p).map_err(|e| anyhow::anyhow!("invalid ignore pattern '{}': {e}", p))
+        })
         .collect()
 }
 

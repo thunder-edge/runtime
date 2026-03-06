@@ -113,8 +113,7 @@ async fn build_eszip_async(specifier: &str, source: &str) -> Vec<u8> {
 
 /// Parse eszip bytes into an EszipV2.
 async fn parse_eszip(bytes: &[u8]) -> eszip::EszipV2 {
-    let reader =
-        futures_util::io::BufReader::new(futures_util::io::Cursor::new(bytes.to_vec()));
+    let reader = futures_util::io::BufReader::new(futures_util::io::Cursor::new(bytes.to_vec()));
     let (eszip, loader_fut) = eszip::EszipV2::parse(reader).await.unwrap();
     tokio::spawn(loader_fut);
     eszip
@@ -209,11 +208,12 @@ fn test_terminate_execution_stops_infinite_loop() {
         js_runtime.v8_isolate().cancel_terminate_execution();
 
         // Verify isolate can be reused - execute simple script
-        let check_result = js_runtime.execute_script(
-            "<reuse_check>",
-            deno_core::ascii_str!("1 + 1"),
+        let check_result =
+            js_runtime.execute_script("<reuse_check>", deno_core::ascii_str!("1 + 1"));
+        assert!(
+            check_result.is_ok(),
+            "isolate should be reusable after cancel_terminate_execution"
         );
-        assert!(check_result.is_ok(), "isolate should be reusable after cancel_terminate_execution");
 
         Ok(())
     });
@@ -242,8 +242,8 @@ fn test_isolate_timeout_returns_504() {
 
     let result: Result<(), String> = rt.block_on(async {
         let bundle = functions::types::BundlePackage::eszip_only(eszip_bytes);
-        let bundle_data = bincode::serialize(&bundle)
-            .map_err(|e| format!("serialize bundle: {e}"))?;
+        let bundle_data =
+            bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
 
         let mut config = IsolateConfig::default();
         config.wall_clock_timeout_ms = 100;
@@ -276,7 +276,11 @@ fn test_isolate_timeout_returns_504() {
 
         let body_text = String::from_utf8_lossy(response.body()).to_string();
         if response.status() != 504 {
-            return Err(format!("expected 504, got {} body={}", response.status(), body_text));
+            return Err(format!(
+                "expected 504, got {} body={}",
+                response.status(),
+                body_text
+            ));
         }
 
         if !body_text.contains("request timeout") {
@@ -315,8 +319,8 @@ fn test_heap_limit_infinite_allocation_marks_function_error() {
 
     let result: Result<(), String> = rt.block_on(async {
         let bundle = BundlePackage::eszip_only(eszip_bytes);
-        let bundle_data = bincode::serialize(&bundle)
-            .map_err(|e| format!("serialize bundle: {e}"))?;
+        let bundle_data =
+            bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
 
         let mut config = IsolateConfig::default();
         config.max_heap_size_bytes = 32 * 1024 * 1024;
@@ -377,7 +381,9 @@ fn test_heap_limit_infinite_allocation_marks_function_error() {
                 }
             }
             if std::time::Instant::now() > deadline {
-                return Err("function was not marked Error after heap-limit termination".to_string());
+                return Err(
+                    "function was not marked Error after heap-limit termination".to_string()
+                );
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
@@ -417,8 +423,8 @@ fn test_panic_followed_by_request_marks_error_and_fails_fast() {
         std::env::set_var("EDGE_RUNTIME_TEST_PANIC_ON_PATH", "/panic-once");
 
         let bundle = BundlePackage::eszip_only(eszip_bytes);
-        let bundle_data = bincode::serialize(&bundle)
-            .map_err(|e| format!("serialize bundle: {e}"))?;
+        let bundle_data =
+            bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
 
         let registry = FunctionRegistry::new(CancellationToken::new(), IsolateConfig::default());
         let _ = registry
@@ -513,8 +519,8 @@ fn test_graceful_shutdown_with_in_flight_request() {
 
     let result: Result<(), String> = rt.block_on(async {
         let bundle = BundlePackage::eszip_only(eszip_bytes);
-        let bundle_data = bincode::serialize(&bundle)
-            .map_err(|e| format!("serialize bundle: {e}"))?;
+        let bundle_data =
+            bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
 
         let registry = Arc::new(FunctionRegistry::new(
             CancellationToken::new(),
@@ -591,10 +597,7 @@ fn test_graceful_shutdown_with_in_flight_request() {
 fn test_timer_tracking_registration() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip(
-        "file:///test_timer_reg.js",
-        "globalThis.__test = true;",
-    );
+    let eszip_bytes = build_eszip("file:///test_timer_reg.js", "globalThis.__test = true;");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -630,26 +633,33 @@ fn test_timer_tracking_registration() {
         let check = js_runtime
             .execute_script(
                 "<check_registry>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     (function() {
                         const timers = globalThis.__edgeRuntime._timerRegistry.get("test-exec-1");
                         return timers && timers.has(globalThis.__testTimerId);
                     })();
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("check registry: {e}"))?;
 
         {
             deno_core::scope!(scope, js_runtime);
             let local_val = check.open(scope);
-            assert!(local_val.is_true(), "timer should be registered in the registry");
+            assert!(
+                local_val.is_true(),
+                "timer should be registered in the registry"
+            );
         }
 
         // Clear timers for execution
         js_runtime
             .execute_script(
                 "<clear_timers>",
-                deno_core::ascii_str!(r#"globalThis.__edgeRuntime.clearExecutionTimers("test-exec-1");"#),
+                deno_core::ascii_str!(
+                    r#"globalThis.__edgeRuntime.clearExecutionTimers("test-exec-1");"#
+                ),
             )
             .map_err(|e| format!("clearExecutionTimers: {e}"))?;
 
@@ -657,12 +667,14 @@ fn test_timer_tracking_registration() {
         let check_cleared = js_runtime
             .execute_script(
                 "<check_cleared>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     (function() {
                         const timers = globalThis.__edgeRuntime._timerRegistry.get("test-exec-1");
                         return timers === undefined;
                     })();
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("check cleared: {e}"))?;
 
@@ -683,10 +695,7 @@ fn test_timer_tracking_registration() {
 fn test_interval_tracking_registration() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip(
-        "file:///test_interval_reg.js",
-        "globalThis.__test = true;",
-    );
+    let eszip_bytes = build_eszip("file:///test_interval_reg.js", "globalThis.__test = true;");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -774,10 +783,7 @@ fn test_interval_tracking_registration() {
 fn test_timer_isolation_between_executions() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip(
-        "file:///test_isolation.js",
-        "globalThis.__test = true;",
-    );
+    let eszip_bytes = build_eszip("file:///test_isolation.js", "globalThis.__test = true;");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -796,10 +802,12 @@ fn test_timer_isolation_between_executions() {
         js_runtime
             .execute_script(
                 "<exec1_start>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     globalThis.__edgeRuntime.startExecution("exec-A");
                     globalThis.__timerA = setTimeout(() => {}, 10000);
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("exec1: {e}"))?;
 
@@ -815,10 +823,12 @@ fn test_timer_isolation_between_executions() {
         js_runtime
             .execute_script(
                 "<exec2_start>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     globalThis.__edgeRuntime.startExecution("exec-B");
                     globalThis.__timerB = setTimeout(() => {}, 10000);
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("exec2: {e}"))?;
 
@@ -826,7 +836,9 @@ fn test_timer_isolation_between_executions() {
         js_runtime
             .execute_script(
                 "<clear_exec2>",
-                deno_core::ascii_str!(r#"globalThis.__edgeRuntime.clearExecutionTimers("exec-B");"#),
+                deno_core::ascii_str!(
+                    r#"globalThis.__edgeRuntime.clearExecutionTimers("exec-B");"#
+                ),
             )
             .map_err(|e| format!("clear exec2: {e}"))?;
 
@@ -834,32 +846,42 @@ fn test_timer_isolation_between_executions() {
         let check_a = js_runtime
             .execute_script(
                 "<check_a>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     globalThis.__edgeRuntime._timerRegistry.get("exec-A") === undefined;
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("check A: {e}"))?;
 
         {
             deno_core::scope!(scope, js_runtime);
             let local_val = check_a.open(scope);
-            assert!(local_val.is_true(), "exec-A registry should be cleared after endExecution");
+            assert!(
+                local_val.is_true(),
+                "exec-A registry should be cleared after endExecution"
+            );
         }
 
         // Verify exec-B's timer registry was cleared
         let check_b = js_runtime
             .execute_script(
                 "<check_b>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     globalThis.__edgeRuntime._timerRegistry.get("exec-B") === undefined;
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("check B: {e}"))?;
 
         {
             deno_core::scope!(scope, js_runtime);
             let local_val = check_b.open(scope);
-            assert!(local_val.is_true(), "exec-B registry should be cleared after clearExecutionTimers");
+            assert!(
+                local_val.is_true(),
+                "exec-B registry should be cleared after clearExecutionTimers"
+            );
         }
 
         Ok(())
@@ -990,7 +1012,10 @@ fn test_isolate_reusable_after_timeout() {
             .map_err(|e| format!("endExecution 2: {e}"))?;
 
         let body = String::from_utf8_lossy(result2.body()).to_string();
-        assert_eq!(body, "ok", "second request should succeed after first timeout");
+        assert_eq!(
+            body, "ok",
+            "second request should succeed after first timeout"
+        );
         assert_eq!(result2.status(), 200, "second request should return 200");
 
         Ok(())
@@ -1004,10 +1029,7 @@ fn test_isolate_reusable_after_timeout() {
 fn test_fetch_abort_controller_tracking() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip(
-        "file:///test_fetch_track.js",
-        "globalThis.__test = true;",
-    );
+    let eszip_bytes = build_eszip("file:///test_fetch_track.js", "globalThis.__test = true;");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1099,10 +1121,7 @@ fn test_fetch_abort_controller_tracking() {
 fn test_promise_tracking_registration() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip(
-        "file:///test_promise_track.js",
-        "globalThis.__test = true;",
-    );
+    let eszip_bytes = build_eszip("file:///test_promise_track.js", "globalThis.__test = true;");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1211,10 +1230,7 @@ fn test_promise_tracking_registration() {
 fn test_original_functions_preserved() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip(
-        "file:///test_originals.js",
-        "globalThis.__test = true;",
-    );
+    let eszip_bytes = build_eszip("file:///test_originals.js", "globalThis.__test = true;");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1233,35 +1249,42 @@ fn test_original_functions_preserved() {
         let check_originals = js_runtime
             .execute_script(
                 "<check_originals>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     typeof globalThis.__originalSetTimeout === 'function' &&
                     typeof globalThis.__originalSetInterval === 'function' &&
                     typeof globalThis.__originalClearTimeout === 'function' &&
                     typeof globalThis.__originalClearInterval === 'function' &&
                     typeof globalThis.__originalFetch === 'function' &&
                     typeof globalThis.__originalQueueMicrotask === 'function';
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("check originals: {e}"))?;
 
         {
             deno_core::scope!(scope, js_runtime);
             let local_val = check_originals.open(scope);
-            assert!(local_val.is_true(), "all original functions should be preserved");
+            assert!(
+                local_val.is_true(),
+                "all original functions should be preserved"
+            );
         }
 
         // Verify wrapped functions exist
         let check_wrapped = js_runtime
             .execute_script(
                 "<check_wrapped>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     typeof globalThis.setTimeout === 'function' &&
                     typeof globalThis.setInterval === 'function' &&
                     typeof globalThis.clearTimeout === 'function' &&
                     typeof globalThis.clearInterval === 'function' &&
                     typeof globalThis.fetch === 'function' &&
                     typeof globalThis.queueMicrotask === 'function';
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("check wrapped: {e}"))?;
 
@@ -1275,18 +1298,23 @@ fn test_original_functions_preserved() {
         let check_different = js_runtime
             .execute_script(
                 "<check_different>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     globalThis.setTimeout !== globalThis.__originalSetTimeout &&
                     globalThis.setInterval !== globalThis.__originalSetInterval &&
                     globalThis.fetch !== globalThis.__originalFetch;
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("check different: {e}"))?;
 
         {
             deno_core::scope!(scope, js_runtime);
             let local_val = check_different.open(scope);
-            assert!(local_val.is_true(), "wrapped functions should be different from originals");
+            assert!(
+                local_val.is_true(),
+                "wrapped functions should be different from originals"
+            );
         }
 
         Ok(())
@@ -1300,10 +1328,7 @@ fn test_original_functions_preserved() {
 fn test_clear_timeout_removes_from_registry() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip(
-        "file:///test_clear_timeout.js",
-        "globalThis.__test = true;",
-    );
+    let eszip_bytes = build_eszip("file:///test_clear_timeout.js", "globalThis.__test = true;");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1322,7 +1347,9 @@ fn test_clear_timeout_removes_from_registry() {
         js_runtime
             .execute_script(
                 "<start_exec>",
-                deno_core::ascii_str!(r#"globalThis.__edgeRuntime.startExecution("test-clear-1");"#),
+                deno_core::ascii_str!(
+                    r#"globalThis.__edgeRuntime.startExecution("test-clear-1");"#
+                ),
             )
             .map_err(|e| format!("startExecution: {e}"))?;
 
@@ -1330,9 +1357,11 @@ fn test_clear_timeout_removes_from_registry() {
         js_runtime
             .execute_script(
                 "<create_and_clear>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     globalThis.__testTimerId = setTimeout(() => {}, 10000);
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("setTimeout: {e}"))?;
 
@@ -1340,19 +1369,24 @@ fn test_clear_timeout_removes_from_registry() {
         let check_before = js_runtime
             .execute_script(
                 "<check_before>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     (function() {
                         const timers = globalThis.__edgeRuntime._timerRegistry.get("test-clear-1");
                         return timers && timers.has(globalThis.__testTimerId);
                     })();
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("check before: {e}"))?;
 
         {
             deno_core::scope!(scope, js_runtime);
             let local_val = check_before.open(scope);
-            assert!(local_val.is_true(), "timer should be in registry before clearTimeout");
+            assert!(
+                local_val.is_true(),
+                "timer should be in registry before clearTimeout"
+            );
         }
 
         // Clear the timer
@@ -1367,19 +1401,24 @@ fn test_clear_timeout_removes_from_registry() {
         let check_after = js_runtime
             .execute_script(
                 "<check_after>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     (function() {
                         const timers = globalThis.__edgeRuntime._timerRegistry.get("test-clear-1");
                         return timers && !timers.has(globalThis.__testTimerId);
                     })();
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("check after: {e}"))?;
 
         {
             deno_core::scope!(scope, js_runtime);
             let local_val = check_after.open(scope);
-            assert!(local_val.is_true(), "timer should be removed from registry after clearTimeout");
+            assert!(
+                local_val.is_true(),
+                "timer should be removed from registry after clearTimeout"
+            );
         }
 
         Ok(())
@@ -1627,10 +1666,7 @@ fn test_multiple_requests_after_timeout() {
 fn test_nested_timers_tracking() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip(
-        "file:///test_nested.js",
-        "globalThis.__test = true;",
-    );
+    let eszip_bytes = build_eszip("file:///test_nested.js", "globalThis.__test = true;");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1725,10 +1761,7 @@ fn test_nested_timers_tracking() {
 fn test_timer_callback_removes_from_registry() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip(
-        "file:///test_callback.js",
-        "globalThis.__test = true;",
-    );
+    let eszip_bytes = build_eszip("file:///test_callback.js", "globalThis.__test = true;");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

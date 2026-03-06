@@ -97,9 +97,9 @@ pub struct FunctionMetrics {
     pub active_requests: AtomicU64,
     pub total_errors: AtomicU64,
     pub total_cpu_time_ms: AtomicU64,
-    pub cold_start_count: AtomicU64,              // Total de cold starts (inicializações)
-    pub total_cold_start_time_ms: AtomicU64,      // Tempo acumulado de cold start (ms)
-    pub total_warm_start_time_ms: AtomicU64,      // Tempo acumulado de requisições após boot (ms)
+    pub cold_start_count: AtomicU64, // Total de cold starts (inicializações)
+    pub total_cold_start_time_ms: AtomicU64, // Tempo acumulado de cold start (ms)
+    pub total_warm_start_time_ms: AtomicU64, // Tempo acumulado de requisições após boot (ms)
 }
 
 impl Default for FunctionMetrics {
@@ -156,11 +156,11 @@ pub struct FunctionMetricsSnapshot {
     pub active_requests: u64,
     pub total_errors: u64,
     pub total_cpu_time_ms: u64,
-    pub cold_starts: u64,                       // Total de cold starts
-    pub avg_cold_start_ms: u64,                 // Média de cold start (ms)
-    pub total_cold_start_time_ms: u64,          // Tempo total de cold start (ms)
-    pub total_warm_start_time_ms: u64,          // Tempo total de requisições após boot (ms)
-    pub avg_warm_request_ms: u64,               // Média de requisição warm start (ms)
+    pub cold_starts: u64,              // Total de cold starts
+    pub avg_cold_start_ms: u64,        // Média de cold start (ms)
+    pub total_cold_start_time_ms: u64, // Tempo total de cold start (ms)
+    pub total_warm_start_time_ms: u64, // Tempo total de requisições após boot (ms)
+    pub avg_warm_request_ms: u64,      // Média de requisição warm start (ms)
 }
 
 /// A single deployed function entry.
@@ -248,10 +248,22 @@ mod tests {
 
     #[test]
     fn function_status_snake_case() {
-        assert_eq!(serde_json::to_string(&FunctionStatus::Loading).unwrap(), "\"loading\"");
-        assert_eq!(serde_json::to_string(&FunctionStatus::Running).unwrap(), "\"running\"");
-        assert_eq!(serde_json::to_string(&FunctionStatus::Error).unwrap(), "\"error\"");
-        assert_eq!(serde_json::to_string(&FunctionStatus::ShuttingDown).unwrap(), "\"shutting_down\"");
+        assert_eq!(
+            serde_json::to_string(&FunctionStatus::Loading).unwrap(),
+            "\"loading\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FunctionStatus::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FunctionStatus::Error).unwrap(),
+            "\"error\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FunctionStatus::ShuttingDown).unwrap(),
+            "\"shutting_down\""
+        );
     }
 
     #[test]

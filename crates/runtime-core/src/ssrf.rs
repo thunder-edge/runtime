@@ -14,16 +14,16 @@ use serde::{Deserialize, Serialize};
 /// - Reserved addresses
 pub const DEFAULT_DENY_RANGES: &[&str] = &[
     // IPv4 private ranges
-    "127.0.0.0/8",   // Loopback
-    "10.0.0.0/8",    // Private Class A (RFC 1918)
-    "172.16.0.0/12", // Private Class B (RFC 1918)
+    "127.0.0.0/8",    // Loopback
+    "10.0.0.0/8",     // Private Class A (RFC 1918)
+    "172.16.0.0/12",  // Private Class B (RFC 1918)
     "192.168.0.0/16", // Private Class C (RFC 1918)
     "169.254.0.0/16", // Link-local / Cloud metadata (AWS, GCP, Azure)
-    "0.0.0.0/8",     // "This" network (reserved)
+    "0.0.0.0/8",      // "This" network (reserved)
     // IPv6 equivalents
-    "[::1]",     // Loopback
-    // NOTE: deno_permissions net descriptor parser in this version does not
-    // support IPv6 CIDR entries here (for example, fc00::/7, fe80::/10).
+    "[::1]", // Loopback
+             // NOTE: deno_permissions net descriptor parser in this version does not
+             // support IPv6 CIDR entries here (for example, fc00::/7, fe80::/10).
 ];
 
 /// SSRF protection configuration.
@@ -78,12 +78,7 @@ impl SsrfConfig {
             return None;
         }
 
-        Some(
-            DEFAULT_DENY_RANGES
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-        )
+        Some(DEFAULT_DENY_RANGES.iter().map(|s| s.to_string()).collect())
     }
 
     /// Build the allow_net list for Deno permissions.
@@ -126,10 +121,8 @@ mod tests {
 
     #[test]
     fn config_with_exceptions() {
-        let config = SsrfConfig::with_exceptions(vec![
-            "10.1.0.0/16".to_string(),
-            "10.2.0.0/16".to_string(),
-        ]);
+        let config =
+            SsrfConfig::with_exceptions(vec!["10.1.0.0/16".to_string(), "10.2.0.0/16".to_string()]);
         assert!(config.enabled);
         assert_eq!(config.allow_private_subnets.len(), 2);
         assert!(config.build_deny_net().is_some());

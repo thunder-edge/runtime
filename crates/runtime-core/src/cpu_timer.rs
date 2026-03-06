@@ -71,15 +71,14 @@ impl CpuTimer {
         let started_wall = self.started_wall.take();
         let started_cpu_ns = self.started_cpu_ns.take();
 
-        let elapsed = if let (Some(cpu_start), Some(cpu_now)) =
-            (started_cpu_ns, thread_cpu_time_nanos())
-        {
-            nanos_to_millis_saturating(cpu_now.saturating_sub(cpu_start))
-        } else if let Some(started) = started_wall {
-            started.elapsed().as_millis() as u64
-        } else {
-            0
-        };
+        let elapsed =
+            if let (Some(cpu_start), Some(cpu_now)) = (started_cpu_ns, thread_cpu_time_nanos()) {
+                nanos_to_millis_saturating(cpu_now.saturating_sub(cpu_start))
+            } else if let Some(started) = started_wall {
+                started.elapsed().as_millis() as u64
+            } else {
+                0
+            };
 
         self.accumulated_ms = self.accumulated_ms.saturating_add(elapsed);
         if self.limit_ms > 0 && self.accumulated_ms >= self.limit_ms {

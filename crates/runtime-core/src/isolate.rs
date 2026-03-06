@@ -114,7 +114,9 @@ impl IsolateHandle {
     ) -> Result<http::Response<bytes::Bytes>, Error> {
         // Check if isolate is alive before attempting to send
         if !self.is_alive() {
-            return Err(anyhow::anyhow!("isolate is not alive (crashed or shutdown)"));
+            return Err(anyhow::anyhow!(
+                "isolate is not alive (crashed or shutdown)"
+            ));
         }
 
         let (response_tx, response_rx) = oneshot::channel();

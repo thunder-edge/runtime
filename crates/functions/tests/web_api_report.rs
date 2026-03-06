@@ -100,7 +100,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return typeof EventSource === 'function' ? 'partial' : 'none'; })()"#,
             status: String::new(),
         },
-
         // ── URL API ──
         ApiCheck {
             category: "URL API",
@@ -120,7 +119,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { const p = new URLPattern({pathname: '/api/:id'}); const result = p.exec('http://example.com/api/123'); return (result && result.pathname.groups.id === '123') ? 'full' : 'partial'; } catch(e) { return typeof URLPattern === 'function' ? 'partial' : 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── Streams API ──
         ApiCheck {
             category: "Streams API",
@@ -152,7 +150,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { new CountQueuingStrategy({ highWaterMark: 10 }); return 'full'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── Encoding API ──
         ApiCheck {
             category: "Encoding API",
@@ -184,7 +181,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { return (atob(btoa('test')) === 'test') ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── Crypto API ──
         ApiCheck {
             category: "Crypto API",
@@ -210,7 +206,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return typeof CryptoKey === 'function' ? 'full' : 'none'; })()"#,
             status: String::new(),
         },
-
         // ── Console API ──
         ApiCheck {
             category: "Console API",
@@ -224,7 +219,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return (typeof console.table === 'function' && typeof console.trace === 'function' && typeof console.dir === 'function') ? 'full' : 'partial'; })()"#,
             status: String::new(),
         },
-
         // ── Timers API ──
         ApiCheck {
             category: "Timers API",
@@ -238,7 +232,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return (typeof setInterval === 'function' && typeof clearInterval === 'function') ? 'full' : 'none'; })()"#,
             status: String::new(),
         },
-
         // ── Events API ──
         ApiCheck {
             category: "Events API",
@@ -276,7 +269,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { return typeof PromiseRejectionEvent === 'function' ? 'full' : 'none'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── DOM API ──
         ApiCheck {
             category: "DOM API",
@@ -290,7 +282,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { const obj = {a: 1, b: [2,3], c: new Date()}; const clone = structuredClone(obj); return (clone.a === 1 && clone.b[1] === 3 && clone !== obj && clone.c instanceof Date) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── File API ──
         ApiCheck {
             category: "File API",
@@ -310,7 +301,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return typeof FileReader === 'function' ? 'partial' : 'none'; })()"#,
             status: String::new(),
         },
-
         // ── Compression API ──
         ApiCheck {
             category: "Compression API",
@@ -324,7 +314,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { const ds = new DecompressionStream('gzip'); return (ds.readable instanceof ReadableStream && ds.writable instanceof WritableStream) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── Performance API ──
         ApiCheck {
             category: "Performance API",
@@ -338,7 +327,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { return (typeof PerformanceMark === 'function' && typeof PerformanceMeasure === 'function') ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── Messaging API ──
         ApiCheck {
             category: "Messaging API",
@@ -352,7 +340,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { const id = new ImageData(2, 2); return (id.width === 2 && id.height === 2 && id.data.length === 16) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── HTMLRewriter API ──
         ApiCheck {
             category: "HTML Rewriter",
@@ -360,7 +347,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return typeof HTMLRewriter === 'function' ? 'full' : 'none'; })()"#,
             status: String::new(),
         },
-
         // ── Non-Standard APIs ──
         ApiCheck {
             category: "Non-Standard APIs",
@@ -392,7 +378,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { return (typeof crypto === 'object' && crypto.subtle && typeof crypto.subtle.generateKey === 'function' && typeof crypto.subtle.sign === 'function' && typeof crypto.subtle.verify === 'function') ? 'partial' : 'none'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── General Capabilities ──
         ApiCheck {
             category: "General Capabilities",
@@ -418,7 +403,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return (typeof Deno === 'object' && typeof Deno.upgradeWebSocket === 'function') ? 'full' : 'none'; })()"#,
             status: String::new(),
         },
-
         // ── Typed Arrays ──
         ApiCheck {
             category: "Typed Arrays",
@@ -438,7 +422,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { return (new ArrayBuffer(16).byteLength === 16 && new DataView(new ArrayBuffer(8)).byteLength === 8) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── JSON API ──
         ApiCheck {
             category: "JSON API",
@@ -446,7 +429,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { return (JSON.parse(JSON.stringify({a: 1})).a === 1) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── Promise API ──
         ApiCheck {
             category: "Promise API",
@@ -454,7 +436,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { return (new Promise(r => r(42)) instanceof Promise) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── Collections ──
         ApiCheck {
             category: "Collections",
@@ -468,7 +449,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return (typeof WeakMap === 'function' && typeof WeakSet === 'function') ? 'full' : 'partial'; })()"#,
             status: String::new(),
         },
-
         // ── Symbol API ──
         ApiCheck {
             category: "Symbol API",
@@ -476,7 +456,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return (typeof Symbol === 'function' && typeof Symbol('test') === 'symbol') ? 'full' : 'partial'; })()"#,
             status: String::new(),
         },
-
         // ── Proxy & Reflect ──
         ApiCheck {
             category: "Proxy & Reflect",
@@ -490,7 +469,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return (typeof Reflect === 'object' && typeof Reflect.get === 'function') ? 'full' : 'partial'; })()"#,
             status: String::new(),
         },
-
         // ── Generator & Async ──
         ApiCheck {
             category: "Generators & Async",
@@ -504,7 +482,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { try { async function test() { return 42; } return (test() instanceof Promise) ? 'full' : 'partial'; } catch(e) { return 'none'; } })()"#,
             status: String::new(),
         },
-
         // ── String & Array methods ──
         ApiCheck {
             category: "String & Array Methods",
@@ -524,7 +501,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { const obj = {a: 1, b: 2}; return (Object.keys(obj).length === 2 && Object.values(obj)[0] === 1) ? 'full' : 'partial'; })()"#,
             status: String::new(),
         },
-
         // ── Intl API ──
         ApiCheck {
             category: "Intl API",
@@ -532,7 +508,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return (typeof Intl === 'object' && typeof Intl.Collator === 'function' && typeof Intl.DateTimeFormat === 'function' && typeof Intl.NumberFormat === 'function') ? 'full' : 'partial'; })()"#,
             status: String::new(),
         },
-
         // ── URL enhancements ──
         ApiCheck {
             category: "URL API",
@@ -540,7 +515,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return (typeof URL.parse === 'function' && URL.parse('https://example.com') !== null) ? 'full' : 'partial'; })()"#,
             status: String::new(),
         },
-
         // ── Math & Date ──
         ApiCheck {
             category: "Built-in Objects",
@@ -560,7 +534,6 @@ fn define_checks() -> Vec<ApiCheck> {
             js_check: r#"(() => { return ((/test/).test('test') === true) ? 'full' : 'partial'; })()"#,
             status: String::new(),
         },
-
         // ── NOT IMPLEMENTED ──
         ApiCheck {
             category: "WebSocket API",
@@ -631,7 +604,11 @@ fn generate_web_standards_report() {
     let mut report = String::new();
     writeln!(report, "# Web Standards Compatibility Report").unwrap();
     writeln!(report).unwrap();
-    writeln!(report, "> Auto-generated by `web_api_report` test. Do not edit manually.").unwrap();
+    writeln!(
+        report,
+        "> Auto-generated by `web_api_report` test. Do not edit manually."
+    )
+    .unwrap();
     writeln!(report).unwrap();
 
     // Summary
@@ -639,9 +616,24 @@ fn generate_web_standards_report() {
     writeln!(report).unwrap();
     writeln!(report, "| Status | Count | Percentage |").unwrap();
     writeln!(report, "|--------|------:|------------|").unwrap();
-    writeln!(report, "| Full | {full} | {:.0}% |", full as f64 / total as f64 * 100.0).unwrap();
-    writeln!(report, "| Partial | {partial} | {:.0}% |", partial as f64 / total as f64 * 100.0).unwrap();
-    writeln!(report, "| None | {none} | {:.0}% |", none as f64 / total as f64 * 100.0).unwrap();
+    writeln!(
+        report,
+        "| Full | {full} | {:.0}% |",
+        full as f64 / total as f64 * 100.0
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "| Partial | {partial} | {:.0}% |",
+        partial as f64 / total as f64 * 100.0
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "| None | {none} | {:.0}% |",
+        none as f64 / total as f64 * 100.0
+    )
+    .unwrap();
     writeln!(report, "| **Total** | **{total}** | **100%** |").unwrap();
     writeln!(report).unwrap();
 
@@ -688,7 +680,11 @@ fn generate_web_standards_report() {
         let cat_partial = cat_checks.iter().filter(|c| c.status == "partial").count();
         let cat_none = cat_checks.iter().filter(|c| c.status == "none").count();
         let cat_total = cat_checks.len();
-        writeln!(report, "| {cat} | {cat_full} | {cat_partial} | {cat_none} | {cat_total} |").unwrap();
+        writeln!(
+            report,
+            "| {cat} | {cat_full} | {cat_partial} | {cat_none} | {cat_total} |"
+        )
+        .unwrap();
     }
     writeln!(report).unwrap();
 
@@ -700,14 +696,30 @@ fn generate_web_standards_report() {
     writeln!(report, "- `deno_webidl` - WebIDL bindings").unwrap();
     writeln!(report, "- `deno_console` - Console API").unwrap();
     writeln!(report, "- `deno_url` - URL / URLSearchParams / URLPattern").unwrap();
-    writeln!(report, "- `deno_web` - Web APIs (Events, Timers, Streams, Encoding, Blob, File, etc.)").unwrap();
+    writeln!(
+        report,
+        "- `deno_web` - Web APIs (Events, Timers, Streams, Encoding, Blob, File, etc.)"
+    )
+    .unwrap();
     writeln!(report, "- `deno_crypto` - Web Crypto API").unwrap();
     writeln!(report, "- `deno_telemetry` - OpenTelemetry support").unwrap();
-    writeln!(report, "- `deno_fetch` - Fetch API (Headers, Request, Response, fetch)").unwrap();
+    writeln!(
+        report,
+        "- `deno_fetch` - Fetch API (Headers, Request, Response, fetch)"
+    )
+    .unwrap();
     writeln!(report, "- `deno_net` - TCP/TLS networking").unwrap();
     writeln!(report, "- `deno_tls` - TLS support").unwrap();
-    writeln!(report, "- `edge_bootstrap` - Bootstrap module that wires everything to globalThis").unwrap();
-    writeln!(report, "- `edge_assert` - Optional test helpers extension (loaded only in CLI test mode)").unwrap();
+    writeln!(
+        report,
+        "- `edge_bootstrap` - Bootstrap module that wires everything to globalThis"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "- `edge_assert` - Optional test helpers extension (loaded only in CLI test mode)"
+    )
+    .unwrap();
     writeln!(report).unwrap();
 
     // write to file

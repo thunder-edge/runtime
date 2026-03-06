@@ -19,7 +19,7 @@ pub struct BodyLimitsConfig {
 impl Default for BodyLimitsConfig {
     fn default() -> Self {
         Self {
-            max_request_body_bytes: 5 * 1024 * 1024,  // 5 MiB
+            max_request_body_bytes: 5 * 1024 * 1024,   // 5 MiB
             max_response_body_bytes: 10 * 1024 * 1024, // 10 MiB
         }
     }
@@ -40,11 +40,7 @@ impl std::fmt::Display for BodyLimitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BodyLimitError::ContentLengthExceeded { declared, limit } => {
-                write!(
-                    f,
-                    "Content-Length {} exceeds limit {}",
-                    declared, limit
-                )
+                write!(f, "Content-Length {} exceeds limit {}", declared, limit)
             }
             BodyLimitError::LimitExceeded => {
                 write!(f, "request body too large")
@@ -62,10 +58,7 @@ impl std::error::Error for BodyLimitError {}
 ///
 /// Returns `Ok(())` if the Content-Length is within limits or not specified.
 /// Returns `Err(BodyLimitError::ContentLengthExceeded)` if it exceeds the limit.
-pub fn check_content_length<B>(
-    req: &Request<B>,
-    max_bytes: usize,
-) -> Result<(), BodyLimitError> {
+pub fn check_content_length<B>(req: &Request<B>, max_bytes: usize) -> Result<(), BodyLimitError> {
     if let Some(content_length) = req.headers().get(CONTENT_LENGTH) {
         if let Ok(length_str) = content_length.to_str() {
             if let Ok(length) = length_str.parse::<u64>() {
@@ -122,10 +115,7 @@ pub fn payload_too_large_response(limit_bytes: usize) -> Response<Full<Bytes>> {
 }
 
 /// Check response body size and return error response if exceeded.
-pub fn check_response_body_size(
-    body: &Bytes,
-    max_bytes: usize,
-) -> Option<Response<Full<Bytes>>> {
+pub fn check_response_body_size(body: &Bytes, max_bytes: usize) -> Option<Response<Full<Bytes>>> {
     if body.len() > max_bytes {
         let limit_mib = max_bytes as f64 / (1024.0 * 1024.0);
         let error_body = format!(

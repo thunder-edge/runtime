@@ -1,16 +1,16 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use clap::Args;
 use deno_ast::{EmitOptions, TranspileOptions};
-use deno_graph::source::{LoadError, LoadOptions, LoadResponse, Loader};
 use deno_graph::ast::CapturingModuleAnalyzer;
+use deno_graph::source::{LoadError, LoadOptions, LoadResponse, Loader};
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph};
-use tokio_util::sync::CancellationToken;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use url::Url;
 
@@ -43,7 +43,11 @@ pub struct WatchArgs {
     cpu_time_limit_ms: u64,
 
     /// Default wall clock timeout per request in ms (0 = unlimited)
-    #[arg(long, default_value_t = 60000, env = "EDGE_RUNTIME_WALL_CLOCK_TIMEOUT_MS")]
+    #[arg(
+        long,
+        default_value_t = 60000,
+        env = "EDGE_RUNTIME_WALL_CLOCK_TIMEOUT_MS"
+    )]
     wall_clock_timeout_ms: u64,
 
     /// Enable V8 inspector protocol in watch mode (optional base port, default: 9229)
@@ -88,16 +92,18 @@ impl Loader for FileLoader {
                 return Ok(None);
             }
 
-            let path = specifier
-                .to_file_path()
-                .map_err(|()| LoadError::Other(Arc::new(
-                    deno_error::JsErrorBox::generic(format!("invalid file URL: {specifier}"))
-                )))?;
+            let path = specifier.to_file_path().map_err(|()| {
+                LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+                    "invalid file URL: {specifier}"
+                ))))
+            })?;
 
-            let content = std::fs::read(&path)
-                .map_err(|e| LoadError::Other(Arc::new(
-                    deno_error::JsErrorBox::generic(format!("failed to read '{}': {e}", path.display()))
-                )))?;
+            let content = std::fs::read(&path).map_err(|e| {
+                LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+                    "failed to read '{}': {e}",
+                    path.display()
+                ))))
+            })?;
 
             let content = rewrite_edge_assert_imports(content)?;
 
@@ -126,14 +132,18 @@ fn rewrite_edge_assert_imports(content: Vec<u8>) -> Result<Vec<u8>, LoadError> {
     let user_mod_path = cwd.join("crates/runtime-core/src/assert/user_mod.ts");
     let assert_path = cwd.join("crates/runtime-core/src/assert/assert.ts");
 
-    let user_mod_url = Url::from_file_path(&user_mod_path)
-        .map_err(|()| LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(
-            format!("failed to convert '{}' to file URL", user_mod_path.display())
-        ))))?;
-    let assert_url = Url::from_file_path(&assert_path)
-        .map_err(|()| LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(
-            format!("failed to convert '{}' to file URL", assert_path.display())
-        ))))?;
+    let user_mod_url = Url::from_file_path(&user_mod_path).map_err(|()| {
+        LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+            "failed to convert '{}' to file URL",
+            user_mod_path.display()
+        ))))
+    })?;
+    let assert_url = Url::from_file_path(&assert_path).map_err(|()| {
+        LoadError::Other(Arc::new(deno_error::JsErrorBox::generic(format!(
+            "failed to convert '{}' to file URL",
+            assert_path.display()
+        ))))
+    })?;
 
     let rewritten = source
         .replace("edge://assert/mod.ts", user_mod_url.as_str())
@@ -341,18 +351,14 @@ async fn load_and_deploy_functions(
 
     let mut inspect_index: u16 = 0;
     for file_path in source_files.iter() {
-
         // Skip node_modules, dist, build, etc.
-        if file_path
-            .components()
-            .any(|c| {
-                let s = c.as_os_str().to_string_lossy();
-                matches!(
-                    s.as_ref(),
-                    "node_modules" | "dist" | "build" | ".next" | ".deno" | "target"
-                )
-            })
-        {
+        if file_path.components().any(|c| {
+            let s = c.as_os_str().to_string_lossy();
+            matches!(
+                s.as_ref(),
+                "node_modules" | "dist" | "build" | ".next" | ".deno" | "target"
+            )
+        }) {
             continue;
         }
 
@@ -364,7 +370,10 @@ async fn load_and_deploy_functions(
         // If watch target is a single file, strip_prefix(path) becomes empty,
         // so we fallback to the filename to keep stable names like "hello".
         let relative_path = if path.is_file() {
-            file_path.file_name().map(Path::new).unwrap_or(file_path.as_path())
+            file_path
+                .file_name()
+                .map(Path::new)
+                .unwrap_or(file_path.as_path())
         } else {
             file_path.strip_prefix(path).unwrap_or(file_path.as_path())
         };
@@ -397,15 +406,15 @@ async fn load_and_deploy_functions(
 
                 // Try to deploy (or update if exists)
                 match registry
-                    .deploy(func_name.clone(), bytes.clone(), Some(function_config.clone()))
+                    .deploy(
+                        func_name.clone(),
+                        bytes.clone(),
+                        Some(function_config.clone()),
+                    )
                     .await
                 {
                     Ok(_info) => {
-                        println!(
-                            "✅ Deployed: {} ({} bytes)",
-                            func_name,
-                            bytes.len()
-                        );
+                        println!("✅ Deployed: {} ({} bytes)", func_name, bytes.len());
                         if let Some(port) = inspect_port {
                             let host = if function_config.inspect_allow_remote {
                                 "0.0.0.0"
@@ -482,7 +491,9 @@ async fn bundle_file(file_path: &Path) -> anyhow::Result<Vec<u8>> {
         )
         .await;
 
-    graph.valid().map_err(|e| anyhow::anyhow!("module graph error: {e}"))?;
+    graph
+        .valid()
+        .map_err(|e| anyhow::anyhow!("module graph error: {e}"))?;
 
     // Create eszip from graph
     let eszip = eszip::EszipV2::from_graph(eszip::FromGraphOptions {

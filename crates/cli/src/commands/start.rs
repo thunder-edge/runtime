@@ -67,7 +67,11 @@ pub struct StartArgs {
     // Security Options
     // ─────────────────────────────────────────────────────────────────────────
     /// Disable SSRF protection (allows fetch to private IPs) - NOT recommended for production
-    #[arg(long, default_value_t = false, env = "EDGE_RUNTIME_DISABLE_SSRF_PROTECTION")]
+    #[arg(
+        long,
+        default_value_t = false,
+        env = "EDGE_RUNTIME_DISABLE_SSRF_PROTECTION"
+    )]
     disable_ssrf_protection: bool,
 
     /// Allow specific private subnets despite SSRF protection (comma-separated CIDRs).
@@ -113,11 +117,20 @@ pub struct StartArgs {
     cpu_time_limit_ms: u64,
 
     /// Default wall clock timeout per request in ms (0 = unlimited)
-    #[arg(long, default_value_t = 60000, env = "EDGE_RUNTIME_WALL_CLOCK_TIMEOUT_MS")]
+    #[arg(
+        long,
+        default_value_t = 60000,
+        env = "EDGE_RUNTIME_WALL_CLOCK_TIMEOUT_MS"
+    )]
     wall_clock_timeout_ms: u64,
 
     /// Source map handling for modules loaded from eszip
-    #[arg(long, value_enum, default_value = "none", env = "EDGE_RUNTIME_SOURCE_MAP")]
+    #[arg(
+        long,
+        value_enum,
+        default_value = "none",
+        env = "EDGE_RUNTIME_SOURCE_MAP"
+    )]
     sourcemap: SourceMapMode,
 }
 
@@ -180,7 +193,9 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
 
         // Spawn signal handler
         let shutdown_signal = shutdown.clone();
-        tokio::spawn(edge_server::graceful::wait_for_shutdown_signal(shutdown_signal));
+        tokio::spawn(edge_server::graceful::wait_for_shutdown_signal(
+            shutdown_signal,
+        ));
 
         // Build body limits config
         let body_limits = edge_server::BodyLimitsConfig {
@@ -189,8 +204,7 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
         };
 
         // Build admin listener config
-        let admin_addr: SocketAddr =
-            format!("{}:{}", args.admin_host, args.admin_port).parse()?;
+        let admin_addr: SocketAddr = format!("{}:{}", args.admin_host, args.admin_port).parse()?;
         let admin_tls = match (&args.admin_tls_cert, &args.admin_tls_key) {
             (Some(cert), Some(key)) => Some(edge_server::TlsConfig {
                 cert_path: cert.clone(),

@@ -171,7 +171,9 @@ mod tests {
     fn parse_invalid_traceparent_rejects() {
         assert!(parse_traceparent("bad").is_none());
         assert!(parse_traceparent("00-xyz-00f067aa0ba902b7-01").is_none());
-        assert!(parse_traceparent("00-00000000000000000000000000000000-00f067aa0ba902b7-01").is_none());
+        assert!(
+            parse_traceparent("00-00000000000000000000000000000000-00f067aa0ba902b7-01").is_none()
+        );
     }
 
     #[test]

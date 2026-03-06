@@ -38,11 +38,7 @@ fn main() -> Result<(), anyhow::Error> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Initialize tracing
-    let env_filter = if cli.verbose {
-        "debug"
-    } else {
-        "info"
-    };
+    let env_filter = if cli.verbose { "debug" } else { "info" };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
