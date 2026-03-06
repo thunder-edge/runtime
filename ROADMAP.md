@@ -369,26 +369,6 @@ Política de correlação: `correlation-id` = `trace_id`.
 
 > Evolução de features e hardening avançado.
 
-### 3.1 Permissões por Função
-
-- [x] Cada função declara capabilities necessárias (rede, hosts específicos, APIs)
-- [ ] Filtrar extensões carregadas por capability
-- [x] Criar `PermissionsContainer` imutável por função
-- [x] API de deploy aceita campo `permissions` no manifest
-
-**Status:** 🚧 Em andamento
-
-Implementação atual:
-- Schema base + manifest (`draft 2020-12`) em `schemas/`
-- Validação de manifest no deploy/update via header `x-function-manifest-b64`
-- Seleção de perfil via `x-function-manifest-profile` com merge sobre base
-- Bloqueio explícito de entradas em `network.allow` que colidem com denylist SSRF interna
-- Enforcement runtime por função:
-    - `network.allow` aplicado em `PermissionsContainer` por função
-    - `env.allow` + `env.secretRefs` aplicado como allowlist de env por função
-- Persistência do manifest resolvido em deploy/update e reaplicação em hot-reload
-- Recursos (`resources`) do manifest aplicados ao `IsolateConfig` na criação do isolate
-
 ### 3.2 Streaming de Response Body
 
 - [x] Substituir `bytes::Bytes` por body streaming no caminho de resposta HTTP
