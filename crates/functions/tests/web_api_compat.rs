@@ -110,6 +110,27 @@ fn fetch_function_exists() {
 }
 
 #[test]
+fn fetch_global_is_immutable() {
+    assert_js_true(
+        "(() => {
+            const original = globalThis.fetch;
+            let threw = false;
+            try {
+                globalThis.fetch = () => new Response('mutated');
+            } catch (_e) {
+                threw = true;
+            }
+            const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+            return typeof original === 'function' &&
+              globalThis.fetch === original &&
+              descriptor && descriptor.writable === false && descriptor.configurable === false &&
+              (threw || true);
+        })()",
+        "fetch global is immutable",
+    );
+}
+
+#[test]
 fn fetch_formdata_constructor() {
     assert_js_true(
         "typeof FormData === 'function' && (() => { const fd = new FormData(); fd.append('k','v'); return fd.get('k') === 'v'; })()",

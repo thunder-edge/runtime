@@ -340,12 +340,14 @@ Política de correlação: `correlation-id` = `trace_id`.
 **Crate:** `runtime-core`
 **Arquivo:** `crates/runtime-core/src/bootstrap.js`
 
-- [ ] Após atribuir todas as APIs a `globalThis`, aplicar `Object.freeze()` nos critiais:
+- [x] Após atribuir todas as APIs a `globalThis`, aplicar `Object.freeze()` nos critiais:
   - `fetch`, `Request`, `Response`, `Headers`
   - `crypto`, `URL`, `URLSearchParams`
   - `TextEncoder`, `TextDecoder`
   - `console`
-- [ ] Testar que user code não consegue sobrescrever `globalThis.fetch`
+- [x] Testar que user code não consegue sobrescrever `globalThis.fetch`
+
+**Status:** ✅ Concluído
 
 ---
 

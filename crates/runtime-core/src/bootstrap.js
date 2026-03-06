@@ -283,3 +283,45 @@ if (globalThis.Deno) {
 // Note: These should be done carefully as some libraries need them
 // delete globalThis.eval;
 // delete globalThis.Function;
+
+// === GLOBAL HARDENING ===
+// Lock down critical API references so user code cannot overwrite runtime
+// primitives like fetch/Request/crypto/console.
+function defineImmutableGlobal(name) {
+  if (!(name in globalThis)) return;
+  const value = globalThis[name];
+  Object.defineProperty(globalThis, name, {
+    value,
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+}
+
+const criticalGlobalNames = [
+  "fetch",
+  "Request",
+  "Response",
+  "Headers",
+  "crypto",
+  "URL",
+  "URLSearchParams",
+  "TextEncoder",
+  "TextDecoder",
+  "console",
+];
+
+for (const name of criticalGlobalNames) {
+  defineImmutableGlobal(name);
+}
+
+for (const name of criticalGlobalNames) {
+  const target = globalThis[name];
+  if ((typeof target === "object" && target !== null) || typeof target === "function") {
+    try {
+      Object.freeze(target);
+    } catch {
+      // Best-effort freeze: some native objects may reject freezing.
+    }
+  }
+}
