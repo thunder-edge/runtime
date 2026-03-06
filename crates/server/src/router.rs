@@ -1,9 +1,11 @@
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
+use tokio::sync::RwLock;
 use tracing::error;
 
 use functions::registry::FunctionRegistry;
@@ -17,6 +19,51 @@ use crate::middleware::{RateLimitLayer, rate_limit_layer, rate_limited_response}
 type BoxBody = Full<Bytes>;
 const MAX_LOG_ERROR_BYTES: usize = 1024;
 const MAX_FUNCTION_NAME_LEN: usize = 63;
+pub const METRICS_CACHE_TTL_SECS: u64 = 15;
+
+#[derive(Clone, Debug)]
+struct CachedMetrics {
+    body: String,
+    cached_at: Instant,
+}
+
+/// In-memory cache for the expensive metrics endpoint computation.
+#[derive(Debug)]
+pub struct MetricsCache {
+    ttl: Duration,
+    entry: RwLock<Option<CachedMetrics>>,
+}
+
+impl MetricsCache {
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entry: RwLock::new(None),
+        }
+    }
+
+    pub async fn get_or_compute<F>(&self, build_body: F) -> String
+    where
+        F: FnOnce() -> String,
+    {
+        {
+            let read = self.entry.read().await;
+            if let Some(cached) = &*read {
+                if cached.cached_at.elapsed() < self.ttl {
+                    return cached.body.clone();
+                }
+            }
+        }
+
+        let body = build_body();
+        let mut write = self.entry.write().await;
+        *write = Some(CachedMetrics {
+            body: body.clone(),
+            cached_at: Instant::now(),
+        });
+        body
+    }
+}
 
 fn truncate_for_log(message: &str, max_bytes: usize) -> String {
     if message.len() <= max_bytes {
@@ -55,6 +102,7 @@ pub struct Router {
     registry: Arc<FunctionRegistry>,
     body_limits: BodyLimitsConfig,
     rate_limiter: Option<RateLimitLayer>,
+    metrics_cache: Arc<MetricsCache>,
 }
 
 impl Router {
@@ -67,6 +115,7 @@ impl Router {
             registry,
             body_limits,
             rate_limiter: rate_limit_rps.map(rate_limit_layer),
+            metrics_cache: Arc::new(MetricsCache::new(Duration::from_secs(METRICS_CACHE_TTL_SECS))),
         }
     }
 
@@ -218,62 +267,7 @@ impl Router {
 
             // Metrics
             (Method::GET, "/_internal/metrics") => {
-                let functions = self.registry.list();
-                let total_requests: u64 = functions.iter().map(|f| f.metrics.total_requests).sum();
-                let total_errors: u64 = functions.iter().map(|f| f.metrics.total_errors).sum();
-                let total_cold_starts: u64 = functions.iter().map(|f| f.metrics.cold_starts).sum();
-                let total_cold_start_ms: u64 = functions
-                    .iter()
-                    .map(|f| f.metrics.total_cold_start_time_ms)
-                    .sum();
-                let total_warm_start_ms: u64 = functions
-                    .iter()
-                    .map(|f| f.metrics.total_warm_start_time_ms)
-                    .sum();
-
-                let avg_cold_start_ms = if total_cold_starts > 0 {
-                    total_cold_start_ms / total_cold_starts
-                } else {
-                    0
-                };
-
-                let avg_warm_start_ms = if total_requests > 0 {
-                    total_warm_start_ms / total_requests
-                } else {
-                    0
-                };
-
-                // Get process memory info
-                let mut sys = sysinfo::System::new_all();
-                sys.refresh_processes();
-                let current_pid = sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from(0));
-                let process_memory_mb = sys
-                    .process(current_pid)
-                    .map(|p| p.memory() as f64 / (1024.0 * 1024.0)) // Convert from bytes to MB
-                    .unwrap_or(0.0);
-
-                // Estimate memory per function (simple division)
-                let function_count = self.registry.count();
-                let estimated_memory_per_function_mb = if function_count > 0 {
-                    process_memory_mb / (function_count as f64)
-                } else {
-                    0.0
-                };
-
-                let body = serde_json::json!({
-                    "function_count": function_count,
-                    "total_requests": total_requests,
-                    "total_errors": total_errors,
-                    "total_cold_starts": total_cold_starts,
-                    "avg_cold_start_ms": avg_cold_start_ms,
-                    "avg_warm_start_ms": avg_warm_start_ms,
-                    "memory": {
-                        "process_memory_mb": process_memory_mb,
-                        "estimated_per_function_mb": estimated_memory_per_function_mb
-                    },
-                    "functions": functions,
-                });
-                json_response(StatusCode::OK, &body.to_string())
+                self.handle_metrics().await
             }
 
             // List functions
@@ -295,6 +289,14 @@ impl Router {
 
             _ => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
         }
+    }
+
+    async fn handle_metrics(&self) -> Response<BoxBody> {
+        let body = self
+            .metrics_cache
+            .get_or_compute(|| build_metrics_body(&self.registry))
+            .await;
+        json_response(StatusCode::OK, &body)
     }
 
     /// Deploy a new function: POST /_internal/functions
@@ -515,6 +517,65 @@ pub fn extract_function_and_path(path: &str) -> (&str, String) {
     (function_name, forwarded_path)
 }
 
+pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
+    let functions = registry.list();
+    let total_requests: u64 = functions.iter().map(|f| f.metrics.total_requests).sum();
+    let total_errors: u64 = functions.iter().map(|f| f.metrics.total_errors).sum();
+    let total_cold_starts: u64 = functions.iter().map(|f| f.metrics.cold_starts).sum();
+    let total_cold_start_ms: u64 = functions
+        .iter()
+        .map(|f| f.metrics.total_cold_start_time_ms)
+        .sum();
+    let total_warm_start_ms: u64 = functions
+        .iter()
+        .map(|f| f.metrics.total_warm_start_time_ms)
+        .sum();
+
+    let avg_cold_start_ms = if total_cold_starts > 0 {
+        total_cold_start_ms / total_cold_starts
+    } else {
+        0
+    };
+
+    let avg_warm_start_ms = if total_requests > 0 {
+        total_warm_start_ms / total_requests
+    } else {
+        0
+    };
+
+    // This syscall-heavy section is why caching is needed.
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_processes();
+    let current_pid = sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from(0));
+    let process_memory_mb = sys
+        .process(current_pid)
+        .map(|p| p.memory() as f64 / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
+
+    let function_count = registry.count();
+    let estimated_memory_per_function_mb = if function_count > 0 {
+        process_memory_mb / (function_count as f64)
+    } else {
+        0.0
+    };
+
+    let body = serde_json::json!({
+        "function_count": function_count,
+        "total_requests": total_requests,
+        "total_errors": total_errors,
+        "total_cold_starts": total_cold_starts,
+        "avg_cold_start_ms": avg_cold_start_ms,
+        "avg_warm_start_ms": avg_warm_start_ms,
+        "memory": {
+            "process_memory_mb": process_memory_mb,
+            "estimated_per_function_mb": estimated_memory_per_function_mb
+        },
+        "functions": functions,
+    });
+
+    body.to_string()
+}
+
 /// Validate canonical function name slug format: `^[a-z0-9][a-z0-9-]{0,62}$`.
 pub fn is_valid_function_name(name: &str) -> bool {
     if name.is_empty() || name.len() > MAX_FUNCTION_NAME_LEN {
@@ -590,6 +651,7 @@ pub fn json_response(status: StatusCode, body: &str) -> Response<BoxBody> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn extract_simple() {
@@ -667,5 +729,42 @@ mod tests {
         assert_eq!(slugify_function_name(" My Func_v2 "), "my-func-v2");
         assert_eq!(slugify_function_name("api..gateway///edge"), "api-gateway-edge");
         assert_eq!(normalize_function_name("___hello___"), Some("hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn metrics_cache_reuses_until_ttl_then_refreshes() {
+        let cache = MetricsCache::new(Duration::from_millis(30));
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let c1 = calls.clone();
+        let first = cache
+            .get_or_compute(move || {
+                let n = c1.fetch_add(1, Ordering::SeqCst) + 1;
+                format!("payload-{n}")
+            })
+            .await;
+        assert_eq!(first, "payload-1");
+
+        let c2 = calls.clone();
+        let second = cache
+            .get_or_compute(move || {
+                let n = c2.fetch_add(1, Ordering::SeqCst) + 1;
+                format!("payload-{n}")
+            })
+            .await;
+        assert_eq!(second, "payload-1");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        let c3 = calls.clone();
+        let third = cache
+            .get_or_compute(move || {
+                let n = c3.fetch_add(1, Ordering::SeqCst) + 1;
+                format!("payload-{n}")
+            })
+            .await;
+        assert_eq!(third, "payload-2");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

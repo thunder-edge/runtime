@@ -292,10 +292,12 @@ Nota: benchmark comparativo adicionado como teste `#[ignore]` em `crates/runtime
 **Crate:** `server`
 **Arquivo:** `crates/server/src/router.rs`
 
-- [ ] Criar `MetricsCache` com TTL de 15 segundos
-- [ ] Armazenar resultado de `sysinfo::System` + function metrics
-- [ ] Retornar cache se não expirado
-- [ ] Usar `tokio::sync::RwLock` ou `parking_lot::RwLock`
+- [x] Criar `MetricsCache` com TTL de 15 segundos
+- [x] Armazenar resultado de `sysinfo::System` + function metrics
+- [x] Retornar cache se não expirado
+- [x] Usar `tokio::sync::RwLock` ou `parking_lot::RwLock`
+
+**Status:** ✅ Concluído
 
 ---
 

@@ -2,6 +2,7 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
@@ -13,7 +14,10 @@ use crate::body_limits::{
     check_content_length, collect_body_with_limit, payload_too_large_response, BodyLimitError,
     BodyLimitsConfig,
 };
-use crate::router::{is_valid_function_name, json_response, normalize_function_name};
+use crate::router::{
+    METRICS_CACHE_TTL_SECS, MetricsCache, build_metrics_body, is_valid_function_name,
+    json_response, normalize_function_name,
+};
 
 type BoxBody = Full<Bytes>;
 
@@ -27,6 +31,7 @@ pub struct AdminRouter {
     registry: Arc<FunctionRegistry>,
     api_key: Option<String>,
     body_limits: BodyLimitsConfig,
+    metrics_cache: Arc<MetricsCache>,
 }
 
 impl AdminRouter {
@@ -44,6 +49,7 @@ impl AdminRouter {
             registry,
             api_key,
             body_limits,
+            metrics_cache: Arc::new(MetricsCache::new(Duration::from_secs(METRICS_CACHE_TTL_SECS))),
         }
     }
 
@@ -107,7 +113,7 @@ impl AdminRouter {
             }
 
             // Metrics
-            (Method::GET, "/_internal/metrics") => self.handle_metrics(),
+            (Method::GET, "/_internal/metrics") => self.handle_metrics().await,
 
             // List functions
             (Method::GET, "/_internal/functions") => {
@@ -129,62 +135,12 @@ impl AdminRouter {
     }
 
     /// Handle GET /_internal/metrics
-    fn handle_metrics(&self) -> Response<BoxBody> {
-        let functions = self.registry.list();
-        let total_requests: u64 = functions.iter().map(|f| f.metrics.total_requests).sum();
-        let total_errors: u64 = functions.iter().map(|f| f.metrics.total_errors).sum();
-        let total_cold_starts: u64 = functions.iter().map(|f| f.metrics.cold_starts).sum();
-        let total_cold_start_ms: u64 = functions
-            .iter()
-            .map(|f| f.metrics.total_cold_start_time_ms)
-            .sum();
-        let total_warm_start_ms: u64 = functions
-            .iter()
-            .map(|f| f.metrics.total_warm_start_time_ms)
-            .sum();
-
-        let avg_cold_start_ms = if total_cold_starts > 0 {
-            total_cold_start_ms / total_cold_starts
-        } else {
-            0
-        };
-
-        let avg_warm_start_ms = if total_requests > 0 {
-            total_warm_start_ms / total_requests
-        } else {
-            0
-        };
-
-        // Get process memory info
-        let mut sys = sysinfo::System::new_all();
-        sys.refresh_processes();
-        let current_pid = sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from(0));
-        let process_memory_mb = sys
-            .process(current_pid)
-            .map(|p| p.memory() as f64 / (1024.0 * 1024.0))
-            .unwrap_or(0.0);
-
-        let function_count = self.registry.count();
-        let estimated_memory_per_function_mb = if function_count > 0 {
-            process_memory_mb / (function_count as f64)
-        } else {
-            0.0
-        };
-
-        let body = serde_json::json!({
-            "function_count": function_count,
-            "total_requests": total_requests,
-            "total_errors": total_errors,
-            "total_cold_starts": total_cold_starts,
-            "avg_cold_start_ms": avg_cold_start_ms,
-            "avg_warm_start_ms": avg_warm_start_ms,
-            "memory": {
-                "process_memory_mb": process_memory_mb,
-                "estimated_per_function_mb": estimated_memory_per_function_mb
-            },
-            "functions": functions,
-        });
-        json_response(StatusCode::OK, &body.to_string())
+    async fn handle_metrics(&self) -> Response<BoxBody> {
+        let body = self
+            .metrics_cache
+            .get_or_compute(|| build_metrics_body(&self.registry))
+            .await;
+        json_response(StatusCode::OK, &body)
     }
 
     /// Handle POST /_internal/functions (deploy)
