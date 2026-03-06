@@ -40,14 +40,16 @@ pub async fn run_server(
     let svc = service::EdgeService::new(router);
 
     let listener = TcpListener::bind(config.addr).await?;
-    info!("edge-runtime listening on {}", config.addr);
 
-    // Optional TLS listener
-    let _tls_acceptor = if let Some(ref tls_config) = config.tls {
+    // Optional TLS acceptor
+    let tls_acceptor = if let Some(ref tls_config) = config.tls {
         Some(tls::build_tls_acceptor(tls_config)?)
     } else {
         None
     };
+
+    let scheme = if tls_acceptor.is_some() { "https" } else { "http" };
+    info!("edge-runtime listening on {}://{}", scheme, config.addr);
 
     loop {
         tokio::select! {
@@ -55,8 +57,21 @@ pub async fn run_server(
                 match accepted {
                     Ok((stream, peer_addr)) => {
                         let svc = svc.clone();
+                        let tls_acceptor = tls_acceptor.clone();
                         tokio::spawn(async move {
-                            let io = TokioIo::new(stream);
+                            let maybe_stream = if let Some(acceptor) = tls_acceptor {
+                                match acceptor.accept(stream).await {
+                                    Ok(tls_stream) => tls::MaybeHttpsStream::Tls(tls_stream),
+                                    Err(e) => {
+                                        tracing::warn!("TLS handshake failed from {}: {}", peer_addr, e);
+                                        return;
+                                    }
+                                }
+                            } else {
+                                tls::MaybeHttpsStream::Plain(stream)
+                            };
+
+                            let io = TokioIo::new(maybe_stream);
                             let conn = hyper_util::server::conn::auto::Builder::new(
                                 hyper_util::rt::TokioExecutor::new(),
                             );

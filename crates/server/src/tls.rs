@@ -1,8 +1,13 @@
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use anyhow::Error;
 use rustls::ServerConfig;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpStream;
+use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 
 use crate::TlsConfig;
@@ -30,4 +35,50 @@ pub fn build_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, Error> {
     tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(TlsAcceptor::from(Arc::new(tls_config)))
+}
+
+/// Stream that may or may not be wrapped in TLS.
+pub enum MaybeHttpsStream {
+    Plain(TcpStream),
+    Tls(TlsStream<TcpStream>),
+}
+
+impl AsyncRead for MaybeHttpsStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            MaybeHttpsStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            MaybeHttpsStream::Tls(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for MaybeHttpsStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            MaybeHttpsStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            MaybeHttpsStream::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            MaybeHttpsStream::Plain(s) => Pin::new(s).poll_flush(cx),
+            MaybeHttpsStream::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            MaybeHttpsStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            MaybeHttpsStream::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
 }

@@ -149,6 +149,55 @@ deno-edge-runtime start \
   --rate-limit 200
 ```
 
+### TLS Configuration
+
+The server supports HTTPS via TLS certificates. When both `--tls-cert` and `--tls-key` are provided, the server serves HTTPS instead of HTTP.
+
+#### Generating a Self-Signed Certificate (Development)
+
+```bash
+openssl req -x509 -newkey rsa:4096 \
+  -keyout key.pem \
+  -out cert.pem \
+  -days 365 \
+  -nodes \
+  -subj '/CN=localhost'
+```
+
+#### Starting with TLS
+
+```bash
+deno-edge-runtime start \
+  --tls-cert cert.pem \
+  --tls-key key.pem \
+  --port 9443
+```
+
+Or using environment variables:
+
+```bash
+export EDGE_RUNTIME_TLS_CERT=./certs/server.crt
+export EDGE_RUNTIME_TLS_KEY=./certs/server.key
+deno-edge-runtime start --port 9443
+```
+
+#### Testing HTTPS
+
+```bash
+# With self-signed certificate (skip verification)
+curl -k https://localhost:9443/_internal/metrics
+
+# With CA-signed certificate
+curl https://your-domain.com:9443/_internal/metrics
+```
+
+#### TLS Notes
+
+- **ALPN**: The server advertises both `h2` (HTTP/2) and `http/1.1` protocols via ALPN.
+- **Startup log**: When TLS is enabled, the startup log shows `https://` instead of `http://`.
+- **Handshake failures**: Failed TLS handshakes are logged at `warn` level with the client address.
+- **Production**: For production, use certificates signed by a trusted CA (e.g., Let's Encrypt).
+
 ## `bundle`
 
 Bundles a JS/TS entrypoint and dependencies into a serialized package (ESZIP package format).
