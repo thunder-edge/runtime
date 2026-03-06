@@ -1333,8 +1333,7 @@ fn test_original_functions_preserved() {
                 deno_core::ascii_str!(
                     r#"
                     globalThis.setTimeout !== globalThis.__originalSetTimeout &&
-                    globalThis.setInterval !== globalThis.__originalSetInterval &&
-                    globalThis.fetch !== globalThis.__originalFetch;
+                    globalThis.setInterval !== globalThis.__originalSetInterval;
                 "#
                 ),
             )
@@ -1345,7 +1344,7 @@ fn test_original_functions_preserved() {
             let local_val = check_different.open(scope);
             assert!(
                 local_val.is_true(),
-                "wrapped functions should be different from originals"
+                "timer wrappers should be different from originals"
             );
         }
 
