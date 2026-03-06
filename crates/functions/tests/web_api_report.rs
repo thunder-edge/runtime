@@ -716,7 +716,8 @@ fn generate_web_standards_report() {
         .unwrap()
         .parent()
         .unwrap()
-        .join("WEB_STANDARDS_REPORT.md");
+        .join("docs")
+        .join("web_standards_api_report.md");
 
     std::fs::write(&report_path, &report).unwrap_or_else(|e| {
         panic!("Failed to write report to {}: {e}", report_path.display());
