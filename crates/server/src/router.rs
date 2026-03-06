@@ -6,7 +6,7 @@ use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
 use tokio::sync::RwLock;
-use tracing::error;
+use tracing::{error, info};
 use uuid::Uuid;
 
 use functions::registry::FunctionRegistry;
@@ -16,6 +16,9 @@ use crate::body_limits::{
     payload_too_large_response, BodyLimitError, BodyLimitsConfig,
 };
 use crate::middleware::{RateLimitLayer, rate_limit_layer, rate_limited_response};
+use crate::trace_context::{
+    add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
+};
 
 type BoxBody = Full<Bytes>;
 const MAX_LOG_ERROR_BYTES: usize = 1024;
@@ -174,16 +177,24 @@ impl Router {
         req: Request<hyper::body::Incoming>,
     ) -> Result<Response<BoxBody>, Infallible> {
         let path = req.uri().path().to_string();
+        let trace_ctx = trace_context_from_headers(req.headers());
 
-        if path.starts_with("/_internal/") || path == "/_internal" {
-            Ok(self.handle_internal(req).await)
+        let mut resp = if path.starts_with("/_internal/") || path == "/_internal" {
+            self.handle_internal(req).await
         } else {
-            Ok(self.handle_ingress(req).await)
-        }
+            self.handle_ingress(req, &trace_ctx).await
+        };
+
+        add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
+        Ok(resp)
     }
 
     /// Route ingress traffic: /{function_name}/rest/of/path
-    async fn handle_ingress(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_ingress(
+        &self,
+        req: Request<hyper::body::Incoming>,
+        trace_ctx: &crate::trace_context::TraceContext,
+    ) -> Response<BoxBody> {
         if let Some(limiter) = &self.rate_limiter {
             if let Some(retry_after_secs) = limiter.check_limit() {
                 return rate_limited_response(retry_after_secs);
@@ -275,7 +286,10 @@ impl Router {
             std::time::Duration::from_secs(60) // default 60s
         };
 
-        match tokio::time::timeout(timeout_duration, handle.send_request(forwarded_req)).await {
+        let req_started = Instant::now();
+        apply_trace_headers(forwarded_req.headers_mut(), trace_ctx);
+
+        let response = match tokio::time::timeout(timeout_duration, handle.send_request(forwarded_req)).await {
             Ok(Ok(resp)) => {
                 let (parts, body) = resp.into_parts();
                 // Check response body size
@@ -297,7 +311,18 @@ impl Router {
                 StatusCode::GATEWAY_TIMEOUT,
                 r#"{"error":"request timeout"}"#,
             ),
-        }
+        };
+
+        info!(
+            trace_id = %trace_ctx.trace_id,
+            sampled = trace_ctx.sampled,
+            function_name = %function_name,
+            status = %response.status(),
+            duration_ms = req_started.elapsed().as_millis() as u64,
+            "ingress request completed"
+        );
+
+        response
     }
 
     /// Route internal management API.

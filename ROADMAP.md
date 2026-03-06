@@ -321,10 +321,16 @@ Nota: benchmark comparativo adicionado como teste `#[ignore]` em `crates/runtime
 **Ref:** AUDIT §5 (observações positivas — OpenTelemetry já nas deps)
 **Crate:** `server`
 
-- [ ] Propagar headers `traceparent` e `tracestate` para dentro dos isolates
-- [ ] Criar span por request com function name, status, duration
-- [ ] Exportar via OTLP (já nas dependências)
-- [ ] Adicionar `correlation-id` header no response
+- [x] Propagar headers `traceparent` e `tracestate` para dentro dos isolates
+- [x] Criar span por request com function name, status, duration
+- [x] Exportar via OTLP (já nas dependências)
+- [x] Adicionar `correlation-id` header no response
+
+**Status:** ✅ Concluído
+
+Configuração de sampling: `EDGE_RUNTIME_TRACE_SAMPLE_PERCENT` (0..100), default `100`.
+Política de trace inválido: descarta `traceparent` inválido e gera novo trace.
+Política de correlação: `correlation-id` = `trace_id`.
 
 ---
 

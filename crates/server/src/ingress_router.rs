@@ -5,10 +5,12 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::Full;
+use tracing::info;
 
 use functions::registry::FunctionRegistry;
 
@@ -18,6 +20,9 @@ use crate::body_limits::{
 };
 use crate::middleware::{RateLimitLayer, rate_limit_layer, rate_limited_response};
 use crate::router::{is_valid_function_name, json_response, sanitize_internal_error};
+use crate::trace_context::{
+    add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
+};
 
 type BoxBody = Full<Bytes>;
 
@@ -51,9 +56,13 @@ impl IngressRouter {
         &self,
         req: Request<hyper::body::Incoming>,
     ) -> Result<Response<BoxBody>, Infallible> {
+        let trace_ctx = trace_context_from_headers(req.headers());
+
         if let Some(limiter) = &self.rate_limiter {
             if let Some(retry_after_secs) = limiter.check_limit() {
-                return Ok(rate_limited_response(retry_after_secs));
+                let mut resp = rate_limited_response(retry_after_secs);
+                add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
+                return Ok(resp);
             }
         }
 
@@ -61,17 +70,25 @@ impl IngressRouter {
 
         // Reject /_internal/* on ingress port
         if path.starts_with("/_internal") {
-            return Ok(json_response(
+            let mut resp = json_response(
                 StatusCode::NOT_FOUND,
                 r#"{"error":"not found"}"#,
-            ));
+            );
+            add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
+            return Ok(resp);
         }
 
-        Ok(self.route_to_function(req).await)
+        let mut resp = self.route_to_function(req, &trace_ctx).await;
+        add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
+        Ok(resp)
     }
 
     /// Route request to the appropriate function isolate.
-    async fn route_to_function(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn route_to_function(
+        &self,
+        req: Request<hyper::body::Incoming>,
+        trace_ctx: &crate::trace_context::TraceContext,
+    ) -> Response<BoxBody> {
         let path = req.uri().path().to_string();
 
         // Extract function name from first path segment
@@ -157,7 +174,10 @@ impl IngressRouter {
             std::time::Duration::from_secs(60) // default 60s
         };
 
-        match tokio::time::timeout(timeout_duration, handle.send_request(forwarded_req)).await {
+        let req_started = Instant::now();
+        apply_trace_headers(forwarded_req.headers_mut(), trace_ctx);
+
+        let response = match tokio::time::timeout(timeout_duration, handle.send_request(forwarded_req)).await {
             Ok(Ok(resp)) => {
                 let (parts, body) = resp.into_parts();
                 // Check response body size
@@ -177,7 +197,18 @@ impl IngressRouter {
                 StatusCode::GATEWAY_TIMEOUT,
                 r#"{"error":"request timeout"}"#,
             ),
-        }
+        };
+
+        info!(
+            trace_id = %trace_ctx.trace_id,
+            sampled = trace_ctx.sampled,
+            function_name = %function_name,
+            status = %response.status(),
+            duration_ms = req_started.elapsed().as_millis() as u64,
+            "ingress request completed"
+        );
+
+        response
     }
 }
 

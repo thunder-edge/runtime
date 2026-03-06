@@ -6,6 +6,7 @@ pub mod middleware;
 pub mod router;
 pub mod service;
 pub mod tls;
+pub mod trace_context;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
