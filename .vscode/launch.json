@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach Edge Runtime (hello:9229)",
+            "type": "node",
+            "request": "attach",
+            "port": 9229,
+            "continueOnAttach": true,
+            "sourceMaps": true
+        },
+        {
+            "name": "Attach Edge Runtime (hello:9229, inspect-brk)",
+            "type": "node",
+            "request": "attach",
+            "port": 9229,
+            "sourceMaps": true
+        },
+        {
+            "name": "Attach Edge Runtime (hello:9229, trace)",
+            "type": "node",
+            "request": "attach",
+            "port": 9229,
+            "continueOnAttach": true,
+            "sourceMaps": true,
+            "trace": true
+        }
+    ]
+}
