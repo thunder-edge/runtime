@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use runtime_core::extensions;
+use runtime_core::isolate::IsolateConfig;
 use runtime_core::module_loader::EszipModuleLoader;
+use tokio_util::sync::CancellationToken;
 
 /// Helper: create a JsRuntime with the same config as production isolates.
 fn make_runtime_with_eszip(eszip: Arc<eszip::EszipV2>) -> JsRuntime {
@@ -211,6 +213,75 @@ fn test_terminate_execution_stops_infinite_loop() {
         );
         assert!(check_result.is_ok(), "isolate should be reusable after cancel_terminate_execution");
 
+        Ok(())
+    });
+
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
+/// Test 1.1 roadmap requirement: isolate timeout returns HTTP 504.
+#[test]
+fn test_isolate_timeout_returns_504() {
+    deno_core::JsRuntime::init_platform(None);
+
+    let eszip_bytes = build_eszip(
+        "file:///test_timeout_504.js",
+        r#"
+        Deno.serve(async (_req) => {
+            while (true) {}
+        });
+        "#,
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let result: Result<(), String> = rt.block_on(async {
+        let bundle = functions::types::BundlePackage::eszip_only(eszip_bytes);
+        let bundle_data = bincode::serialize(&bundle)
+            .map_err(|e| format!("serialize bundle: {e}"))?;
+
+        let mut config = IsolateConfig::default();
+        config.wall_clock_timeout_ms = 100;
+
+        let entry = functions::lifecycle::create_function(
+            "timeout-504-test".to_string(),
+            bundle_data,
+            config,
+            CancellationToken::new(),
+        )
+        .await
+        .map_err(|e| format!("create_function: {e}"))?;
+
+        let handle = entry
+            .isolate_handle
+            .clone()
+            .ok_or_else(|| "missing isolate handle".to_string())?;
+
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("/timeout")
+            .header("host", "localhost:9000")
+            .body(bytes::Bytes::new())
+            .map_err(|e| format!("build request: {e}"))?;
+
+        let response = handle
+            .send_request(request)
+            .await
+            .map_err(|e| format!("send_request: {e}"))?;
+
+        let body_text = String::from_utf8_lossy(response.body()).to_string();
+        if response.status() != 504 {
+            return Err(format!("expected 504, got {} body={}", response.status(), body_text));
+        }
+
+        if !body_text.contains("request timeout") {
+            return Err(format!("expected timeout body, got: {}", body_text));
+        }
+
+        functions::lifecycle::destroy_function(&entry).await;
         Ok(())
     });
 

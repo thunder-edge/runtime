@@ -10,6 +10,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use deno_core::{InspectorMsg, InspectorSessionChannels, InspectorSessionKind, InspectorSessionProxy};
+use http::StatusCode;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -27,6 +28,14 @@ use crate::types::*;
 struct InspectorServerGuard {
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+}
+
+fn timeout_response() -> http::Response<bytes::Bytes> {
+    http::Response::builder()
+        .status(StatusCode::GATEWAY_TIMEOUT)
+        .header("content-type", "application/json")
+        .body(bytes::Bytes::from_static(br#"{"error":"request timeout"}"#))
+        .expect("failed to build timeout response")
 }
 
 impl Drop for InspectorServerGuard {
@@ -322,15 +331,20 @@ async fn run_isolate(
                         }
                     });
 
-                    // Execute the request (may be terminated by watchdog)
-                    let dispatch_result = handler::dispatch_request(&mut js_runtime, req.request).await;
+                    // Execute the request with an explicit async timeout.
+                    // This complements V8 terminate_execution in case JS blocks the isolate.
+                    let dispatch_result = tokio::time::timeout(
+                        std::time::Duration::from_millis(timeout_ms),
+                        handler::dispatch_request(&mut js_runtime, req.request),
+                    )
+                    .await;
 
                     // Signal watchdog to stop and wait for it
                     request_completed.store(true, Ordering::SeqCst);
                     let _ = watchdog.join();
 
-                    // Check if V8 was forcefully terminated
-                    if terminated.load(Ordering::SeqCst) {
+                    // Check if timeout happened (either async timeout or forced V8 termination)
+                    if terminated.load(Ordering::SeqCst) || dispatch_result.is_err() {
                         // Reset termination state so isolate can be reused
                         js_runtime.v8_isolate().cancel_terminate_execution();
 
@@ -350,7 +364,8 @@ async fn run_isolate(
                             "function '{}' request forcefully terminated after {}ms",
                             name, config.wall_clock_timeout_ms
                         );
-                        Err(anyhow::anyhow!("request execution timeout - forcefully terminated"))
+                        metrics.total_errors.fetch_add(1, Ordering::Relaxed);
+                        Ok(timeout_response())
                     } else {
                         // End execution context normally (cleanup tracking, timers keep running)
                         if let Err(e) = js_runtime.execute_script(
@@ -362,7 +377,7 @@ async fn run_isolate(
                         ) {
                             warn!("failed to end execution context: {}", e);
                         }
-                        dispatch_result
+                        dispatch_result.expect("dispatch_result should be Ok here")
                     }
                 } else {
                     // No timeout configured - execute directly
