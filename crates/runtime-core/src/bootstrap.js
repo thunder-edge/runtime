@@ -73,7 +73,10 @@ import "ext:deno_net/01_net.js";
 import "ext:deno_net/02_tls.js";
 
 // edge_assert (native assert helpers for user imports)
-import "ext:edge_assert/mod.ts";
+// Optional: only present when CLI test mode enables this extension.
+import("ext:edge_assert/mod.ts").catch(() => {
+  // no-op in production runtime profile
+});
 
 // -- 2. Expose Web API globals on globalThis ---------------------
 

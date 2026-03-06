@@ -707,6 +707,7 @@ fn generate_web_standards_report() {
     writeln!(report, "- `deno_net` - TCP/TLS networking").unwrap();
     writeln!(report, "- `deno_tls` - TLS support").unwrap();
     writeln!(report, "- `edge_bootstrap` - Bootstrap module that wires everything to globalThis").unwrap();
+    writeln!(report, "- `edge_assert` - Optional test helpers extension (loaded only in CLI test mode)").unwrap();
     writeln!(report).unwrap();
 
     // write to file

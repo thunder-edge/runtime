@@ -149,4 +149,5 @@ The following Deno extensions are loaded:
 - `deno_net` - TCP/TLS networking
 - `deno_tls` - TLS support
 - `edge_bootstrap` - Bootstrap module that wires everything to globalThis
+- `edge_assert` - Optional test helpers extension (loaded only in CLI test mode)
 

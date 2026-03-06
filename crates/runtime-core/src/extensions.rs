@@ -154,11 +154,11 @@ pub type EdgeNodeSys = sys_traits::impls::RealSys;
 ///
 /// The `edge_bootstrap` extension is registered last — its entry point imports
 /// all other extension ESM modules, causing them to be evaluated.
-pub fn get_extensions() -> Vec<Extension> {
+pub fn get_extensions_with_edge_assert(include_edge_assert: bool) -> Vec<Extension> {
     // Shared filesystem - use Rc (deno_fs expects Rc not Arc by default)
     let fs: deno_fs::FileSystemRc = Rc::new(deno_fs::RealFs);
 
-    vec![
+    let mut extensions = vec![
         // 0. Stub ops for edge runtime (TTY ops not needed in serverless)
         edge_stubs::init(),
 
@@ -198,13 +198,21 @@ pub fn get_extensions() -> Vec<Extension> {
 
         // 10. Crypto (depends on webidl, web, node shim) - Web Crypto API
         deno_crypto::deno_crypto::init(None), // maybe_seed
+    ];
 
-        // 11. Built-in assert helpers for user modules.
-        edge_assert::init(),
+    if include_edge_assert {
+        // Built-in assert helpers for CLI test runtime.
+        extensions.push(edge_assert::init());
+    }
 
-        // 12. Bootstrap must be last — its entry point imports all extension modules.
-        edge_bootstrap::init(),
-    ]
+    // Bootstrap must be last — its entry point imports all extension modules.
+    extensions.push(edge_bootstrap::init());
+
+    extensions
+}
+
+pub fn get_extensions() -> Vec<Extension> {
+    get_extensions_with_edge_assert(false)
 }
 
 /// Set the extension transpiler on `RuntimeOptions`.
@@ -290,7 +298,14 @@ mod tests {
     #[test]
     fn get_extensions_returns_expected_count() {
         let exts = get_extensions();
-        // 13 extensions: stubs, webidl, web, tls, io, fs, net, telemetry, fetch, node_shim, crypto, edge_assert, bootstrap
+        // 12 extensions by default (no edge_assert in production profile)
+        assert_eq!(exts.len(), 12, "expected 12 extensions, got {}", exts.len());
+    }
+
+    #[test]
+    fn get_extensions_with_assert_returns_expected_count() {
+        let exts = get_extensions_with_edge_assert(true);
+        // 13 extensions with edge_assert enabled
         assert_eq!(exts.len(), 13, "expected 13 extensions, got {}", exts.len());
     }
 
