@@ -33,6 +33,11 @@ pub struct IsolateConfig {
     #[serde(default)]
     pub inspect_brk: bool,
 
+    /// If true, allows inspector server binding on all interfaces.
+    /// Default keeps inspector restricted to localhost for safety.
+    #[serde(default)]
+    pub inspect_allow_remote: bool,
+
     /// If true, inline source maps from eszip modules into loaded JS.
     #[serde(default = "default_enable_source_maps")]
     pub enable_source_maps: bool,
@@ -66,6 +71,7 @@ impl Default for IsolateConfig {
             wall_clock_timeout_ms: default_wall_clock(),
             inspect_port: None,
             inspect_brk: false,
+            inspect_allow_remote: false,
             enable_source_maps: default_enable_source_maps(),
             ssrf_config: SsrfConfig::default(),
         }

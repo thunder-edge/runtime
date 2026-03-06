@@ -133,6 +133,10 @@ pub struct TestArgs {
     /// Enable V8 inspector protocol server (default port: 9229)
     #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "9229")]
     inspect: Option<u16>,
+
+    /// Allow inspector to bind on all interfaces (0.0.0.0). Unsafe for production.
+    #[arg(long, default_value_t = false)]
+    inspect_allow_remote: bool,
 }
 
 struct InspectorServerGuard {
@@ -295,6 +299,24 @@ pub fn run(args: TestArgs) -> Result<(), anyhow::Error> {
             ));
         }
 
+        if args.inspect_allow_remote && args.inspect.is_none() {
+            return Err(anyhow::anyhow!(
+                "--inspect-allow-remote requires --inspect"
+            ));
+        }
+
+        if let Some(port) = args.inspect {
+            eprintln!(
+                "warning: inspector enabled on port {} (debug-only; do not use in production)",
+                port
+            );
+            if args.inspect_allow_remote {
+                eprintln!(
+                    "warning: --inspect-allow-remote exposes debugger endpoints on all interfaces"
+                );
+            }
+        }
+
         println!(
             "{} {}",
             style.black_on_cyan(" RUN "),
@@ -313,7 +335,7 @@ pub fn run(args: TestArgs) -> Result<(), anyhow::Error> {
             let _ = std::io::stdout().flush();
             let started_file = Instant::now();
 
-            match run_single_test_file(&file, args.inspect).await {
+            match run_single_test_file(&file, args.inspect, args.inspect_allow_remote).await {
                 Ok(outcome) => {
                     aggregated_test_stats.add_assign(outcome.stats);
 
@@ -536,6 +558,7 @@ fn read_test_stats(js_runtime: &mut JsRuntime) -> TestRunStats {
 async fn run_single_test_file(
     file_path: &Path,
     inspect_port: Option<u16>,
+    inspect_allow_remote: bool,
 ) -> Result<FileRunOutcome, anyhow::Error> {
     let entrypoint = file_path
         .canonicalize()
@@ -588,15 +611,27 @@ async fn run_single_test_file(
         js_runtime.maybe_init_inspector();
         let inspector = js_runtime.inspector();
         let session_sender = inspector.get_session_sender();
-        let guard = start_inspector_server(session_sender, port, entrypoint.display().to_string())?;
+        let guard = start_inspector_server(
+            session_sender,
+            port,
+            entrypoint.display().to_string(),
+            inspect_allow_remote,
+        )?;
+        let inspector_host = if inspect_allow_remote {
+            "0.0.0.0"
+        } else {
+            "127.0.0.1"
+        };
 
         println!(
-            "\nInspector listening on ws://127.0.0.1:{}/ws (target: {})",
+            "\nInspector listening on ws://{}:{}/ws (target: {})",
+            inspector_host,
             port,
             entrypoint.display()
         );
         println!(
-            "Open VS Code and attach debugger after reading target list at http://127.0.0.1:{}/json/list",
+            "Open VS Code and attach debugger after reading target list at http://{}:{}/json/list",
+            inspector_host,
             port
         );
 
@@ -644,12 +679,19 @@ fn start_inspector_server(
     session_sender: deno_core::futures::channel::mpsc::UnboundedSender<InspectorSessionProxy>,
     port: u16,
     target_path: String,
+    allow_remote: bool,
 ) -> Result<InspectorServerGuard, anyhow::Error> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = stop.clone();
+    let inspector_host = if allow_remote { "0.0.0.0" } else { "127.0.0.1" };
 
-    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
-        anyhow::anyhow!("failed to bind inspector server on 127.0.0.1:{}: {}", port, e)
+    let listener = TcpListener::bind((inspector_host, port)).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to bind inspector server on {}:{}: {}",
+            inspector_host,
+            port,
+            e
+        )
     })?;
 
     listener
@@ -678,8 +720,8 @@ fn start_inspector_server(
 
                     if path == "/json" || path == "/json/list" {
                         let body = format!(
-                            "[{{\"description\":\"deno-edge-runtime\",\"id\":\"edge-runtime\",\"title\":\"edge test runtime\",\"type\":\"node\",\"url\":\"file://{}\",\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{}/ws\",\"devtoolsFrontendUrl\":\"devtools://devtools/bundled/inspector.html?ws=127.0.0.1:{}/ws\"}}]",
-                            target_path, port, port
+                            "[{{\"description\":\"deno-edge-runtime\",\"id\":\"edge-runtime\",\"title\":\"edge test runtime\",\"type\":\"node\",\"url\":\"file://{}\",\"webSocketDebuggerUrl\":\"ws://{}:{}/ws\",\"devtoolsFrontendUrl\":\"devtools://devtools/bundled/inspector.html?ws={}:{}/ws\"}}]",
+                            target_path, inspector_host, port, inspector_host, port
                         );
                         let _ = write_http_json_response(&mut stream, &body);
                         continue;

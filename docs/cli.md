@@ -519,6 +519,10 @@ deno-edge-runtime watch [OPTIONS]
 - `--inspect-brk`
   - Break on first statement while waiting for debugger attach.
   - Requires `--inspect` to be useful.
+- `--inspect-allow-remote`
+  - Allow inspector server binding on all interfaces (`0.0.0.0`).
+  - Requires `--inspect`.
+  - **Security risk**: exposes debugger endpoints to the network.
 
 ### Behavior Notes
 
@@ -530,6 +534,8 @@ deno-edge-runtime watch [OPTIONS]
 - First deployment uses `deploy`; existing function names are updated with `update`.
 - Server in watch mode uses immediate shutdown behavior (`graceful_exit_deadline_secs = 0`).
 - **Security in dev mode**: SSRF protection is disabled (allows `fetch()` to private IPs), and default body/connection limits apply.
+- Inspector binds to `127.0.0.1` by default.
+- Enabling inspector logs a security warning because debugger endpoints should not be exposed in production.
 
 ### Example
 
@@ -562,6 +568,10 @@ deno-edge-runtime test [OPTIONS]
 - `--inspect [PORT]`
   - Enable inspector protocol server.
   - If provided without value, defaults to `9229`.
+- `--inspect-allow-remote`
+  - Allow inspector server binding on all interfaces (`0.0.0.0`).
+  - Requires `--inspect`.
+  - **Security risk**: exposes debugger endpoints to the network.
 
 ### Behavior Notes
 
@@ -573,6 +583,8 @@ deno-edge-runtime test [OPTIONS]
   - glob pattern.
 - If no files are found, command exits with error.
 - If `--inspect` is used, exactly one test file must be selected.
+- Inspector binds to `127.0.0.1` by default.
+- Enabling inspector logs a security warning because debugger endpoints should not be exposed in production.
 - During execution, the command prints per-file result (`PASS`/`FAIL`), progress bar, and aggregated test stats.
 - Inspector HTTP endpoints when enabled:
   - `GET /json`

@@ -168,6 +168,7 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             wall_clock_timeout_ms: args.wall_clock_timeout_ms,
             inspect_port: None,
             inspect_brk: false,
+            inspect_allow_remote: false,
             enable_source_maps: matches!(args.sourcemap, SourceMapMode::Inline),
             ssrf_config,
         };

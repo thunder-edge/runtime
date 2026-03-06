@@ -356,10 +356,12 @@ Política de correlação: `correlation-id` = `trace_id`.
 **Ref:** AUDIT §3.3
 **Crate:** `runtime-core`
 
-- [ ] Forçar bind do inspector em `127.0.0.1`
-- [ ] Adicionar flag `--inspect-allow-remote` para override explícito
-- [ ] Documentar que inspector não deve ser usado em produção
-- [ ] Logar warning se inspector ativado
+- [x] Forçar bind do inspector em `127.0.0.1`
+- [x] Adicionar flag `--inspect-allow-remote` para override explícito
+- [x] Documentar que inspector não deve ser usado em produção
+- [x] Logar warning se inspector ativado
+
+**Status:** ✅ Concluído
 
 ---
 

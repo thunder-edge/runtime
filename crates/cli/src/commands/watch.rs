@@ -11,7 +11,7 @@ use deno_graph::ast::CapturingModuleAnalyzer;
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph};
 use tokio_util::sync::CancellationToken;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 use url::Url;
 
 use runtime_core::isolate::IsolateConfig;
@@ -56,6 +56,10 @@ pub struct WatchArgs {
     /// Wait for debugger attach and break on first statement (requires --inspect)
     #[arg(long, default_value_t = false)]
     inspect_brk: bool,
+
+    /// Allow inspector to bind on all interfaces (0.0.0.0). Unsafe for production.
+    #[arg(long, default_value_t = false)]
+    inspect_allow_remote: bool,
 }
 
 /// A simple file-system loader for deno_graph.
@@ -182,6 +186,12 @@ pub fn run(args: WatchArgs) -> Result<(), anyhow::Error> {
             return Err(anyhow::anyhow!("path '{}' does not exist", args.path));
         }
 
+        if args.inspect_allow_remote && args.inspect.is_none() {
+            return Err(anyhow::anyhow!(
+                "--inspect-allow-remote requires --inspect"
+            ));
+        }
+
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
         let shutdown = CancellationToken::new();
 
@@ -191,9 +201,22 @@ pub fn run(args: WatchArgs) -> Result<(), anyhow::Error> {
             wall_clock_timeout_ms: args.wall_clock_timeout_ms,
             inspect_port: None,
             inspect_brk: args.inspect_brk,
+            inspect_allow_remote: args.inspect_allow_remote,
             enable_source_maps: true,
             ssrf_config: runtime_core::ssrf::SsrfConfig::disabled(), // Dev mode: allow all network
         };
+
+        if let Some(base_port) = args.inspect {
+            warn!(
+                "V8 inspector is enabled in watch mode on base port {}. Do not use this in production.",
+                base_port
+            );
+            if args.inspect_allow_remote {
+                warn!(
+                    "Inspector remote access is enabled (--inspect-allow-remote). Debug endpoints are exposed on all interfaces."
+                );
+            }
+        }
 
         let registry = Arc::new(functions::registry::FunctionRegistry::new(
             shutdown.clone(),
@@ -363,6 +386,7 @@ async fn load_and_deploy_functions(
             wall_clock_timeout_ms: default_config.wall_clock_timeout_ms,
             inspect_port,
             inspect_brk: default_config.inspect_brk,
+            inspect_allow_remote: default_config.inspect_allow_remote,
             enable_source_maps: default_config.enable_source_maps,
             ssrf_config: default_config.ssrf_config.clone(),
         };
@@ -383,7 +407,12 @@ async fn load_and_deploy_functions(
                             bytes.len()
                         );
                         if let Some(port) = inspect_port {
-                            println!("   └─ inspector: ws://127.0.0.1:{}/ws", port);
+                            let host = if function_config.inspect_allow_remote {
+                                "0.0.0.0"
+                            } else {
+                                "127.0.0.1"
+                            };
+                            println!("   └─ inspector: ws://{}:{}/ws", host, port);
                         }
                         deployed += 1;
                     }
@@ -396,7 +425,12 @@ async fn load_and_deploy_functions(
                             Ok(_) => {
                                 println!("🔄 Updated: {}", func_name);
                                 if let Some(port) = inspect_port {
-                                    println!("   └─ inspector: ws://127.0.0.1:{}/ws", port);
+                                    let host = if function_config.inspect_allow_remote {
+                                        "0.0.0.0"
+                                    } else {
+                                        "127.0.0.1"
+                                    };
+                                    println!("   └─ inspector: ws://{}:{}/ws", host, port);
                                 }
                                 deployed += 1;
                             }

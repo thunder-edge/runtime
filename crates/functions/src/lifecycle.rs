@@ -304,10 +304,35 @@ async fn run_isolate(
         let inspector = js_runtime.inspector();
         let session_sender = inspector.get_session_sender();
         let stop = inspector_stop.clone().expect("inspector_stop must be Some when inspect_port is Some");
-        let (guard, target_id) = start_inspector_server(session_sender, port, name.clone(), root_specifier.as_str().to_string(), stop)?;
-        info!(
-            "function '{}' inspector listening on ws://127.0.0.1:{}/{}",
+        let (guard, target_id) = start_inspector_server(
+            session_sender,
+            port,
+            name.clone(),
+            root_specifier.as_str().to_string(),
+            stop,
+            config.inspect_allow_remote,
+        )?;
+        let inspector_host = if config.inspect_allow_remote {
+            "0.0.0.0"
+        } else {
+            "127.0.0.1"
+        };
+        warn!(
+            "function '{}' inspector is enabled on {}:{} (debug-only; do not use in production)",
             name,
+            inspector_host,
+            port
+        );
+        if config.inspect_allow_remote {
+            warn!(
+                "function '{}' inspector remote access is enabled; debugger endpoint is exposed on all network interfaces",
+                name
+            );
+        }
+        info!(
+            "function '{}' inspector listening on ws://{}:{}/{}",
+            name,
+            inspector_host,
             port,
             target_id
         );
@@ -663,15 +688,22 @@ fn start_inspector_server(
     target_name: String,
     root_url: String,
     stop: Arc<AtomicBool>,
+    allow_remote: bool,
 ) -> Result<(InspectorServerGuard, String), Error> {
     let target_id = uuid::Uuid::new_v4().to_string();
     let stop_for_thread = stop.clone();
     let target_id_for_thread = target_id.clone();
     let root_url_for_thread = root_url.clone();
+    let inspector_host = if allow_remote { "0.0.0.0" } else { "127.0.0.1" };
 
     // On watch hot-reload, the previous isolate may still be tearing down and
     // releasing this port. Retry briefly to avoid spurious reload failures.
-    let listener = bind_inspector_listener_with_retry(port, 30, std::time::Duration::from_millis(100))?;
+    let listener = bind_inspector_listener_with_retry(
+        inspector_host,
+        port,
+        30,
+        std::time::Duration::from_millis(100),
+    )?;
 
     listener
         .set_nonblocking(true)
@@ -704,11 +736,12 @@ fn start_inspector_server(
 
                     if path == "/json" || path == "/json/list" {
                         let body = format!(
-                            "[{{\"description\":\"deno-edge-runtime\",\"id\":\"{id}\",\"title\":\"{title}\",\"type\":\"node\",\"url\":\"{url}\",\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}/{id}\",\"devtoolsFrontendUrl\":\"devtools://devtools/bundled/inspector.html?ws=127.0.0.1:{port}/{id}\"}}]",
+                            "[{{\"description\":\"deno-edge-runtime\",\"id\":\"{id}\",\"title\":\"{title}\",\"type\":\"node\",\"url\":\"{url}\",\"webSocketDebuggerUrl\":\"ws://{host}:{port}/{id}\",\"devtoolsFrontendUrl\":\"devtools://devtools/bundled/inspector.html?ws={host}:{port}/{id}\"}}]",
                             id = target_id,
                             title = target_name,
                             url = root_url,
                             port = port,
+                            host = inspector_host,
                         );
                         let _ = write_http_json_response(&mut stream, &body);
                         continue;
@@ -739,11 +772,12 @@ fn start_inspector_server(
 }
 
 fn bind_inspector_listener_with_retry(
+    host: &str,
     port: u16,
     max_attempts: usize,
     retry_delay: std::time::Duration,
 ) -> Result<TcpListener, Error> {
-    let addr = ("127.0.0.1", port);
+    let addr = (host, port);
     for attempt in 1..=max_attempts {
         match TcpListener::bind(addr) {
             Ok(listener) => return Ok(listener),
@@ -752,7 +786,8 @@ fn bind_inspector_listener_with_retry(
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(
-                    "failed to bind inspector server on 127.0.0.1:{}: {}",
+                    "failed to bind inspector server on {}:{}: {}",
+                    host,
                     port,
                     e
                 ));
@@ -761,7 +796,8 @@ fn bind_inspector_listener_with_retry(
     }
 
     Err(anyhow::anyhow!(
-        "failed to bind inspector server on 127.0.0.1:{}: address still in use after {} attempts",
+        "failed to bind inspector server on {}:{}: address still in use after {} attempts",
+        host,
         port,
         max_attempts
     ))

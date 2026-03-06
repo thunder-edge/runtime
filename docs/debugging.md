@@ -14,6 +14,13 @@ This guide explains how to use the V8 inspector protocol to debug TypeScript edg
 
 All three clients speak the same **Chrome DevTools Protocol (CDP)** over WebSocket, so the runtime flags and ports work identically across them.
 
+## Inspector Security Model
+
+- Inspector binds to `127.0.0.1` by default.
+- Use `--inspect-allow-remote` only when remote attach is strictly required.
+- `--inspect-allow-remote` binds inspector on `0.0.0.0`, exposing debug endpoints to the network.
+- Inspector is a development-only feature and should not be enabled in production.
+
 ---
 
 ## Debugging Modes
