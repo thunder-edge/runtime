@@ -672,7 +672,7 @@ fn start_inspector_server(
                     let is_upgrade = req.to_ascii_lowercase().contains("upgrade: websocket");
 
                     if is_upgrade && path == "/ws" {
-                        handle_websocket_session(&mut stream, &session_sender);
+                        handle_websocket_session(&mut stream, &session_sender, &stop_for_thread);
                         continue;
                     }
 
@@ -731,6 +731,7 @@ fn write_http_not_found(stream: &mut std::net::TcpStream) -> std::io::Result<()>
 fn handle_websocket_session(
     stream: &mut std::net::TcpStream,
     session_sender: &deno_core::futures::channel::mpsc::UnboundedSender<InspectorSessionProxy>,
+    stop: &AtomicBool,
 ) {
     let cloned = match stream.try_clone() {
         Ok(s) => s,
@@ -764,15 +765,16 @@ fn handle_websocket_session(
         return;
     }
 
-    pump_websocket(&mut ws, to_runtime_tx, &mut from_runtime_rx);
+    pump_websocket(&mut ws, to_runtime_tx, &mut from_runtime_rx, stop);
 }
 
 fn pump_websocket(
     ws: &mut WebSocket<std::net::TcpStream>,
     to_runtime_tx: deno_core::futures::channel::mpsc::UnboundedSender<String>,
     from_runtime_rx: &mut deno_core::futures::channel::mpsc::UnboundedReceiver<InspectorMsg>,
+    stop: &AtomicBool,
 ) {
-    loop {
+    while !stop.load(Ordering::Relaxed) {
         loop {
             match from_runtime_rx.try_recv() {
                 Ok(msg) => {

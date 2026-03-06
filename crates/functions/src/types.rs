@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -173,6 +173,8 @@ pub struct FunctionEntry {
     pub bundle_format: BundleFormat,
     /// Handle to the running isolate (None if loading/error).
     pub isolate_handle: Option<IsolateHandle>,
+    /// Stop signal for the inspector listener thread (if inspector is active).
+    pub inspector_stop: Option<Arc<AtomicBool>>,
     /// Current status.
     pub status: FunctionStatus,
     /// Runtime configuration.

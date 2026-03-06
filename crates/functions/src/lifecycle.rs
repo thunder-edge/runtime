@@ -86,6 +86,16 @@ pub async fn create_function(
         id: uuid::Uuid::new_v4(),
     };
 
+    // Create the inspector stop flag on the main thread so destroy_function
+    // can signal the listener thread directly without waiting for the full
+    // isolate shutdown chain.
+    let inspector_stop = if config.inspect_port.is_some() {
+        Some(Arc::new(AtomicBool::new(false)))
+    } else {
+        None
+    };
+    let inspector_stop_for_thread = inspector_stop.clone();
+
     // Spawn the isolate on a dedicated thread (JsRuntime is !Send)
     let isolate_name = name.clone();
     let isolate_config = config.clone();
@@ -118,6 +128,7 @@ pub async fn create_function(
                     bundle_format,
                     snapshot_bytes,
                     bundle_package.v8_version.clone(),
+                    inspector_stop_for_thread,
                 ))
             }));
             match result {
@@ -135,6 +146,7 @@ pub async fn create_function(
         eszip_bytes: Bytes::from(eszip_bytes_vec),
         bundle_format,
         isolate_handle: Some(handle),
+        inspector_stop,
         status: FunctionStatus::Running,
         config,
         metrics,
@@ -156,6 +168,7 @@ async fn run_isolate(
     bundle_format: BundleFormat,
     snapshot_bytes: Option<Vec<u8>>,
     v8_version: String,
+    inspector_stop: Option<Arc<AtomicBool>>,
 ) -> Result<(), Error> {
     // Track cold start timing
     let cold_start_timer = std::time::Instant::now();
@@ -194,7 +207,8 @@ async fn run_isolate(
         // (before module loading), so V8 tracks the script from compilation time.
         let inspector = js_runtime.inspector();
         let session_sender = inspector.get_session_sender();
-        let (guard, target_id) = start_inspector_server(session_sender, port, name.clone(), root_specifier.as_str().to_string())?;
+        let stop = inspector_stop.clone().expect("inspector_stop must be Some when inspect_port is Some");
+        let (guard, target_id) = start_inspector_server(session_sender, port, name.clone(), root_specifier.as_str().to_string(), stop)?;
         info!(
             "function '{}' inspector listening on ws://127.0.0.1:{}/{}",
             name,
@@ -281,6 +295,13 @@ async fn run_isolate(
             }
         }
     }
+
+    // Drop the runtime BEFORE the inspector guard so that the inspector
+    // channels close first. This causes any active WebSocket pump to detect
+    // the dead channel. The guard's Drop then sets stop=true and joins the
+    // listener thread, which exits promptly (pump_websocket also checks the
+    // stop flag on every iteration).
+    drop(js_runtime);
 
     Ok(())
 }
@@ -371,9 +392,9 @@ fn start_inspector_server(
     port: u16,
     target_name: String,
     root_url: String,
+    stop: Arc<AtomicBool>,
 ) -> Result<(InspectorServerGuard, String), Error> {
     let target_id = uuid::Uuid::new_v4().to_string();
-    let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = stop.clone();
     let target_id_for_thread = target_id.clone();
     let root_url_for_thread = root_url.clone();
@@ -407,7 +428,7 @@ fn start_inspector_server(
 
                     // Accept WebSocket upgrade on the UUID path or the legacy /ws path
                     if is_upgrade && (path == ws_path.as_str() || path == "/ws") {
-                        handle_websocket_session(&mut stream, &session_sender);
+                        handle_websocket_session(&mut stream, &session_sender, &stop_for_thread);
                         continue;
                     }
 
@@ -498,6 +519,7 @@ fn write_http_not_found(stream: &mut std::net::TcpStream) -> std::io::Result<()>
 fn handle_websocket_session(
     stream: &mut std::net::TcpStream,
     session_sender: &deno_core::futures::channel::mpsc::UnboundedSender<InspectorSessionProxy>,
+    stop: &AtomicBool,
 ) {
     let cloned = match stream.try_clone() {
         Ok(s) => s,
@@ -531,15 +553,16 @@ fn handle_websocket_session(
         return;
     }
 
-    pump_websocket(&mut ws, to_runtime_tx, &mut from_runtime_rx);
+    pump_websocket(&mut ws, to_runtime_tx, &mut from_runtime_rx, stop);
 }
 
 fn pump_websocket(
     ws: &mut WebSocket<std::net::TcpStream>,
     to_runtime_tx: deno_core::futures::channel::mpsc::UnboundedSender<String>,
     from_runtime_rx: &mut deno_core::futures::channel::mpsc::UnboundedReceiver<InspectorMsg>,
+    stop: &AtomicBool,
 ) {
-    loop {
+    while !stop.load(Ordering::Relaxed) {
         loop {
             match from_runtime_rx.try_recv() {
                 Ok(msg) => {
@@ -574,6 +597,13 @@ fn pump_websocket(
 
 /// Destroy a function: cancel its isolate and wait for cleanup.
 pub async fn destroy_function(entry: &FunctionEntry) {
+    // Signal the inspector listener thread to stop FIRST. This releases the
+    // TCP port immediately (~50ms) without waiting for the entire isolate
+    // shutdown chain (which involves dropping V8's JsRuntime).
+    if let Some(stop) = &entry.inspector_stop {
+        stop.store(true, Ordering::Relaxed);
+    }
+
     if let Some(handle) = &entry.isolate_handle {
         handle.shutdown.cancel();
         // Give the isolate a moment to drain
