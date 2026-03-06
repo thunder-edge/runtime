@@ -238,6 +238,22 @@ This prevents functions from accessing sensitive internal endpoints like cloud m
   - Protects against resource exhaustion attacks.
   - Env: `EDGE_RUNTIME_MAX_CONNECTIONS`
 
+### Isolate Pool Controls
+
+- `--pool-enabled`
+  - Enable isolate pooling controls for this process.
+  - Default: `false`
+  - Env: `EDGE_RUNTIME_POOL_ENABLED`
+- `--pool-global-max-isolates <COUNT>`
+  - Global isolate cap across all functions in this process.
+  - Default: `256`
+  - Env: `EDGE_RUNTIME_POOL_GLOBAL_MAX_ISOLATES`
+- `--pool-min-free-memory-mib <MIB>`
+  - Minimum free memory required to allow isolate scale-up.
+  - If memory is below this threshold, scaling is blocked and a warning is logged.
+  - Default: `256`
+  - Env: `EDGE_RUNTIME_POOL_MIN_FREE_MEMORY_MIB`
+
 ### Common Options
 
 - `--rate-limit <RATE_LIMIT>`
@@ -296,6 +312,8 @@ All endpoints below are served on the **admin listener** (default port 9000):
 | `/_internal/functions/{name}` | PUT | Update function |
 | `/_internal/functions/{name}` | DELETE | Delete function |
 | `/_internal/functions/{name}/reload` | POST | Hot reload (requires feature flag) |
+| `/_internal/functions/{name}/pool` | GET | Get per-function pool limits |
+| `/_internal/functions/{name}/pool` | PUT | Update per-function pool limits (`min`, `max`) |
 
 ### Ingress Routing
 

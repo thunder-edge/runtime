@@ -2,6 +2,7 @@ use anyhow::Error;
 use bytes::Bytes;
 use chrono::Utc;
 use dashmap::DashMap;
+use sysinfo::System;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -11,11 +12,30 @@ use runtime_core::manifest::ResolvedFunctionManifest;
 use crate::lifecycle;
 use crate::types::*;
 
+#[derive(Debug, Clone)]
+pub struct PoolRuntimeConfig {
+    pub enabled: bool,
+    pub global_max_isolates: usize,
+    pub min_free_memory_mib: u64,
+}
+
+impl Default for PoolRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            global_max_isolates: 1024,
+            min_free_memory_mib: 256,
+        }
+    }
+}
+
 /// Thread-safe registry of all deployed functions.
 pub struct FunctionRegistry {
     functions: DashMap<String, FunctionEntry>,
     global_shutdown: CancellationToken,
     default_config: IsolateConfig,
+    pool_config: PoolRuntimeConfig,
+    default_pool_limits: PoolLimits,
 }
 
 impl FunctionRegistry {
@@ -36,20 +56,39 @@ impl FunctionRegistry {
 
     fn all_request_channels_closed(&self) -> bool {
         self.functions.iter().all(|entry| {
-            entry
+            let primary_closed = entry
                 .isolate_handle
                 .as_ref()
                 .map(|h| h.is_request_channel_closed())
-                .unwrap_or(true)
+                .unwrap_or(true);
+            let extra_closed = entry
+                .extra_isolate_handles
+                .iter()
+                .all(|h| h.is_request_channel_closed());
+            primary_closed && extra_closed
         })
     }
 
     fn reconcile_entry_status(entry: &mut FunctionEntry) {
-        let is_dead = entry
-            .isolate_handle
-            .as_ref()
-            .map(|handle| !handle.is_alive())
-            .unwrap_or(true);
+        entry
+            .extra_isolate_handles
+            .retain(|handle| handle.is_alive());
+
+        let mut alive_count = entry
+            .extra_isolate_handles
+            .iter()
+            .filter(|handle| handle.is_alive())
+            .count();
+
+        if let Some(handle) = &entry.isolate_handle {
+            if handle.is_alive() {
+                alive_count += 1;
+            } else {
+                entry.isolate_handle = None;
+            }
+        }
+
+        let is_dead = alive_count == 0;
 
         if is_dead && entry.status == FunctionStatus::Running {
             entry.status = FunctionStatus::Error;
@@ -65,11 +104,86 @@ impl FunctionRegistry {
     }
 
     pub fn new(global_shutdown: CancellationToken, default_config: IsolateConfig) -> Self {
+        Self::new_with_pool(
+            global_shutdown,
+            default_config,
+            PoolRuntimeConfig::default(),
+            PoolLimits::default(),
+        )
+    }
+
+    pub fn new_with_pool(
+        global_shutdown: CancellationToken,
+        default_config: IsolateConfig,
+        pool_config: PoolRuntimeConfig,
+        default_pool_limits: PoolLimits,
+    ) -> Self {
         Self {
             functions: DashMap::new(),
             global_shutdown,
             default_config,
+            pool_config,
+            default_pool_limits,
         }
+    }
+
+    fn current_total_isolates(&self) -> usize {
+        self.functions
+            .iter()
+            .map(|entry| entry.current_pool_size())
+            .sum()
+    }
+
+    fn can_scale_with_memory(&self, function_name: &str) -> bool {
+        let mut sys = System::new_all();
+        sys.refresh_memory();
+        let available_mib = sys.available_memory() / (1024 * 1024);
+        if available_mib < self.pool_config.min_free_memory_mib {
+            warn!(
+                "pool scale blocked for '{}' due to low memory (available={}MiB, min_required={}MiB)",
+                function_name, available_mib, self.pool_config.min_free_memory_mib
+            );
+            warn!(
+                "TODO: trigger external alert hook for low-memory pool scale block"
+            );
+            return false;
+        }
+        true
+    }
+
+    async fn create_replica_handle(
+        &self,
+        function_name: &str,
+        eszip_bytes: Bytes,
+        config: IsolateConfig,
+        manifest: Option<ResolvedFunctionManifest>,
+    ) -> Result<Option<runtime_core::isolate::IsolateHandle>, Error> {
+        if !self.pool_config.enabled {
+            return Ok(None);
+        }
+
+        if self.current_total_isolates() >= self.pool_config.global_max_isolates {
+            warn!(
+                "pool scale blocked for '{}' due to global isolate limit ({})",
+                function_name, self.pool_config.global_max_isolates
+            );
+            return Ok(None);
+        }
+
+        if !self.can_scale_with_memory(function_name) {
+            return Ok(None);
+        }
+
+        let replica_entry = lifecycle::create_function(
+            function_name.to_string(),
+            eszip_bytes.to_vec(),
+            config,
+            manifest,
+            self.global_shutdown.child_token(),
+        )
+        .await?;
+
+        Ok(replica_entry.isolate_handle)
     }
 
     /// Deploy a new function. Returns error if name already exists.
@@ -103,6 +217,39 @@ impl FunctionRegistry {
         )
         .await?;
 
+        let mut entry = entry;
+        entry.pool_limits = if self.pool_config.enabled {
+            self.default_pool_limits
+        } else {
+            PoolLimits::default()
+        };
+
+        if self.pool_config.enabled && entry.pool_limits.max > 1 {
+            while entry.current_pool_size() < entry.pool_limits.min
+                && entry.current_pool_size() < entry.pool_limits.max
+            {
+                match self
+                    .create_replica_handle(
+                        &name,
+                        entry.eszip_bytes.clone(),
+                        entry.config.clone(),
+                        entry.manifest.clone(),
+                    )
+                    .await
+                {
+                    Ok(Some(handle)) => entry.extra_isolate_handles.push(handle),
+                    Ok(None) => break,
+                    Err(err) => {
+                        warn!(
+                            "failed to pre-warm replica for '{}': {}",
+                            name, err
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+
         let info = entry.to_info();
         self.functions.insert(name, entry);
         Ok(info)
@@ -113,15 +260,29 @@ impl FunctionRegistry {
     pub fn get_handle(&self, name: &str) -> Option<runtime_core::isolate::IsolateHandle> {
         self.functions.get_mut(name).and_then(|mut entry| {
             Self::reconcile_entry_status(&mut entry);
-            if entry.status == FunctionStatus::Running {
-                // Also check if isolate is still alive (hasn't panicked or exited)
-                if let Some(ref handle) = entry.isolate_handle {
-                    if handle.is_alive() {
-                        return Some(handle.clone());
-                    }
+            if entry.status != FunctionStatus::Running {
+                return None;
+            }
+
+            let mut handles: Vec<runtime_core::isolate::IsolateHandle> = Vec::new();
+            if let Some(handle) = &entry.isolate_handle {
+                if handle.is_alive() {
+                    handles.push(handle.clone());
                 }
             }
-            None
+            for handle in &entry.extra_isolate_handles {
+                if handle.is_alive() {
+                    handles.push(handle.clone());
+                }
+            }
+
+            if handles.is_empty() {
+                return None;
+            }
+
+            let idx = (entry.next_handle_index as usize) % handles.len();
+            entry.next_handle_index = entry.next_handle_index.wrapping_add(1);
+            Some(handles[idx].clone())
         })
     }
 
@@ -198,6 +359,10 @@ impl FunctionRegistry {
     pub async fn delete(&self, name: &str) -> Result<(), Error> {
         if let Some((_, entry)) = self.functions.remove(name) {
             info!("deleting function '{}'", name);
+            for extra in &entry.extra_isolate_handles {
+                extra.shutdown.cancel();
+                extra.close_request_tx();
+            }
             lifecycle::destroy_function(&entry).await;
             Ok(())
         } else {
@@ -227,6 +392,10 @@ impl FunctionRegistry {
 
         // Destroy old, recreate from same bytes
         if let Some((_, old_entry)) = self.functions.remove(name) {
+            for extra in &old_entry.extra_isolate_handles {
+                extra.shutdown.cancel();
+                extra.close_request_tx();
+            }
             lifecycle::destroy_function(&old_entry).await;
         }
 
@@ -274,6 +443,10 @@ impl FunctionRegistry {
             if let Some(handle) = &entry.isolate_handle {
                 handle.shutdown.cancel();
             }
+            for handle in &entry.extra_isolate_handles {
+                handle.shutdown.cancel();
+                handle.close_request_tx();
+            }
         }
 
         let started = std::time::Instant::now();
@@ -295,6 +468,10 @@ impl FunctionRegistry {
                     .as_ref()
                     .map(|h| !h.is_request_channel_closed())
                     .unwrap_or(false)
+                    || entry
+                        .extra_isolate_handles
+                        .iter()
+                        .any(|h| !h.is_request_channel_closed())
             })
             .count();
 
@@ -312,6 +489,69 @@ impl FunctionRegistry {
     pub fn count(&self) -> usize {
         self.functions.len()
     }
+
+    pub fn get_pool_limits(&self, name: &str) -> Option<PoolLimits> {
+        self.functions.get(name).map(|entry| entry.pool_limits)
+    }
+
+    pub async fn set_pool_limits(
+        &self,
+        name: &str,
+        min: usize,
+        max: usize,
+    ) -> Result<FunctionInfo, Error> {
+        if min > max {
+            return Err(anyhow::anyhow!("invalid pool limits: min must be <= max"));
+        }
+
+        let Some((key, mut entry)) = self.functions.remove(name) else {
+            return Err(anyhow::anyhow!("function '{}' not found", name));
+        };
+
+        entry.pool_limits = if self.pool_config.enabled {
+            PoolLimits { min, max }
+        } else {
+            PoolLimits::default()
+        };
+
+        // Shrink extra replicas above max (primary handle is always retained if alive).
+        while entry.current_pool_size() > entry.pool_limits.max {
+            if let Some(extra) = entry.extra_isolate_handles.pop() {
+                extra.shutdown.cancel();
+                extra.close_request_tx();
+            } else {
+                break;
+            }
+        }
+
+        // Pre-warm up to min when pooling is enabled.
+        if self.pool_config.enabled && entry.pool_limits.max > 1 {
+            while entry.current_pool_size() < entry.pool_limits.min
+                && entry.current_pool_size() < entry.pool_limits.max
+            {
+                match self
+                    .create_replica_handle(
+                        name,
+                        entry.eszip_bytes.clone(),
+                        entry.config.clone(),
+                        entry.manifest.clone(),
+                    )
+                    .await
+                {
+                    Ok(Some(handle)) => entry.extra_isolate_handles.push(handle),
+                    Ok(None) => break,
+                    Err(err) => {
+                        warn!("failed to scale pool for '{}': {}", name, err);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let info = entry.to_info();
+        self.functions.insert(key, entry);
+        Ok(info)
+    }
 }
 
 #[cfg(test)]
@@ -327,6 +567,20 @@ mod tests {
     fn make_registry() -> FunctionRegistry {
         let shutdown = CancellationToken::new();
         FunctionRegistry::new(shutdown, IsolateConfig::default())
+    }
+
+    fn make_registry_with_pool(enabled: bool) -> FunctionRegistry {
+        let shutdown = CancellationToken::new();
+        FunctionRegistry::new_with_pool(
+            shutdown,
+            IsolateConfig::default(),
+            PoolRuntimeConfig {
+                enabled,
+                global_max_isolates: 16,
+                min_free_memory_mib: 0,
+            },
+            PoolLimits::default(),
+        )
     }
 
     #[test]
@@ -383,6 +637,9 @@ mod tests {
             eszip_bytes: Bytes::new(),
             bundle_format: BundleFormat::Eszip,
             isolate_handle: Some(handle),
+            extra_isolate_handles: Vec::new(),
+            pool_limits: PoolLimits::default(),
+            next_handle_index: 0,
             inspector_stop: None,
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
@@ -420,6 +677,9 @@ mod tests {
             eszip_bytes: Bytes::new(),
             bundle_format: BundleFormat::Eszip,
             isolate_handle: Some(handle),
+            extra_isolate_handles: Vec::new(),
+            pool_limits: PoolLimits::default(),
+            next_handle_index: 0,
             inspector_stop: None,
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
@@ -438,5 +698,97 @@ mod tests {
         rt.block_on(reg.shutdown_all_with_deadline(std::time::Duration::from_millis(20)));
 
         assert_eq!(reg.count(), 0);
+    }
+
+    #[test]
+    fn get_handle_round_robin_across_replicas() {
+        let reg = make_registry_with_pool(true);
+
+        let (primary_tx, _primary_rx) = tokio::sync::mpsc::unbounded_channel();
+        let primary = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(primary_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let (replica_tx, _replica_rx) = tokio::sync::mpsc::unbounded_channel();
+        let replica = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(replica_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let entry = FunctionEntry {
+            name: "rr-fn".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(primary.clone()),
+            extra_isolate_handles: vec![replica.clone()],
+            pool_limits: PoolLimits { min: 1, max: 2 },
+            next_handle_index: 0,
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig::default(),
+            manifest: None,
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+
+        reg.functions.insert("rr-fn".to_string(), entry);
+
+        let h1 = reg.get_handle("rr-fn").expect("missing first handle");
+        let h2 = reg.get_handle("rr-fn").expect("missing second handle");
+        let h3 = reg.get_handle("rr-fn").expect("missing third handle");
+
+        assert_eq!(h1.id, primary.id);
+        assert_eq!(h2.id, replica.id);
+        assert_eq!(h3.id, primary.id);
+    }
+
+    #[test]
+    fn set_pool_limits_updates_entry_when_pool_enabled() {
+        let reg = make_registry_with_pool(true);
+
+        let (request_tx, _request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(request_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let entry = FunctionEntry {
+            name: "pool-fn".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(handle),
+            extra_isolate_handles: Vec::new(),
+            pool_limits: PoolLimits::default(),
+            next_handle_index: 0,
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig::default(),
+            manifest: None,
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+        reg.functions.insert("pool-fn".to_string(), entry);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(reg.set_pool_limits("pool-fn", 1, 3));
+
+        assert!(result.is_ok(), "set_pool_limits should succeed");
+        let limits = reg.get_pool_limits("pool-fn").expect("pool limits missing");
+        assert_eq!(limits.min, 1);
+        assert_eq!(limits.max, 3);
     }
 }

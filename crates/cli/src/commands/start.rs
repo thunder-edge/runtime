@@ -8,6 +8,8 @@ use tracing::info;
 
 use runtime_core::isolate::IsolateConfig;
 use runtime_core::ssrf::SsrfConfig;
+use functions::registry::{FunctionRegistry, PoolRuntimeConfig};
+use functions::types::PoolLimits;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SourceMapMode {
@@ -96,6 +98,26 @@ pub struct StartArgs {
     /// Maximum concurrent connections across all listeners (default: 10000)
     #[arg(long, default_value_t = 10_000, env = "EDGE_RUNTIME_MAX_CONNECTIONS")]
     max_connections: usize,
+
+    /// Enable isolate pooling in this process.
+    #[arg(long, default_value_t = false, env = "EDGE_RUNTIME_POOL_ENABLED")]
+    pool_enabled: bool,
+
+    /// Global max isolates across all functions in this process.
+    #[arg(
+        long,
+        default_value_t = 256,
+        env = "EDGE_RUNTIME_POOL_GLOBAL_MAX_ISOLATES"
+    )]
+    pool_global_max_isolates: usize,
+
+    /// Minimum free memory required (MiB) to allow pool scale-up.
+    #[arg(
+        long,
+        default_value_t = 256,
+        env = "EDGE_RUNTIME_POOL_MIN_FREE_MEMORY_MIB"
+    )]
+    pool_min_free_memory_mib: u64,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Common Options
@@ -186,9 +208,15 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             ssrf_config,
         };
 
-        let registry = Arc::new(functions::registry::FunctionRegistry::new(
+        let registry = Arc::new(FunctionRegistry::new_with_pool(
             shutdown.clone(),
             default_config,
+            PoolRuntimeConfig {
+                enabled: args.pool_enabled,
+                global_max_isolates: args.pool_global_max_isolates,
+                min_free_memory_mib: args.pool_min_free_memory_mib,
+            },
+            PoolLimits::default(),
         ));
 
         // Spawn signal handler

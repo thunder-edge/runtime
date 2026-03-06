@@ -27,6 +27,7 @@ futures-util.workspace = true
 url.workspace = true
 tungstenite = "0.24"
 base64.workspace = true
+sysinfo.workspace = true
 
 [features]
 hot-reload = []

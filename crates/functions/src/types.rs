@@ -164,6 +164,25 @@ pub struct FunctionMetricsSnapshot {
     pub avg_warm_request_ms: u64,      // Média de requisição warm start (ms)
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PoolLimits {
+    pub min: usize,
+    pub max: usize,
+}
+
+impl Default for PoolLimits {
+    fn default() -> Self {
+        Self { min: 1, max: 1 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionPoolSnapshot {
+    pub min: usize,
+    pub max: usize,
+    pub current: usize,
+}
+
 /// A single deployed function entry.
 pub struct FunctionEntry {
     /// Unique name (used as path prefix for routing).
@@ -174,6 +193,12 @@ pub struct FunctionEntry {
     pub bundle_format: BundleFormat,
     /// Handle to the running isolate (None if loading/error).
     pub isolate_handle: Option<IsolateHandle>,
+    /// Additional isolate handles for the same function (pool replicas).
+    pub extra_isolate_handles: Vec<IsolateHandle>,
+    /// Pool limits for this function.
+    pub pool_limits: PoolLimits,
+    /// Round-robin cursor across available handles.
+    pub next_handle_index: u64,
     /// Stop signal for the inspector listener thread (if inspector is active).
     pub inspector_stop: Option<Arc<AtomicBool>>,
     /// Current status.
@@ -199,10 +224,20 @@ impl FunctionEntry {
             name: self.name.clone(),
             status: self.status,
             metrics: self.metrics.snapshot(),
+            pool: FunctionPoolSnapshot {
+                min: self.pool_limits.min,
+                max: self.pool_limits.max,
+                current: self.current_pool_size(),
+            },
             created_at: self.created_at,
             updated_at: self.updated_at,
             last_error: self.last_error.clone(),
         }
+    }
+
+    pub fn current_pool_size(&self) -> usize {
+        let base = if self.isolate_handle.is_some() { 1 } else { 0 };
+        base + self.extra_isolate_handles.len()
     }
 }
 
@@ -212,6 +247,7 @@ pub struct FunctionInfo {
     pub name: String,
     pub status: FunctionStatus,
     pub metrics: FunctionMetricsSnapshot,
+    pub pool: FunctionPoolSnapshot,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_error: Option<String>,
@@ -311,6 +347,9 @@ mod tests {
             eszip_bytes: Bytes::new(),
             bundle_format: BundleFormat::Eszip,
             isolate_handle: None,
+            extra_isolate_handles: Vec::new(),
+            pool_limits: PoolLimits::default(),
+            next_handle_index: 0,
             inspector_stop: None,
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),

@@ -583,7 +583,8 @@ mod tests {
     use std::sync::Once;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use functions::registry::FunctionRegistry;
+    use functions::registry::{FunctionRegistry, PoolRuntimeConfig};
+    use functions::types::{BundlePackage, PoolLimits};
     use rcgen::generate_simple_self_signed;
     use runtime_core::isolate::IsolateConfig;
     use rustls::pki_types::ServerName;
@@ -593,6 +594,7 @@ mod tests {
     use tokio_rustls::TlsConnector;
 
     static RUSTLS_INIT: Once = Once::new();
+    static DENO_INIT: Once = Once::new();
 
     fn init_rustls_provider() {
         RUSTLS_INIT.call_once(|| {
@@ -608,6 +610,113 @@ mod tests {
             CancellationToken::new(),
             IsolateConfig::default(),
         ))
+    }
+
+    fn make_pool_enabled_registry() -> Arc<FunctionRegistry> {
+        Arc::new(FunctionRegistry::new_with_pool(
+            CancellationToken::new(),
+            IsolateConfig::default(),
+            PoolRuntimeConfig {
+                enabled: true,
+                global_max_isolates: 64,
+                min_free_memory_mib: 0,
+            },
+            PoolLimits::default(),
+        ))
+    }
+
+    fn init_deno_platform() {
+        DENO_INIT.call_once(|| {
+            deno_core::JsRuntime::init_platform(None);
+        });
+    }
+
+    async fn build_eszip_async(specifier: &str, source: &str) -> Vec<u8> {
+        use deno_ast::{EmitOptions, TranspileOptions};
+        use deno_graph::ast::CapturingModuleAnalyzer;
+        use deno_graph::source::{LoadOptions, LoadResponse, Loader};
+        use deno_graph::{BuildOptions, GraphKind, ModuleGraph};
+
+        struct InlineLoader {
+            specifier: String,
+            source: String,
+        }
+
+        impl Loader for InlineLoader {
+            fn load(
+                &self,
+                specifier: &deno_graph::ModuleSpecifier,
+                _options: LoadOptions,
+            ) -> deno_graph::source::LoadFuture {
+                let spec = specifier.clone();
+                let expected = self.specifier.clone();
+                let source = self.source.clone();
+                Box::pin(async move {
+                    if spec.as_str() == expected {
+                        Ok(Some(LoadResponse::Module {
+                            content: source.into_bytes().into(),
+                            specifier: spec,
+                            maybe_headers: None,
+                            mtime: None,
+                        }))
+                    } else {
+                        Ok(None)
+                    }
+                })
+            }
+        }
+
+        let loader = InlineLoader {
+            specifier: specifier.to_string(),
+            source: source.to_string(),
+        };
+        let analyzer = CapturingModuleAnalyzer::default();
+        let root = deno_graph::ModuleSpecifier::parse(specifier).expect("invalid specifier");
+
+        let mut graph = ModuleGraph::new(GraphKind::CodeOnly);
+        graph
+            .build(
+                vec![root],
+                vec![],
+                &loader,
+                BuildOptions {
+                    module_analyzer: &analyzer,
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        let eszip = eszip::EszipV2::from_graph(eszip::FromGraphOptions {
+            graph,
+            parser: analyzer.as_capturing_parser(),
+            module_kind_resolver: Default::default(),
+            transpile_options: TranspileOptions::default(),
+            emit_options: EmitOptions::default(),
+            relative_file_base: None,
+            npm_packages: None,
+            npm_snapshot: Default::default(),
+        })
+        .expect("from_graph failed for e2e eszip fixture");
+
+        eszip.into_bytes()
+    }
+
+    async fn send_plain_http(addr: SocketAddr, request: &str) -> String {
+        let mut stream = TcpStream::connect(addr)
+            .await
+            .expect("failed to connect to server");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("failed to write request");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+            .await
+            .expect("timed out waiting for response")
+            .expect("failed to read response");
+
+        String::from_utf8_lossy(&response).to_string()
     }
 
     fn make_temp_tls_files() -> (
@@ -719,5 +828,108 @@ mod tests {
         server_result.expect("server returned error");
 
         std::fs::remove_dir_all(temp_dir).expect("failed to cleanup temp tls dir");
+    }
+
+    #[tokio::test]
+    async fn e2e_admin_pool_endpoints_update_and_read_limits() {
+        init_deno_platform();
+
+        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind probe listener");
+        let addr = probe_listener
+            .local_addr()
+            .expect("failed to get local addr");
+        drop(probe_listener);
+
+        let registry = make_pool_enabled_registry();
+        let shutdown = CancellationToken::new();
+
+        let hello_eszip = build_eszip_async(
+            "file:///pool_e2e.ts",
+            r#"
+            Deno.serve(async () => new Response("ok"));
+            "#,
+        )
+        .await;
+        let bundle = BundlePackage::eszip_only(hello_eszip);
+        let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+        registry
+            .deploy(
+                "pool-e2e-fn".to_string(),
+                bytes::Bytes::from(bundle_data),
+                None,
+                None,
+            )
+            .await
+            .expect("failed to deploy test function");
+
+        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind ingress probe listener");
+        let ingress_addr = ingress_probe
+            .local_addr()
+            .expect("failed to get ingress local addr");
+        drop(ingress_probe);
+
+        let server_config = DualServerConfig {
+            admin: AdminListenerConfig {
+                addr,
+                api_key: None,
+                tls: None,
+                body_limits: BodyLimitsConfig::default(),
+            },
+            ingress: IngressListenerConfig {
+                listener_type: IngressListenerType::Tcp(ingress_addr),
+                tls: None,
+                rate_limit_rps: None,
+                body_limits: BodyLimitsConfig::default(),
+            },
+            graceful_exit_deadline_secs: 1,
+            max_connections: 128,
+        };
+
+        let server_shutdown = shutdown.clone();
+        let registry_for_server = registry.clone();
+        let server_handle = tokio::spawn(async move {
+            run_dual_server(server_config, registry_for_server, server_shutdown).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let put_body = r#"{"min":1,"max":2}"#;
+        let put_req = format!(
+            "PUT /_internal/functions/pool-e2e-fn/pool HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            put_body.len(),
+            put_body
+        );
+        let put_resp = send_plain_http(addr, &put_req).await;
+        assert!(
+            put_resp.starts_with("HTTP/1.1 200"),
+            "unexpected PUT response: {put_resp}"
+        );
+        assert!(
+            put_resp.contains("\"pool\":{\"min\":1,\"max\":2"),
+            "PUT response should include updated pool limits: {put_resp}"
+        );
+
+        let get_req = "GET /_internal/functions/pool-e2e-fn/pool HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let get_resp = send_plain_http(addr, get_req).await;
+        assert!(
+            get_resp.starts_with("HTTP/1.1 200"),
+            "unexpected GET response: {get_resp}"
+        );
+        assert!(
+            get_resp.contains("\"min\":1") && get_resp.contains("\"max\":2"),
+            "GET response should return updated limits: {get_resp}"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
     }
 }

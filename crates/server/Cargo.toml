@@ -42,3 +42,8 @@ hot-reload = ["functions/hot-reload"]
 
 [dev-dependencies]
 rcgen = "0.12"
+bincode.workspace = true
+deno_graph.workspace = true
+deno_ast.workspace = true
+eszip.workspace = true
+deno_core.workspace = true

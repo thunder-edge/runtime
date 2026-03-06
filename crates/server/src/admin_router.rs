@@ -23,6 +23,18 @@ use crate::router::{
 };
 use crate::service::BoxBody;
 
+#[derive(serde::Deserialize)]
+struct PoolLimitsUpdateRequest {
+    min: usize,
+    max: usize,
+}
+
+#[derive(serde::Serialize)]
+struct PoolLimitsResponse {
+    min: usize,
+    max: usize,
+}
+
 fn boxed_full_response(response: Response<Full<Bytes>>) -> Response<BoxBody> {
     let (parts, body) = response.into_parts();
     Response::from_parts(parts, body.boxed())
@@ -409,6 +421,71 @@ impl AdminRouter {
                         StatusCode::NOT_FOUND,
                         r#"{"error":"hot-reload feature not enabled"}"#,
                     )
+                }
+            }
+
+            // GET /_internal/functions/{name}/pool
+            (Method::GET, Some("pool")) => match self.registry.get_pool_limits(name) {
+                Some(limits) => {
+                    let body = serde_json::to_string(&PoolLimitsResponse {
+                        min: limits.min,
+                        max: limits.max,
+                    })
+                    .unwrap_or_else(|_| "{}".to_string());
+                    json_response(StatusCode::OK, &body)
+                }
+                None => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
+            },
+
+            // PUT /_internal/functions/{name}/pool
+            (Method::PUT, Some("pool")) => {
+                if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
+                    check_content_length(&req, self.body_limits.max_request_body_bytes)
+                {
+                    return boxed_full_response(payload_too_large_response(
+                        self.body_limits.max_request_body_bytes,
+                    ));
+                }
+
+                let (_parts, body) = req.into_parts();
+                let body_bytes =
+                    match collect_body_with_limit(body, self.body_limits.max_request_body_bytes)
+                        .await
+                    {
+                        Ok(bytes) => bytes,
+                        Err(BodyLimitError::LimitExceeded)
+                        | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
+                            return boxed_full_response(payload_too_large_response(
+                                self.body_limits.max_request_body_bytes,
+                            ));
+                        }
+                        Err(_) => {
+                            return json_response(
+                                StatusCode::BAD_REQUEST,
+                                r#"{"error":"failed to read request body"}"#,
+                            )
+                        }
+                    };
+
+                let update: PoolLimitsUpdateRequest = match serde_json::from_slice(&body_bytes) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return json_response(
+                            StatusCode::BAD_REQUEST,
+                            r#"{"error":"invalid json body"}"#,
+                        )
+                    }
+                };
+
+                match self.registry.set_pool_limits(name, update.min, update.max).await {
+                    Ok(info) => {
+                        let json = serde_json::to_string(&info).unwrap_or_default();
+                        json_response(StatusCode::OK, &json)
+                    }
+                    Err(e) => json_response(
+                        StatusCode::BAD_REQUEST,
+                        &format!(r#"{{"error":"{}"}}"#, e),
+                    ),
                 }
             }
 
