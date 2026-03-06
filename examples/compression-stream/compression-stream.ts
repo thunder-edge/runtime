@@ -12,10 +12,9 @@ Deno.serve(async (req) => {
     const encoder = new TextEncoder();
     const input = encoder.encode(data);
 
-    const stream = ReadableStream.from([input]);
-    const compressed = stream
-      .pipeThrough(new CompressionStream(format))
-      .pipeThrough(new TextEncoderStream());
+    const compressed = ReadableStream.from([input]).pipeThrough(
+      new CompressionStream(format)
+    );
 
     const chunks: Uint8Array[] = [];
     const reader = compressed.getReader();
@@ -23,15 +22,20 @@ Deno.serve(async (req) => {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        chunks.push(new TextEncoder().encode(value as string));
+        chunks.push(value instanceof Uint8Array ? value : new Uint8Array(value));
       }
     } finally {
       reader.releaseLock();
     }
 
-    return new Uint8Array(
-      chunks.reduce((acc, chunk) => [...acc, ...chunk], [])
-    );
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return merged;
   }
 
   // Helper to decompress data
@@ -39,24 +43,32 @@ Deno.serve(async (req) => {
     compressed: Uint8Array,
     format: "gzip" | "deflate"
   ): Promise<string> {
-    const stream = ReadableStream.from([compressed]);
-    const decompressed = stream.pipeThrough(
+    const input = new Uint8Array(compressed);
+    const decompressed = ReadableStream.from([input]).pipeThrough(
       new DecompressionStream(format)
     );
 
-    const chunks: string[] = [];
+    const chunks: Uint8Array[] = [];
     const reader = decompressed.getReader();
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        chunks.push(value instanceof Uint8Array ? new TextDecoder().decode(value) : (value as string));
+        chunks.push(value instanceof Uint8Array ? value : new Uint8Array(value));
       }
     } finally {
       reader.releaseLock();
     }
 
-    return chunks.join("");
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return new TextDecoder().decode(merged);
   }
 
   // Compress endpoint
@@ -104,7 +116,7 @@ Deno.serve(async (req) => {
       const format = (url.searchParams.get("format") || "gzip") as
         | "gzip"
         | "deflate";
-      const body = await req.json();
+      const body = await req.json() as { compressed_base64: string };
       const compressed = new Uint8Array(
         atob(body.compressed_base64)
           .split("")

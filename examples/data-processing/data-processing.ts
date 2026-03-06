@@ -201,6 +201,13 @@ Bob Johnson,bob@example.com,45,Chicago</textarea>
       const csv = await req.text();
       const data = parseCSV(csv);
 
+      interface ProcessedStats {
+        ages: number[];
+        age_average?: string;
+        age_min?: number;
+        age_max?: number;
+      }
+
       // Process data
       const processed = {
         total_records: data.length,
@@ -213,7 +220,7 @@ Bob Johnson,bob@example.com,45,Chicago</textarea>
               return isNaN(age) ? null : age;
             })
             .filter((a): a is number => a !== null),
-        },
+        } as ProcessedStats,
       };
 
       // Add statistics if age data exists

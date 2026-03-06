@@ -23,22 +23,25 @@ Deno.serve(async (req) => {
   });
 
   // Custom transform: count characters
-  interface CharCountState {
-    count: number;
-  }
+  let count = 0;
 
   const charCountTransform = new TransformStream<string, string>({
-    start(controller) {
-      this.count = 0;
+    start(
+      _controller: TransformStreamDefaultController<string>
+    ) {
+      count = 0;
     },
-    transform(chunk: string, controller) {
-      this.count = (this.count ?? 0) + chunk.length;
+    transform(
+      chunk: string,
+      controller: TransformStreamDefaultController<string>
+    ) {
+      count += chunk.length;
       controller.enqueue(chunk);
     },
-    flush(controller) {
-      controller.enqueue(`\n\n[Total characters: ${this.count}]`);
+    flush(controller: TransformStreamDefaultController<string>) {
+      controller.enqueue(`\n\n[Total characters: ${count}]`);
     },
-  } as any);
+  });
 
   // Custom transform: CSV to formatted table
   const csvTableTransform = new TransformStream({

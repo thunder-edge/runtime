@@ -3,45 +3,54 @@
 
 Deno.serve((req) => {
   // Upgrade the connection to WebSocket
-  const { socket, response } = Deno.upgrade(req);
+  const { socket, response } = Deno.upgradeWebSocket(req);
 
-  (async () => {
+  socket.onmessage = (event) => {
     try {
-      for await (const message of socket) {
-        if (typeof message === "string") {
-          // Echo the message back
-          const response = {
-            type: "echo",
-            message: message,
-            receivedAt: new Date().toISOString(),
-          };
-          socket.send(JSON.stringify(response));
+      const message = event.data;
 
-          // Send additional info
-          if (message.toLowerCase().includes("hello")) {
-            socket.send(
-              JSON.stringify({
-                type: "greeting",
-                message: "Hello there! How can I help?",
-              })
-            );
-          }
-        } else if (message instanceof Uint8Array) {
-          // Handle binary data
-          const text = new TextDecoder().decode(message);
+      if (typeof message === "string") {
+        socket.send(
+          JSON.stringify({
+            type: "echo",
+            message,
+            receivedAt: new Date().toISOString(),
+          })
+        );
+
+        if (message.toLowerCase().includes("hello")) {
           socket.send(
             JSON.stringify({
-              type: "binary",
-              message: text,
-              size: message.byteLength,
+              type: "greeting",
+              message: "Hello there! How can I help?",
             })
           );
         }
+      } else if (message instanceof Blob) {
+        message.arrayBuffer().then((buffer) => {
+          socket.send(
+            JSON.stringify({
+              type: "binary",
+              size: buffer.byteLength,
+            })
+          );
+        });
+      } else if (message instanceof ArrayBuffer) {
+        socket.send(
+          JSON.stringify({
+            type: "binary",
+            size: message.byteLength,
+          })
+        );
       }
     } catch (error) {
-      console.error("WebSocket error:", error);
+      console.error("WebSocket message error:", error);
     }
-  })();
+  };
+
+  socket.onerror = (error) => {
+    console.error("WebSocket error:", error);
+  };
 
   return response;
 });

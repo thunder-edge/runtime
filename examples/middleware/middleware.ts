@@ -5,8 +5,8 @@
 type Middleware = (
   req: Request,
   next: MiddlewareNext
-) => Promise<Response> | Response;
-type MiddlewareNext = () => Promise<Response> | Response;
+) => Promise<Response>;
+type MiddlewareNext = () => Promise<Response>;
 
 // Middleware: Logging
 const loggingMiddleware = (req: Request, next: MiddlewareNext): Promise<Response> => {
@@ -23,7 +23,7 @@ const loggingMiddleware = (req: Request, next: MiddlewareNext): Promise<Response
 };
 
 // Middleware: Authentication
-const authMiddleware = (req: Request, next: MiddlewareNext): Response => {
+const authMiddleware = async (req: Request, next: MiddlewareNext): Promise<Response> => {
   const token = req.headers.get("authorization")?.replace("Bearer ", "");
 
   if (!token) {
@@ -46,7 +46,7 @@ const authMiddleware = (req: Request, next: MiddlewareNext): Response => {
     );
   }
 
-  return next();
+  return await next();
 };
 
 // Middleware: Compression header detection
@@ -68,7 +68,7 @@ const compressionMiddleware = (req: Request, next: MiddlewareNext): Promise<Resp
 };
 
 // Middleware: CORS
-const corsMiddleware = (req: Request, next: MiddlewareNext): Response => {
+const corsMiddleware = async (req: Request, next: MiddlewareNext): Promise<Response> => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
@@ -80,23 +80,12 @@ const corsMiddleware = (req: Request, next: MiddlewareNext): Response => {
     });
   }
 
-  const response = next();
-  if (response instanceof Response) {
-    const headers = new Headers(response.headers);
-    headers.set("access-control-allow-origin", "*");
-    return new Response(response.body, {
-      status: response.status,
-      headers,
-    });
-  }
-
-  return Promise.resolve(response).then((res) => {
-    const headers = new Headers(res.headers);
-    headers.set("access-control-allow-origin", "*");
-    return new Response(res.body, {
-      status: res.status,
-      headers,
-    });
+  const response = await next();
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", "*");
+  return new Response(response.body, {
+    status: response.status,
+    headers,
   });
 };
 
@@ -112,7 +101,7 @@ function compose(...middlewares: Middleware[]) {
       index = i;
 
       if (i === middlewares.length) {
-        return handler();
+        return await handler();
       }
 
       const middleware = middlewares[i];
@@ -236,13 +225,13 @@ Deno.serve(async (req) => {
     url.pathname === "/public"
   ) {
     return compose(loggingMiddleware, corsMiddleware)(req, () =>
-      router(req)
+      Promise.resolve(router(req))
     );
   }
 
   // Protected routes
   if (url.pathname.startsWith("/api")) {
-    return middlewareChain(req, () => router(req));
+    return middlewareChain(req, () => Promise.resolve(router(req)));
   }
 
   return router(req);

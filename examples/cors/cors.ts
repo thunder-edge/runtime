@@ -1,7 +1,7 @@
 // Example: CORS (Cross-Origin Resource Sharing)
 // Demonstrates CORS header handling
 
-Deno.serve((req) => {
+Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   // CORS configuration

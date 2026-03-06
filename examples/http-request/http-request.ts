@@ -11,7 +11,8 @@ Deno.serve(async (req) => {
       headers: { "content-type": "application/json" },
     });
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
+    const message = error instanceof Error ? error.message : String(error);
+    return new Response(JSON.stringify({ error: message }), {
       status: 500,
       headers: { "content-type": "application/json" },
     });

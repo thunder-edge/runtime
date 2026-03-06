@@ -1,7 +1,7 @@
 // Example: Intl API - Internationalization
 // Demonstrates date, number, and collation formatting for different locales
 
-Deno.serve((req) => {
+Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   // Format date according to locale
