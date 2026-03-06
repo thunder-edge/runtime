@@ -225,11 +225,13 @@ TODO (futuro): expor este evento como métrica por função (ex.: `heap_limit_te
 **Crate:** `server`
 **Arquivo:** `crates/server/src/router.rs`
 
-- [ ] Criar função `fn is_valid_function_name(name: &str) -> bool`
-- [ ] Regex: `^[a-z0-9][a-z0-9-]{0,62}$`
-- [ ] Validar no deploy (`POST /_internal/functions`)
-- [ ] Validar no ingress (retornar 400 se inválido)
-- [ ] Adicionar testes com nomes: válidos, com `..`, com `/`, unicode, vazio, muito longo
+- [x] Criar função `fn is_valid_function_name(name: &str) -> bool`
+- [x] Regex: `^[a-z0-9][a-z0-9-]{0,62}$`
+- [x] Validar no deploy (`POST /_internal/functions`)
+- [x] Validar no ingress (retornar 400 se inválido)
+- [x] Adicionar testes com nomes: válidos, com `..`, com `/`, unicode, vazio, muito longo
+
+**Status:** ✅ Concluído
 
 ---
 

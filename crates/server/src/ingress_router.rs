@@ -16,7 +16,7 @@ use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
     payload_too_large_response, BodyLimitError, BodyLimitsConfig,
 };
-use crate::router::json_response;
+use crate::router::{is_valid_function_name, json_response};
 
 type BoxBody = Full<Bytes>;
 
@@ -74,6 +74,13 @@ impl IngressRouter {
             return json_response(
                 StatusCode::NOT_FOUND,
                 r#"{"error":"no function specified"}"#,
+            );
+        }
+
+        if !is_valid_function_name(function_name) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"invalid function name"}"#,
             );
         }
 
@@ -224,5 +231,12 @@ mod tests {
             "/".to_string()
         };
         assert_eq!(forwarded_path, "/");
+    }
+
+    #[test]
+    fn test_reject_invalid_function_name() {
+        assert!(!crate::router::is_valid_function_name("Bad_Name"));
+        assert!(!crate::router::is_valid_function_name("../admin"));
+        assert!(!crate::router::is_valid_function_name(""));
     }
 }

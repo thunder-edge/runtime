@@ -15,6 +15,7 @@ use crate::body_limits::{
 
 type BoxBody = Full<Bytes>;
 const MAX_LOG_ERROR_BYTES: usize = 1024;
+const MAX_FUNCTION_NAME_LEN: usize = 63;
 
 fn truncate_for_log(message: &str, max_bytes: usize) -> String {
     if message.len() <= max_bytes {
@@ -93,6 +94,13 @@ impl Router {
             return json_response(
                 StatusCode::NOT_FOUND,
                 r#"{"error":"no function specified"}"#,
+            );
+        }
+
+        if !is_valid_function_name(function_name) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"invalid function name; use lowercase slug [a-z0-9-], max 63 chars"}"#,
             );
         }
 
@@ -297,10 +305,17 @@ impl Router {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        let Some(name) = function_name else {
+        let Some(raw_name) = function_name else {
             return json_response(
                 StatusCode::BAD_REQUEST,
                 r#"{"error":"missing x-function-name header"}"#,
+            );
+        };
+
+        let Some(name) = normalize_function_name(&raw_name) else {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"invalid x-function-name; expected URL-safe slug"}"#,
             );
         };
 
@@ -364,6 +379,13 @@ impl Router {
 
         if name.is_empty() {
             return json_response(StatusCode::BAD_REQUEST, r#"{"error":"empty function name"}"#);
+        }
+
+        if !is_valid_function_name(name) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"invalid function name"}"#,
+            );
         }
 
         match (method, sub_route) {
@@ -480,6 +502,69 @@ pub fn extract_function_and_path(path: &str) -> (&str, String) {
     (function_name, forwarded_path)
 }
 
+/// Validate canonical function name slug format: `^[a-z0-9][a-z0-9-]{0,62}$`.
+pub fn is_valid_function_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > MAX_FUNCTION_NAME_LEN {
+        return false;
+    }
+
+    let bytes = name.as_bytes();
+    let first = bytes[0];
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return false;
+    }
+
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+/// Slugify a raw function name into URL-safe lowercase form.
+///
+/// Rules:
+/// - lowercase ASCII
+/// - keep `[a-z0-9]`
+/// - map all separators/punctuation to `-`
+/// - collapse repeated dashes and trim leading/trailing dashes
+/// - truncate to 63 chars, preserving valid boundaries
+pub fn slugify_function_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(MAX_FUNCTION_NAME_LEN));
+    let mut last_was_dash = false;
+
+    for ch in raw.chars() {
+        let c = ch.to_ascii_lowercase();
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            out.push(c);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            out.push('-');
+            last_was_dash = true;
+        }
+
+        if out.len() >= MAX_FUNCTION_NAME_LEN {
+            break;
+        }
+    }
+
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.len() <= MAX_FUNCTION_NAME_LEN {
+        trimmed
+    } else {
+        trimmed[..MAX_FUNCTION_NAME_LEN].trim_matches('-').to_string()
+    }
+}
+
+/// Convert user-provided name to canonical slug, returning None if it cannot
+/// produce a valid function name.
+pub fn normalize_function_name(raw: &str) -> Option<String> {
+    let slug = slugify_function_name(raw);
+    if is_valid_function_name(&slug) {
+        Some(slug)
+    } else {
+        None
+    }
+}
+
 /// Build a JSON response.
 pub fn json_response(status: StatusCode, body: &str) -> Response<BoxBody> {
     Response::builder()
@@ -546,5 +631,28 @@ mod tests {
         let truncated = truncate_for_log(&msg, 1024);
         assert!(truncated.len() <= 1024);
         assert!(truncated.ends_with("... [truncated]"));
+    }
+
+    #[test]
+    fn function_name_validation_accepts_slug() {
+        assert!(is_valid_function_name("my-function-01"));
+    }
+
+    #[test]
+    fn function_name_validation_rejects_invalid() {
+        assert!(!is_valid_function_name(""));
+        assert!(!is_valid_function_name("UpperCase"));
+        assert!(!is_valid_function_name("name..dots"));
+        assert!(!is_valid_function_name("with/slash"));
+        assert!(!is_valid_function_name("função"));
+        let too_long = "a".repeat(64);
+        assert!(!is_valid_function_name(&too_long));
+    }
+
+    #[test]
+    fn slugify_normalizes_to_url_safe_slug() {
+        assert_eq!(slugify_function_name(" My Func_v2 "), "my-func-v2");
+        assert_eq!(slugify_function_name("api..gateway///edge"), "api-gateway-edge");
+        assert_eq!(normalize_function_name("___hello___"), Some("hello".to_string()));
     }
 }

@@ -13,7 +13,7 @@ use crate::body_limits::{
     check_content_length, collect_body_with_limit, payload_too_large_response, BodyLimitError,
     BodyLimitsConfig,
 };
-use crate::router::json_response;
+use crate::router::{is_valid_function_name, json_response, normalize_function_name};
 
 type BoxBody = Full<Bytes>;
 
@@ -204,10 +204,17 @@ impl AdminRouter {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        let Some(name) = function_name else {
+        let Some(raw_name) = function_name else {
             return json_response(
                 StatusCode::BAD_REQUEST,
                 r#"{"error":"missing x-function-name header"}"#,
+            );
+        };
+
+        let Some(name) = normalize_function_name(&raw_name) else {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"invalid x-function-name; expected URL-safe slug"}"#,
             );
         };
 
@@ -268,6 +275,13 @@ impl AdminRouter {
 
         if name.is_empty() {
             return json_response(StatusCode::BAD_REQUEST, r#"{"error":"empty function name"}"#);
+        }
+
+        if !is_valid_function_name(name) {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"invalid function name"}"#,
+            );
         }
 
         match (method, sub_route) {
