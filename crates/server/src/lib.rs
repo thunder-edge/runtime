@@ -777,6 +777,18 @@ mod tests {
         String::from_utf8_lossy(&response).to_string()
     }
 
+    async fn wait_for_tcp_listener(addr: SocketAddr) {
+        // Poll listener readiness to avoid fixed startup sleeps in E2E tests.
+        for _ in 0..60 {
+            if TcpStream::connect(addr).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        panic!("listener did not become ready in time: {addr}");
+    }
+
     fn make_temp_tls_files() -> (
         std::path::PathBuf,
         std::path::PathBuf,
@@ -838,7 +850,7 @@ mod tests {
         let server_handle =
             tokio::spawn(async move { run_server(server_config, registry, server_shutdown).await });
 
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        wait_for_tcp_listener(addr).await;
 
         let mut roots = RootCertStore::empty();
         roots
@@ -958,7 +970,8 @@ mod tests {
             run_dual_server(server_config, registry_for_server, server_shutdown).await
         });
 
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        wait_for_tcp_listener(addr).await;
+        wait_for_tcp_listener(ingress_addr).await;
 
         let put_body = r#"{"min":1,"max":2}"#;
         let put_req = format!(
@@ -1045,7 +1058,8 @@ mod tests {
             run_dual_server(server_config, registry_for_server, server_shutdown).await
         });
 
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        wait_for_tcp_listener(admin_addr).await;
+        wait_for_tcp_listener(ingress_addr).await;
 
         let bad_payload = b"not-a-valid-bundle";
         let bad_req = format!(
@@ -1132,7 +1146,8 @@ mod tests {
             run_dual_server(server_config, registry_for_server, server_shutdown).await
         });
 
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        wait_for_tcp_listener(admin_addr).await;
+        wait_for_tcp_listener(ingress_addr).await;
 
         let body = bincode::serialize(&BundlePackage::eszip_only(hello_eszip))
             .expect("serialize bundle package");
@@ -1183,6 +1198,299 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn e2e_ingress_streaming_returns_progressive_chunked_body() {
+        init_deno_platform();
+
+        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind admin probe listener");
+        let admin_addr = admin_probe
+            .local_addr()
+            .expect("failed to get admin local addr");
+        drop(admin_probe);
+
+        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind ingress probe listener");
+        let ingress_addr = ingress_probe
+            .local_addr()
+            .expect("failed to get ingress local addr");
+        drop(ingress_probe);
+
+        let registry = make_test_registry();
+        let shutdown = CancellationToken::new();
+
+        let stream_eszip = build_eszip_async(
+            "file:///stream_e2e.ts",
+            r#"
+            Deno.serve(async () => {
+              const encoder = new TextEncoder();
+              const stream = new ReadableStream({
+                start(controller) {
+                  controller.enqueue(encoder.encode('first-'));
+                  setTimeout(() => controller.enqueue(encoder.encode('second')), 120);
+                  setTimeout(() => controller.close(), 180);
+                },
+              });
+              return new Response(stream, {
+                headers: { 'content-type': 'text/plain' },
+              });
+            });
+            "#,
+        )
+        .await;
+        let bundle = BundlePackage::eszip_only(stream_eszip);
+        let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+        registry
+            .deploy(
+                "stream-e2e".to_string(),
+                bytes::Bytes::from(bundle_data),
+                None,
+                None,
+            )
+            .await
+            .expect("failed to deploy streaming test function");
+
+        let server_config = DualServerConfig {
+            admin: AdminListenerConfig {
+                addr: admin_addr,
+                api_key: None,
+                tls: None,
+                body_limits: BodyLimitsConfig::default(),
+                bundle_signature: BundleSignatureConfig {
+                    required: false,
+                    public_key_path: None,
+                },
+            },
+            ingress: IngressListenerConfig {
+                listener_type: IngressListenerType::Tcp(ingress_addr),
+                tls: None,
+                rate_limit_rps: None,
+                body_limits: BodyLimitsConfig::default(),
+            },
+            graceful_exit_deadline_secs: 1,
+            max_connections: 128,
+        };
+
+        let server_shutdown = shutdown.clone();
+        let registry_for_server = registry.clone();
+        let server_handle = tokio::spawn(async move {
+            run_dual_server(server_config, registry_for_server, server_shutdown).await
+        });
+
+        wait_for_tcp_listener(admin_addr).await;
+        wait_for_tcp_listener(ingress_addr).await;
+
+        // Warm up isolate to avoid cold-start skew in progressivity timing assertions.
+        let warmup_resp = send_plain_http(
+            ingress_addr,
+            "GET /stream-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            warmup_resp.starts_with("HTTP/1.1 200"),
+            "warmup request failed: {warmup_resp}"
+        );
+
+        let mut stream = TcpStream::connect(ingress_addr)
+            .await
+            .expect("failed to connect to ingress");
+        stream
+            .write_all(b"GET /stream-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("failed to write ingress request");
+
+        let mut first_buf = [0_u8; 4096];
+        let first_n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut first_buf))
+            .await
+            .expect("timed out waiting for first streamed bytes")
+            .expect("failed to read first streamed bytes");
+        assert!(first_n > 0, "expected response bytes for first chunk");
+
+        let first_text = String::from_utf8_lossy(&first_buf[..first_n]).to_string();
+        let first_lower = first_text.to_ascii_lowercase();
+        assert!(
+            first_text.starts_with("HTTP/1.1 200"),
+            "expected 200 response, got: {first_text}"
+        );
+        assert!(
+            first_lower.contains("transfer-encoding: chunked"),
+            "expected chunked transfer-encoding for streaming response: {first_text}"
+        );
+        assert!(
+            first_text.contains("first-"),
+            "expected first chunk in early response bytes: {first_text}"
+        );
+
+        let mut tail = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut tail))
+            .await
+            .expect("timed out waiting for streamed response completion")
+            .expect("failed to read streamed response tail");
+
+        let tail_text = String::from_utf8_lossy(&tail).to_string();
+        let full_text = format!("{first_text}{tail_text}");
+        assert!(
+            full_text.contains("second"),
+            "expected delayed second chunk in response body: {full_text}"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
+    }
+
+    #[tokio::test]
+    async fn e2e_ingress_streaming_long_chunked_body_completes() {
+        init_deno_platform();
+
+        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind admin probe listener");
+        let admin_addr = admin_probe
+            .local_addr()
+            .expect("failed to get admin local addr");
+        drop(admin_probe);
+
+        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind ingress probe listener");
+        let ingress_addr = ingress_probe
+            .local_addr()
+            .expect("failed to get ingress local addr");
+        drop(ingress_probe);
+
+        let registry = make_test_registry();
+        let shutdown = CancellationToken::new();
+
+        let stream_eszip = build_eszip_async(
+            "file:///long_stream_e2e.ts",
+            r#"
+            Deno.serve(async () => {
+              const encoder = new TextEncoder();
+              const stream = new ReadableStream({
+                start(controller) {
+                  (async () => {
+                    for (let i = 0; i < 300; i++) {
+                      controller.enqueue(encoder.encode(`chunk-${String(i).padStart(4, '0')}\n`));
+                      if (i % 25 === 0) {
+                        await new Promise((resolve) => setTimeout(resolve, 2));
+                      }
+                    }
+                    controller.close();
+                  })().catch((err) => controller.error(err));
+                },
+              });
+              return new Response(stream, {
+                headers: { 'content-type': 'text/plain' },
+              });
+            });
+            "#,
+        )
+        .await;
+        let bundle = BundlePackage::eszip_only(stream_eszip);
+        let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+        registry
+            .deploy(
+                "stream-long-e2e".to_string(),
+                bytes::Bytes::from(bundle_data),
+                None,
+                None,
+            )
+            .await
+            .expect("failed to deploy long streaming test function");
+
+        let server_config = DualServerConfig {
+            admin: AdminListenerConfig {
+                addr: admin_addr,
+                api_key: None,
+                tls: None,
+                body_limits: BodyLimitsConfig::default(),
+                bundle_signature: BundleSignatureConfig {
+                    required: false,
+                    public_key_path: None,
+                },
+            },
+            ingress: IngressListenerConfig {
+                listener_type: IngressListenerType::Tcp(ingress_addr),
+                tls: None,
+                rate_limit_rps: None,
+                body_limits: BodyLimitsConfig::default(),
+            },
+            graceful_exit_deadline_secs: 1,
+            max_connections: 128,
+        };
+
+        let server_shutdown = shutdown.clone();
+        let registry_for_server = registry.clone();
+        let server_handle = tokio::spawn(async move {
+            run_dual_server(server_config, registry_for_server, server_shutdown).await
+        });
+
+        wait_for_tcp_listener(admin_addr).await;
+        wait_for_tcp_listener(ingress_addr).await;
+
+        let mut stream = TcpStream::connect(ingress_addr)
+            .await
+            .expect("failed to connect to ingress");
+        stream
+            .write_all(b"GET /stream-long-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("failed to write ingress request");
+
+        let mut first_buf = [0_u8; 4096];
+        let first_n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut first_buf))
+            .await
+            .expect("timed out waiting for first streamed bytes")
+            .expect("failed to read first streamed bytes");
+        assert!(first_n > 0, "expected first streamed bytes");
+
+        let first_text = String::from_utf8_lossy(&first_buf[..first_n]).to_string();
+        let first_lower = first_text.to_ascii_lowercase();
+        assert!(
+            first_text.starts_with("HTTP/1.1 200"),
+            "expected 200 response, got: {first_text}"
+        );
+        assert!(
+            first_lower.contains("transfer-encoding: chunked"),
+            "expected chunked transfer for long stream response: {first_text}"
+        );
+        assert!(
+            first_text.contains("chunk-0000"),
+            "expected initial chunk marker in first response bytes: {first_text}"
+        );
+
+        let mut tail = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut tail))
+            .await
+            .expect("timed out waiting for long streamed response completion")
+            .expect("failed to read long streamed response tail");
+
+        let tail_text = String::from_utf8_lossy(&tail).to_string();
+        let full_text = format!("{first_text}{tail_text}");
+        assert!(
+            full_text.contains("chunk-0299"),
+            "expected final chunk marker in long response body"
+        );
+        assert!(
+            full_text.matches("chunk-").count() >= 250,
+            "expected many streamed chunks in body"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
+    }
+
+    #[tokio::test]
     async fn e2e_connection_limit_drops_excess_connections() {
         init_deno_platform();
 
@@ -1209,7 +1517,7 @@ mod tests {
         let server_shutdown = shutdown.clone();
         let server_handle = tokio::spawn(async move { run_server(server_config, registry, server_shutdown).await });
 
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        wait_for_tcp_listener(addr).await;
 
         // Occupy the only permit with a slow request.
         let mut held = TcpStream::connect(addr)
@@ -1293,7 +1601,7 @@ mod tests {
         let server_shutdown = shutdown.clone();
         let server_handle = tokio::spawn(async move { run_server(server_config, registry, server_shutdown).await });
 
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        wait_for_tcp_listener(addr).await;
 
         let mut tasks = Vec::with_capacity(20_000);
         for _ in 0..20_000usize {

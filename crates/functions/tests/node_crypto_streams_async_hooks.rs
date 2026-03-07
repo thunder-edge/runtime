@@ -70,7 +70,8 @@ fn crypto_createHash_is_available() {
     assert_js_true(
         r#"const crypto = await import('node:crypto');
         const hash = crypto.createHash('sha256');
-        console.log(typeof hash.update === 'function');"#,
+        const out = hash.update('abc').digest('hex');
+        console.log(typeof hash.update === 'function' && typeof out === 'string' && out.length > 0);"#,
         "crypto.createHash should be available",
     );
 }
@@ -80,7 +81,8 @@ fn crypto_createHmac_is_available() {
     assert_js_true(
         r#"const crypto = await import('node:crypto');
         const hmac = crypto.createHmac('sha256', 'secret');
-        console.log(typeof hmac.update === 'function');"#,
+        const out = hmac.update('abc').digest('hex');
+        console.log(typeof hmac.update === 'function' && typeof out === 'string' && out.length > 0);"#,
         "crypto.createHmac should be available",
     );
 }

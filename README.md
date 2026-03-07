@@ -192,6 +192,19 @@ Debug guide: [docs/debugging.md](docs/debugging.md).
 cargo test
 ```
 
+Faster local workflows:
+
+```bash
+# Fast dev loop (skips heavy E2E/stress patterns and excludes edge-server crate)
+cargo test-dev
+
+# Full Rust suite (workspace)
+cargo test-full
+
+# Focused server E2E when needed
+cargo test-server-e2e
+```
+
 ### JS/TS in the Runtime
 
 ```bash

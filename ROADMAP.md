@@ -3,7 +3,7 @@
 > Baseado na auditoria de segurança e arquitetura realizada em 05/03/2026.
 > Cada item referencia o finding correspondente no `AUDIT.md`.
 >
-> Última atualização: 07/03/2026 (P1 de VFS seguro em `node:fs` concluído com quotas configuráveis por manifest/flag/env, `http/https` client-side compat, P2 de `node:dns` via DoH controlado, expansão de `node:util`/`node:diagnostics_channel`, `async_hooks`/ALS com propagação real e P3 de `node:zlib` funcional parcial com backend nativo, limites configuráveis de runtime sob caps rígidos e guardrail de tempo; backlog do `ROADMAP-NODE-COMPAT.md` consolidado neste documento).
+> Última atualização: 07/03/2026 (P1 de VFS seguro em `node:fs` concluído com quotas configuráveis por manifest/flag/env, `http/https` client-side compat, P2 de `node:dns` via DoH controlado, expansão de `node:util`/`node:diagnostics_channel`, `async_hooks`/ALS com propagação real, P3 de `node:zlib` funcional parcial com backend nativo, P1 inicial de `node:crypto`, avanço de `node:stream` com cancelamento por `AbortSignal` em `pipeline` e teste E2E de resposta chunked progressiva; backlog do `ROADMAP-NODE-COMPAT.md` consolidado neste documento).
 > Commits de referência: `92aa473`, `6607a2b`, `4933dda`.
 > Inclui também mudanças locais ainda não commitadas em `functions/runtime-core`.
 
@@ -77,226 +77,6 @@ let io = TokioIo::new(maybe_stream);
 **Crate:** `runtime-core`
 **Arquivo:** `crates/runtime-core/src/permissions.rs`
 
-- [x] Implementar bloqueio de IPs privados (equivalente ao `is_private_ip`) via denylist de ranges
-  - `127.0.0.0/8` (loopback)
-  - `10.0.0.0/8` (RFC 1918)
-  - `172.16.0.0/12` (RFC 1918)
-  - `192.168.0.0/16` (RFC 1918)
-  - `169.254.0.0/16` (link-local / metadata de cloud)
-  - `0.0.0.0/8`
-    - `[::1]` (IPv6 loopback)
-    - `fc00::/7`, `fe80::/10` (TODO: pendente por limitação do parser `deno_permissions` para CIDR IPv6 nesta versão)
-- [x] Adicionar `deny_net` com esses ranges na `create_permissions_with_ssrf_protection()`
-- [x] Manter `allow_net: Some(vec![])` para hosts públicos
-- [x] Adicionar testes que confirmem bloqueio de `fetch("http://169.254.169.254/...")`
-- [x] Adicionar testes que confirmem que `fetch("https://api.github.com/")` funciona
-
-**Status:** ✅ Concluído (com ressalva IPv6 CIDR)
-
----
-
-### 0.4 Limitar Tamanho de Request/Response Body
-
-**Ref:** AUDIT §1.4
-**Crate:** `server`
-**Arquivo:** `crates/server/src/router.rs`
-
-- [x] Definir limites default para request/response (5 MiB / 10 MiB), configuráveis via CLI/env
-- [x] Antes de coletar body, verificar `Content-Length` header
-- [x] Se `Content-Length > MAX`, retornar `413 Payload Too Large` imediatamente
-- [x] Após iniciar coleta, impor limite de leitura também sem `Content-Length` (`http_body_util::Limited`)
-- [x] Definir `MAX_RESPONSE_BODY_BYTES` (default: 10 MiB) no handler
-- [x] Truncar error messages em logs para max 1 KiB
-- [x] Adicionar testes com payloads oversized
-
-**Status:** ✅ Concluído
-
----
-
-### 0.5 Limitar Conexões Simultâneas
-
-**Ref:** AUDIT §2.1
-**Crate:** `server`
-**Arquivo:** `crates/server/src/lib.rs`
-
-- [x] Adicionar `max_connections: usize` ao `ServerConfig` (default: 10.000)
-- [x] Criar `tokio::sync::Semaphore` com o limite configurado
-- [x] Adquirir permit antes de `tokio::spawn` no accept loop
-- [x] Se sem permits disponíveis, dropar a conexão com log warning
-- [x] Adicionar flag CLI `--max-connections`
-
-**Status:** ✅ Concluído
-
-```rust
-let semaphore = Arc::new(Semaphore::new(config.max_connections));
-
-// No accept loop:
-let permit = semaphore.clone().try_acquire_owned();
-match permit {
-    Ok(permit) => {
-        tokio::spawn(async move {
-            let _permit = permit; // Dropped no fim da conexão
-            // ... serve connection
-        });
-    }
-    Err(_) => {
-        warn!("connection limit reached, dropping connection from {}", peer_addr);
-        drop(stream);
-    }
-}
-```
-
----
-
-## Fase 1 — Alta Prioridade (Semana 1-2)
-
-> Itens que previnem crashes, resource exhaustion e comportamento incorreto.
-
-### 1.1 Request Timeout no Isolate
-
-**Ref:** AUDIT §2.5
-**Crate:** `functions`
-**Arquivo:** `crates/functions/src/lifecycle.rs`
-
-- [x] Envolver `handler::dispatch_request()` com `tokio::time::timeout()`
-- [x] Usar `config.wall_clock_timeout_ms` como timeout
-- [x] Retornar HTTP 504 Gateway Timeout quando exceder
-- [x] Logar timeout com nome da função e duração
-- [x] Incrementar `metrics.total_errors` em timeout
-- [x] Adicionar teste com handler que faz `while(true) {}`
-
-**Status:** ✅ Concluído
-
----
-
-### 1.2 Near-Heap-Limit Callback no V8
-
-**Ref:** AUDIT §2.3
-**Crate:** `functions`
-**Arquivo:** `crates/functions/src/lifecycle.rs`
-
-- [x] Registrar `v8::Isolate::add_near_heap_limit_callback()` na criação do isolate
-- [x] No callback, logar warning e retornar `current_heap + small_delta` (última chance)
-- [x] Se chamado segunda vez, terminar o isolate
-- [x] Marcar função como `Error` no registry
-- [x] Adicionar teste com código que aloca memória infinitamente
-
-TODO (futuro): expor este evento como métrica por função (ex.: `heap_limit_terminations_total`) para observabilidade e alertas.
-
-**Status:** ✅ Concluído
-
----
-
-### 1.3 Recovery de Panic no Isolate
-
-**Ref:** AUDIT §2.4
-**Crate:** `functions`
-**Arquivo:** `crates/functions/src/lifecycle.rs`
-
-- [x] Detectar isolate morto e evitar roteamento para handle inválido (`IsolateHandle::alive`)
-- [x] Após `catch_unwind` capturar panic, atualizar status para `Error` no registry
-- [x] Fechar o `request_tx` channel para que requests pendentes recebam erro
-- [x] Implementar auto-restart com backoff exponencial (1s, 2s, 4s, 8s, max 60s)
-- [x] Limitar número de restarts consecutivos (max 5)
-- [x] Logar cada restart com counter
-- [x] Adicionar teste de panic seguido de request
-
-**Status:** ✅ Concluído
-
----
-
-### 1.4 Reset do CPU Timer por Request
-
-**Ref:** AUDIT §2.6
-**Crate:** `runtime-core`
-**Arquivo:** `crates/runtime-core/src/cpu_timer.rs`
-
-- [x] Adicionar método `reset` que zera `accumulated_ms` e `exceeded`
-- [x] Chamar `reset()` antes de cada `dispatch_request`
-- [x] Adicionar teste cobrindo reuso do mesmo timer após reset
-
-**Status:** ✅ Concluído
-
----
-
-### 1.5 Validar Nome de Função
-
-**Ref:** AUDIT §3.5
-**Crate:** `server`
-**Arquivo:** `crates/server/src/router.rs`
-
-- [x] Criar função `fn is_valid_function_name(name: &str) -> bool`
-- [x] Regex: `^[a-z0-9][a-z0-9-]{0,62}$`
-- [x] Validar no deploy (`POST /_internal/functions`)
-- [x] Validar no ingress (retornar 400 se inválido)
-- [x] Adicionar testes com nomes: válidos, com `..`, com `/`, unicode, vazio, muito longo
-
-**Status:** ✅ Concluído
-
----
-
-### 1.6 Ativar Rate Limiter
-
-**Ref:** AUDIT §3.1
-**Crate:** `server`
-**Arquivo:** `crates/server/src/lib.rs`
-
-- [x] Aplicar `RateLimitLayer` da middleware ao serviço HTTP se `rate_limit_rps` configurado
-- [x] Retornar `429 Too Many Requests` quando exceder
-- [x] Adicionar header `Retry-After` na resposta 429
-
-**Status:** ✅ Concluído
-
----
-
-## Fase 2 — Média Prioridade (Semana 3-4)
-
-> Melhorias de robustez, observabilidade e operational safety.
-
-### 2.1 CPU Time Real (CLOCK_THREAD_CPUTIME_ID)
-
-**Ref:** AUDIT §2.2
-**Crate:** `runtime-core`
-**Arquivo:** `crates/runtime-core/src/cpu_timer.rs`
-
-- [x] Usar `libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID)` para medir CPU real
-- [x] Manter wall-clock como fallback em plataformas sem suporte
-- [x] Documentar diferença entre CPU time e wall-clock time
-- [x] Adicionar benchmarks comparando ambas abordagens
-
-**Status:** ✅ Concluído
-
-Nota: benchmark comparativo adicionado como teste `#[ignore]` em `crates/runtime-core/src/cpu_timer.rs` (`benchmark_wall_clock_vs_thread_cpu_time`), executável manualmente via `cargo test -p runtime-core benchmark_wall_clock_vs_thread_cpu_time -- --ignored --nocapture`.
-
----
-
-### 2.2 Graceful Shutdown Real
-
-**Ref:** AUDIT §4.5 e §2.4
-**Crates:** `server`, `functions`
-**Arquivos:** `crates/server/src/lib.rs`, `crates/functions/src/registry.rs`
-
-- [x] No shutdown, enviar `CancellationToken` para cada isolate
-- [x] Esperar com deadline (ex: 10s) que todos os isolates terminem
-- [x] Verificar `request_tx.is_closed()` para cada função
-- [x] Após deadline, forçar clear com log warning
-- [x] Adicionar teste de shutdown com requests in-flight
-
-**Status:** ✅ Concluído
-
----
-
-### 2.3 Cache do Endpoint de Metrics
-
-**Ref:** AUDIT §3.2
-**Crate:** `server`
-**Arquivo:** `crates/server/src/router.rs`
-
-- [x] Criar `MetricsCache` com TTL de 15 segundos
-- [x] Armazenar resultado de `sysinfo::System` + function metrics
-- [x] Retornar cache se não expirado
-- [x] Usar `tokio::sync::RwLock` ou `parking_lot::RwLock`
-
 **Status:** ✅ Concluído
 
 ---
@@ -318,226 +98,6 @@ Nota: benchmark comparativo adicionado como teste `#[ignore]` em `crates/runtime
 
 ### 2.5 Distribuited Tracing (W3C Trace Context)
 
-**Ref:** AUDIT §5 (observações positivas — OpenTelemetry já nas deps)
-**Crate:** `server`
-
-- [x] Propagar headers `traceparent` e `tracestate` para dentro dos isolates
-- [x] Criar span por request com function name, status, duration
-- [x] Exportar via OTLP (já nas dependências)
-- [x] Adicionar `correlation-id` header no response
-
-**Status:** ✅ Concluído
-
-Configuração de sampling: `EDGE_RUNTIME_TRACE_SAMPLE_PERCENT` (0..100), default `100`.
-Política de trace inválido: descarta `traceparent` inválido e gera novo trace.
-Política de correlação: `correlation-id` = `trace_id`.
-
----
-
-### 2.6 Freeze de Globals no Bootstrap
-
-**Ref:** AUDIT §4.2
-**Crate:** `runtime-core`
-**Arquivo:** `crates/runtime-core/src/bootstrap.js`
-
-- [x] Após atribuir todas as APIs a `globalThis`, aplicar `Object.freeze()` nos critiais:
-  - `fetch`, `Request`, `Response`, `Headers`
-  - `crypto`, `URL`, `URLSearchParams`
-  - `TextEncoder`, `TextDecoder`
-  - `console`
-- [x] Testar que user code não consegue sobrescrever `globalThis.fetch`
-
-**Status:** ✅ Concluído
-
----
-
-### 2.7 Proteger Inspector para Localhost
-
-**Ref:** AUDIT §3.3
-**Crate:** `runtime-core`
-
-- [x] Forçar bind do inspector em `127.0.0.1`
-- [x] Adicionar flag `--inspect-allow-remote` para override explícito
-- [x] Documentar que inspector não deve ser usado em produção
-- [x] Logar warning se inspector ativado
-
-**Status:** ✅ Concluído
-
----
-
-## Fase 3 — Melhoria Contínua (Mês 2+)
-
-> Evolução de features e hardening avançado.
-
-### 3.2 Streaming de Response Body
-
-- [x] Substituir `bytes::Bytes` por body streaming no caminho de resposta HTTP
-- [x] Suportar `ReadableStream` no response do user code
-- [x] Permitir Server-Sent Events e chunked transfer
-
-**Status:** ✅ Concluido
-
-Implementacao atual:
-- Pipeline isolate -> router retorna `IsolateResponseBody::{Full, Stream}`
-- `ReadableStream` do user handler e drenado em chunks para o HTTP body
-- Routers (`admin`/`ingress`) usam body boxeado compativel com full body e stream
-- Documentacao de uso adicionada em `docs/streaming-response-body.md`
-
-### 3.3 Isolate Pooling / Reuse
-
-- [x] Pool de isolates quentes prontos para receber requests
-- [x] Reutilizar isolate entre requests da mesma função
-- [x] Pre-warm isolates para funções com alto tráfego
-- [x] Evict LRU quando pool estiver cheio
-
-**Status:** ✅ Concluído
-
-Implementacao atual:
-- Configuracao de pooling em nivel de processo via CLI (`--pool-enabled`, `--pool-global-max-isolates`, `--pool-min-free-memory-mib`)
-- Limites dinamicos por funcao via API admin (`GET/PUT /_internal/functions/{name}/pool`)
-- Escalonamento com bloqueio por memoria minima livre e logs de guardrail
-- Roteamento round-robin entre handles da funcao (primary + replicas)
-- Eviccao LRU explicita de replicas extras quando o limite global de isolates e atingido (preserva isolate primario)
-
-### 3.4 Hot-Reload de Certificado TLS
-
-- [x] Watch no cert/key file via `notify`
-- [x] Rotacionar `TlsAcceptor` sem restart do servidor
-- [x] Logar rotação com fingerprint do novo cert
-
-**Status:** ✅ Concluído
-
-Implementacao atual:
-- `DynamicTlsAcceptor` com troca atomica do acceptor em runtime
-- Watcher `notify` em background para cert/key com recarga e retries curtos
-- Logs de carga inicial e reload com fingerprint SHA-256 do certificado
-
-### 3.5 HTTP/3 (QUIC) — Futuro
-
-**Prioridade:** Baixa (postergado)
-**Status:** Futuro (fora do escopo imediato)
-
-- [ ] Avaliar `quinn` ou `h3` crate
-- [ ] Suportar QUIC listeners em paralelo com TCP
-- [ ] ALPN negotiation para h2/h3
-
-### 3.6 Module Integrity (Assinatura de Bundles)
-
-- [x] Assinar bundles eszip com HMAC-SHA256 ou Ed25519
-- [x] Verificar assinatura no load antes de execução
-- [x] Rejeitar bundles sem assinatura válida em modo produção
-
-**Status:** ✅ Concluído
-
-Implementacao atual:
-- Verificacao opcional por flag de assinatura Ed25519 nos endpoints de deploy/update (`POST/PUT /_internal/functions...`)
-- Modo de enforcement via `--require-bundle-signature` + `--bundle-public-key-path`
-- Rejeicao com `401` para assinatura ausente/invalida quando enforcement ativo
-- Documentacao operacional detalhada em `docs/bundle-signing.md`
-
-### 3.7 Resolver Paths Hardcoded no CLI
-
-**Ref:** AUDIT §3.4
-
-- [x] Usar variável `EDGE_RUNTIME_ROOT` ou auto-detectar via `Cargo.toml` parent walk (não necessário após adoção de assets embutidos)
-- [x] Ou embutir assets no binário via `include_str!` / `include_bytes!`
-- [x] Adicionar testes que rodam de diretórios não-raiz
-
-**Status:** Concluido via assets TS nativos embutidos no binario (`include_str!`) para `edge://assert/*` e `ext:edge_assert/*`, removendo dependencia de paths da raiz do repositorio.
-
-### 3.8 Observabilidade de Logs (Runtime + Isolate)
-
-- [x] Adicionar formato JSON opcional de logs (`--log-format json`)
-- [x] Manter formato default `pretty` (incluindo `watch`)
-- [x] Enriquecer logs internos com `function_name` e `request_id` onde aplicável
-- [x] Tornar saída de logs `console.*` de isolate configurável (`--print-isolate-logs`)
-- [x] Expor coletor interno de logs de isolate para stack externa via OTLP (collector)
-- [x] Exportar tracing HTTP request spans para OTLP
-- [x] Exportar métricas de exportação de logs de isolate para OTLP
-
-**Status:** Concluido
-
-### 3.9 Proxy de Rede de Saida (Outgoing)
-
-**Objetivo:** suportar proxy de saida para trafego HTTP, HTTPS e TCP com bypass configuravel por protocolo.
-
-- [x] Adicionar suporte a proxy HTTP de saida
-- [x] Adicionar suporte a proxy HTTPS de saida
-- [x] Adicionar suporte a proxy TCP de saida
-- [x] Adicionar configuracao `no-proxy` para HTTP
-- [x] Adicionar configuracao `no-proxy` para HTTPS
-- [x] Adicionar configuracao `no-proxy` para TCP
-- [x] Expor configuracao via CLI e env vars dedicadas
-- [x] Garantir compatibilidade com regras SSRF e allowlists existentes
-- [x] Adicionar testes de integracao para:
-    - [x] rota com proxy habilitado
-    - [x] rota em `no-proxy` (bypass)
-    - [x] fallback quando proxy indisponivel (erro claro)
-
-**Critério de aceite:** requests e conexoes de saida usam proxy por protocolo quando configurado e respeitam `no-proxy` sem regressao de seguranca.
-
-**Status:** ✅ Concluído
-
-Implementacao atual:
-- Configuracao de proxy em escopo global de runtime/processo (nao por isolate), via `PoolRuntimeConfig`.
-- Flags e env vars dedicadas no CLI (`start` e `watch`) para HTTP/HTTPS/TCP e respectivos `no-proxy`.
-- Aplicacao do proxy por variaveis de ambiente do runtime (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`) para compatibilidade nativa com stack de rede.
-- Cobertura de integracao em `crates/functions/tests/outgoing_proxy.rs` com cenarios de proxy habilitado, bypass e proxy indisponivel.
-
----
-
-## Fase 4 — Testes de Segurança
-
-> Testes específicos que devem existir para validar as correções acima e prevenir regressões.
-
-### 4.1 Testes de Sandbox
-- [x] `fetch("http://127.0.0.1:...")` → bloqueado
-- [x] `fetch("http://169.254.169.254/...")` → bloqueado
-- [x] `fetch("https://httpbin.org/get")` → permitido
-- [x] `Deno.readFile("...")` → não existe / permission denied
-- [x] `Deno.env.get("...")` → não existe / permission denied
-- [x] Prototype pollution via `Object.prototype.__proto__` → sem efeito
-
-### 4.2 Testes de Resource Limits
-- [x] Teste de término forçado de execução com `while(true){}` (via `terminate_execution`)
-- [x] Handler com `while(true){}` → timeout 504
-- [x] Handler que aloca 1GB → heap limit / OOM kill
-- [x] Request body oversized → 413 Payload Too Large
-- [x] 20.000 conexões simultâneas → conexões excedentes dropadas
-
-### 4.3 Testes de Auth
-- [x] `POST /_internal/functions` sem API key → 401
-- [x] `POST /_internal/functions` com key errada → 401
-- [x] `POST /_internal/functions` com key correta → 200
-- [x] `GET /{function}/` sem key → funciona (ingress público)
-
-### 4.4 Testes de Resiliência
-- [x] Isolate panic → status muda para Error → auto-restart
-- [x] Shutdown com request in-flight → request completa ou recebe erro
-- [x] Deploy de bundle corrompido → erro 400, não crash
-
-Notas de cobertura:
-- Testes de sandbox adicionados em `crates/functions/tests/sandbox_security.rs`.
-- Stress de `20.000` conexões foi adicionado como teste `#[ignore]` em `crates/server/src/lib.rs` (`stress_20k_connections_excess_are_dropped`) para evitar flakiness em ambientes com limite de recursos. O comportamento de drop também é validado por teste rápido não-ignorado (`e2e_connection_limit_drops_excess_connections`).
-- Auth da fase 4.3 agora também possui cobertura E2E em `crates/server/src/lib.rs` (`e2e_admin_auth_and_public_ingress_behavior`) para `POST /_internal/functions` sem key, key inválida, key válida e `GET /{function}/` público sem key.
-- Auto-restart após panic validado por teste ativo em `crates/functions/tests/timeout_and_timers.rs` (`test_panic_auto_restart_recovers_to_running`).
-
----
-
-## Fase 5 — Compat Runtime (Vinext/Next.js, sem Cloud)
-
-> Escopo desta fase: **somente runtime de execução**.
-> Não inclui infraestrutura de cloud, storage distribuído, KV/Durable Objects, roteamento por manifest remoto ou deploy adapters.
-
-### 5.1 Node Compatibility Mínima para Frameworks
-
-**Objetivo:** habilitar superfície Node mínima exigida por toolchains e libs de SSR/RSC.
-
-- [x] Expor `globalThis.process` (subset seguro e estável)
-- [x] Expor `globalThis.Buffer` compatível (`node:buffer`)
-- [x] Expor `setImmediate`/`clearImmediate`
-- [x] Implementar suporte inicial aos módulos:
-    - [x] `node:buffer`
     - [x] `node:events`
     - [x] `node:util`
     - [x] `node:path`
@@ -570,8 +130,13 @@ Notas de cobertura:
 - [ ] Implementar ponte robusta Web Streams <-> Node Streams (quando necessário)
 - [ ] Garantir flush/backpressure corretos em resposta incremental
 - [ ] Validar `ReadableStream` em respostas longas sem buffering total em memória
-- [ ] Garantir comportamento consistente de cancelamento (`AbortSignal`) durante stream
-- [ ] Adicionar teste E2E de SSR streaming com chunked body
+- [x] Garantir comportamento consistente de cancelamento (`AbortSignal`) durante stream
+- [x] Adicionar teste E2E de SSR streaming com chunked body
+
+Status aplicado (07/03/2026):
+- `node:stream.pipeline` agora aceita `signal` em options e aborta a cadeia com teardown/destroy determinístico.
+- Teste E2E `e2e_ingress_streaming_returns_progressive_chunked_body` em `crates/server/src/lib.rs` valida resposta chunked progressiva no ingress.
+- Itens de bridge Web Streams <-> Node Streams e cobertura completa de backpressure/stream longo seguem pendentes para fechamento total da seção.
 
 **Critério de aceite:** SSR com streaming envia chunks progressivos, sem deadlock e sem corrupção de body.
 
@@ -775,7 +340,7 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 
 10. `node:async_hooks` / `AsyncLocalStorage`
 - **Cloudflare:** ALS funcional com caveats documentados, `AsyncResource` parcial.
-- **Runtime atual:** ALS funcional com propagação em `Promise`/microtask e hooks básicos (`createHook`, async IDs, `AsyncResource` subset).
+- **Runtime atual:** ALS funcional com propagação em `Promise`/microtask, propagação adicional em handlers de `EventEmitter` e hooks básicos (`createHook`, async IDs, `AsyncResource` subset).
 - **Status:** gap reduzido para médio.
 
 11. `node:zlib`
@@ -785,8 +350,13 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 
 12. `node:events` e `node:buffer`
 - **Cloudflare:** suporte amplo (com diferenças específicas documentadas).
-- **Runtime atual:** funcionais para casos comuns, mas com cobertura parcial no relatório.
+- **Runtime atual:** funcionais para casos comuns, com `EventEmitter` preservando contexto ALS no registro/execução de listeners; cobertura ainda parcial no relatório.
 - **Status:** reduzir gap via testes de semântica avançada e edge-cases.
+
+13. `node:crypto`
+- **Cloudflare:** módulo funcional com subset amplo de hash/HMAC/cipher/KDF e APIs síncronas/assíncronas.
+- **Runtime atual:** subset mínimo funcional com `randomBytes`, `randomFill`, `randomFillSync`, `createHash` e `createHmac`; backend híbrido WebCrypto + ops nativas para hash/HMAC (atualmente `SHA-256`/`SHA-512`).
+- **Status:** gap reduzido para médio; `createCipheriv`/`createDecipheriv`/KDFs permanecem pendentes.
 
 **Backlog de convergência (prioridade):**
 
@@ -831,14 +401,19 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 
 #### P1 — Crítico para SSR Frameworks (Next/Remix)
 
-- [ ] Implementar `node:crypto` (bridge sobre WebCrypto) com subset mínimo:
+- [x] Implementar `node:crypto` (bridge sobre WebCrypto) com subset mínimo:
     - `randomBytes`, `randomFill`, `randomFillSync`, `createHash`, `createHmac`.
+    - Status aplicado: módulo `node:crypto` disponível no runtime com `randomBytes`/`randomFill` via WebCrypto e `createHash`/`createHmac` via ops nativas (`op_edge_crypto_hash`, `op_edge_crypto_hmac`) para algoritmos suportados (`SHA-256`/`SHA-512`).
+    - Status aplicado: suíte dedicada adicionada em `crates/functions/tests/node_crypto_streams_async_hooks.rs` para cobertura inicial de carregamento e APIs principais.
     - Referência: `ROADMAP-NODE-COMPAT.md §5.1.1`, `§7.1.1`, `§9 Issue #1`, `§10 Phase 1`.
 - [ ] Fechar semântica de streams com backpressure real:
     - `pause/resume`, `highWaterMark`, sinalização de pressão em `push`, ajuste em `pipeline/pipe`.
+    - Status aplicado (parcial): `Readable.pause/resume`, `highWaterMark` e sinalização básica de backpressure em `push`/`pipe` com pausa por `drain` já implementados; `pipeline` passou a suportar `AbortSignal` com cancelamento/teardown da cadeia e callback de erro determinístico.
+    - Status aplicado (parcial): teste E2E de resposta ingress chunked progressiva adicionado em `crates/server/src/lib.rs`; casos avançados de bridge Web<->Node streams e cenários de pressão extrema seguem pendentes.
     - Referência: `ROADMAP-NODE-COMPAT.md §5.1.2`, `§7.1.2`, `§9 Issue #2`, `§10 Phase 1`.
 - [ ] Expandir propagação de contexto ALS além de Promise/microtask/timers:
     - EventEmitter handlers e callbacks assíncronos críticos (incluindo `fs`).
+    - Status aplicado (parcial): propagação de ALS para listeners de `EventEmitter` implementada; callbacks críticos adicionais (incluindo `fs`) ainda pendentes.
     - Referência: `ROADMAP-NODE-COMPAT.md §5.1.3`, `§7.1.3`, `§9 Issue #3`, `§9 Issue #10`, `§10 Phase 1/2`.
 
 #### P2 — Compatibilidade de I/O e HTTP em Perfil Seguro
@@ -875,6 +450,63 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 
 ---
 
+## Fase 6 — Roteamento e Contrato de Funções Moderno
+
+> Objetivo: evoluir o runtime para suportar roteamento baseado em filesystem, deploys multi-rota e um contrato RESTful baseado em `export default`, preservando compatibilidade com o modelo atual e mantendo o prefixo canônico `/{function_id}/...` no runtime.
+>
+> Documento de referência detalhado: [ROADMAP_ROUTING.md](./ROADMAP_ROUTING.md)
+
+### 6.1 Manifest v2 e Flavors de Deploy
+
+- [ ] Criar `schemas/function-manifest.v2.schema.json`
+- [ ] Adicionar parsing e validação v2 em `crates/runtime-core/src/manifest.rs`
+- [ ] Introduzir `flavor: single | routed-app`
+- [ ] Modelar `routes[]` e `asset` routes para apps frontend/backend
+- [ ] Corrigir documentação que hoje pressupõe schema v2 já existente
+
+**Referência:** `ROADMAP_ROUTING.md` seções 5, 6, 7 e 15.
+
+### 6.2 Build, Bundle e Deploy Multi-Rota
+
+- [ ] Estender `crates/cli/src/commands/bundle.rs` para scan de `functions/`
+- [ ] Detectar colisões e prioridade de rotas em build time
+- [ ] Gerar metadata de rotas e embuti-la no artefato de deploy
+- [ ] Aceitar deploys `routed-app` no fluxo atual de `POST /_internal/functions`
+- [ ] Preparar suporte opcional a `public/` para assets estáticos
+
+**Referência:** `ROADMAP_ROUTING.md` seções 5, 7, 8, 10 e 13.
+
+### 6.3 Ingress em Dois Estágios e Compatibilidade com Proxy Reverso
+
+- [ ] Preservar `/{function_id}` como primeiro segmento canônico do runtime
+- [ ] Resolver o deployment pelo prefixo e rotear por manifest apenas no sufixo restante
+- [ ] Documentar explicitamente o mapeamento `{function_id}.my-edge-runtime.com/... -> localhost:9000/{function_id}/...`
+- [ ] Indexar e expor rotas no `FunctionRegistry`
+- [ ] Implementar matching com prioridade determinística e erro em ambiguidades
+- [ ] Fazer short-circuit de rotas de asset sem entrar no isolate
+
+**Referência:** `ROADMAP_ROUTING.md` seções 2, 5, 8, 12 e 14.
+
+### 6.4 Contrato RESTful Baseado em `export default`
+
+- [ ] Implementar suporte oficial a `export default function(req, params?)`
+- [ ] Implementar suporte oficial a `export default { GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS }`
+- [ ] Retornar `405 Method Not Allowed` com header `Allow` para object handlers sem o verbo correspondente
+- [ ] Manter `Deno.serve()` apenas como compatibilidade transitória
+- [ ] Alinhar `docs/function-contract-design.md` ao contrato-alvo e remover named exports do caminho recomendado
+
+**Referência:** `ROADMAP_ROUTING.md` seções 5, 7, 9, 11 e 13.
+
+### 6.5 Migração, Exemplos e Observabilidade
+
+- [ ] Criar exemplos completos para `single` e `routed-app`
+- [ ] Documentar deploy de app backend e app frontend com assets
+- [ ] Escrever guia de migração de `Deno.serve()` para `export default`
+- [ ] Adicionar testes E2E cobrindo manifest v1, manifest v2, prefixo `/{function_id}`, routing, params, 405 e assets
+- [ ] Expor introspecção administrativa e documentação operacional por rota
+
+**Referência:** `ROADMAP_ROUTING.md` seções 10, 11, 12, 13 e 14.
+
 ## Métricas de Sucesso
 
 | Métrica | Alvo |
@@ -886,3 +518,6 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 | Max concurrent connections | 10.000+ estável |
 | Request timeout enforcement | 100% dos casos |
 | Memory limit enforcement | 100% dos casos |
+| **Roteamento FS - Acurácia de Matching** | > 99.9% rotas matched corretamente |
+| **Contrato RESTful - Adoção** | > 80% novas functions em v2.0+ |
+| **Migration Success Rate** | > 95% funções migram sem reescrita |

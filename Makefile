@@ -9,8 +9,18 @@ watch:
 test-js:
 	cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**" 2>&1
 
-test: 
-	cargo test
+test-rust-fast:
+	cargo test-dev
+
+test-rust-full:
+	cargo test-full
+
+test:
+	cargo test-dev
+	cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**" 2>&1
+
+test-full:
+	cargo test-full
 	cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**" 2>&1
 release:
 	cargo build --release 2>&1

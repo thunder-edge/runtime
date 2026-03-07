@@ -1,5 +1,13 @@
 [net]
 git-fetch-with-cli = true
 
+[alias]
+# Fast local loop: skip long E2E/stress tests and avoid compiling/running server E2E-heavy crate.
+test-dev = "test --workspace --exclude edge-server -- --skip e2e --skip stress_"
+# Full Rust suite across workspace.
+test-full = "test --workspace"
+# Focused server E2E execution when touching ingress/admin paths.
+test-server-e2e = "test -p edge-server e2e_ -- --nocapture"
+
 [env]
 RUSTY_V8_MIRROR = "https://github.com/denoland/rusty_v8/releases/download"

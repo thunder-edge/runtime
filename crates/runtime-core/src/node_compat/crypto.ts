@@ -2,8 +2,15 @@ import { Buffer } from "node:buffer";
 
 type Encoding = 'hex' | 'base64' | 'utf8' | 'utf-8' | 'latin1' | 'ascii';
 
-// Get access to deno core ops
-const core = (globalThis as any).Deno?.core;
+function runtimeCore(): { ops?: Record<string, (...args: unknown[]) => unknown> } {
+  return (globalThis as unknown as {
+    Deno?: { core?: { ops?: Record<string, (...args: unknown[]) => unknown> } };
+    __bootstrap?: { core?: { ops?: Record<string, (...args: unknown[]) => unknown> } };
+  }).Deno?.core ??
+    (globalThis as unknown as {
+      __bootstrap?: { core?: { ops?: Record<string, (...args: unknown[]) => unknown> } };
+    }).__bootstrap?.core ?? {};
+}
 
 function mapAlgorithm(name: string): string {
   const map: Record<string, string> = {
@@ -25,7 +32,13 @@ function encodeOutput(data: Uint8Array, encoding?: Encoding): string | Buffer {
   return Buffer.from(data).toString(encoding as any);
 }
 
-const webCrypto = globalThis.crypto;
+function resolveWebCrypto(): Crypto {
+  const cryptoObj = (globalThis as { crypto?: Crypto }).crypto;
+  if (!cryptoObj) {
+    throw new Error('web crypto api is not available');
+  }
+  return cryptoObj;
+}
 
 // ============ Random Bytes (uses WebCrypto) ============
 
@@ -37,7 +50,7 @@ export function randomBytes(size: number, cb?: (err: Error | null, buf: Buffer) 
     if (cb) { queueMicrotask(() => cb(err)); return; }
     throw err;
   }
-  const buf = Buffer.from(webCrypto.getRandomValues(new Uint8Array(size)));
+  const buf = Buffer.from(resolveWebCrypto().getRandomValues(new Uint8Array(size)));
   if (cb) { queueMicrotask(() => cb(null, buf)); return; }
   return buf;
 }
@@ -45,9 +58,8 @@ export function randomBytes(size: number, cb?: (err: Error | null, buf: Buffer) 
 export function randomFillSync(buf: Uint8Array | Buffer, offset = 0, size?: number): Uint8Array | Buffer {
   const len = size ?? (buf.length - offset);
   if (offset < 0 || len < 0 || offset + len > buf.length) throw new RangeError('invalid offset/size');
-  const target = Buffer.isBuffer(buf) ? new Uint8Array(buf.buffer, buf.byteOffset + offset, len)
-    : new Uint8Array(buf, offset, len);
-  webCrypto.getRandomValues(target);
+  const target = new Uint8Array(buf.buffer, buf.byteOffset + offset, len);
+  resolveWebCrypto().getRandomValues(target);
   return buf;
 }
 
@@ -80,7 +92,8 @@ export class Hash {
 
   // [SYNC] NOW SYNCHRONOUS - calls native Rust op
   digest(encoding?: Encoding): string | Buffer {
-    if (!core || !core.ops || !core.ops.op_edge_crypto_hash) {
+    const op = runtimeCore().ops?.op_edge_crypto_hash;
+    if (!op) {
       throw new Error('crypto native ops not available');
     }
 
@@ -92,7 +105,7 @@ export class Hash {
     }
 
     // Call native Rust op - synchronous!
-    const hashBytes = core.ops.op_edge_crypto_hash(this.#algo, combined);
+    const hashBytes = op(this.#algo, combined);
     return encodeOutput(new Uint8Array(hashBytes), encoding);
   }
 }
@@ -116,7 +129,8 @@ export class Hmac {
 
   // [SYNC] NOW SYNCHRONOUS - calls native Rust op
   digest(encoding?: Encoding): string | Buffer {
-    if (!core || !core.ops || !core.ops.op_edge_crypto_hmac) {
+    const op = runtimeCore().ops?.op_edge_crypto_hmac;
+    if (!op) {
       throw new Error('crypto native ops not available');
     }
 
@@ -128,7 +142,7 @@ export class Hmac {
     }
 
     // Call native Rust op - synchronous!
-    const signature = core.ops.op_edge_crypto_hmac(this.#algo, this.#key, combined);
+    const signature = op(this.#algo, this.#key, combined);
     return encodeOutput(new Uint8Array(signature), encoding);
   }
 }
@@ -176,7 +190,7 @@ export function scryptSync(): never {
 // ============ Exports ============
 
 export const constants = { DEFAULT_ENCODING: 'utf8' };
-export const webcrypto = webCrypto;
+export const webcrypto = (globalThis as { crypto?: Crypto }).crypto;
 
 export default {
   randomBytes,

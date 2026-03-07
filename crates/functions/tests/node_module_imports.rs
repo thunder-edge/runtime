@@ -615,6 +615,133 @@ fn node_stream_module_can_be_imported() {
 }
 
 #[test]
+fn node_stream_pipeline_handles_backpressure_on_long_flow() {
+    deno_core::JsRuntime::init_platform(None);
+
+        let source = r#"
+            import { Writable } from "node:stream";
+
+            let output = "";
+            let drained = false;
+            let finishErr = null;
+
+            const sink = new Writable({
+                highWaterMark: 4,
+                write(chunk, _encoding, cb) {
+                    setTimeout(() => {
+                        output += String(chunk);
+                        cb();
+                    }, 5);
+                },
+            });
+
+            sink.once("drain", () => {
+                drained = true;
+            });
+
+            globalThis.__nodeStreamBackpressureOk = false;
+            sink.once("finish", () => {
+                globalThis.__nodeStreamBackpressureDebug = JSON.stringify({
+                    drained,
+                    output,
+                    finishErr: finishErr ? String(finishErr) : null,
+                });
+                globalThis.__nodeStreamBackpressureOk =
+                    finishErr === null && drained && output === "AAAABBBBCCCC";
+            });
+            sink.once("error", (err) => {
+                finishErr = err;
+            });
+
+            const first = sink.write("AAAA");
+            const second = sink.write("BBBB");
+            setTimeout(() => sink.end("CCCC"), 20);
+            globalThis.__nodeStreamBackpressureDebug = JSON.stringify({ first, second });
+
+            if (!(first === true && second === false)) {
+                globalThis.__nodeStreamBackpressureOk = false;
+            }
+        "#;
+
+    let eszip_bytes = build_eszip("file:///node_stream_backpressure_test.ts", source);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let local = tokio::task::LocalSet::new();
+    let result: Result<(), String> = local.block_on(&rt, async {
+        let eszip = Arc::new(parse_eszip(&eszip_bytes).await);
+        let root = runtime_core::isolate::determine_root_specifier(&eszip)
+            .map_err(|e| format!("determine_root_specifier: {e}"))?;
+
+        let mut js_runtime = make_runtime_with_eszip(eszip);
+
+        let module_id = js_runtime
+            .load_main_es_module(&root)
+            .await
+            .map_err(|e| format!("load_main_es_module: {e}"))?;
+
+        let eval = js_runtime.mod_evaluate(module_id);
+
+        js_runtime
+            .run_event_loop(PollEventLoopOptions {
+                wait_for_inspector: false,
+                pump_v8_message_loop: true,
+            })
+            .await
+            .map_err(|e| format!("run_event_loop: {e}"))?;
+
+        eval.await.map_err(|e| format!("mod_evaluate: {e}"))?;
+
+        // Allow delayed writable callbacks and finish event to settle.
+        for _ in 0..8 {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            js_runtime
+                .run_event_loop(PollEventLoopOptions {
+                    wait_for_inspector: false,
+                    pump_v8_message_loop: true,
+                })
+                .await
+                .map_err(|e| format!("run_event_loop (drain): {e}"))?;
+        }
+
+        let val = js_runtime
+            .execute_script(
+                "<check>",
+                deno_core::ascii_str!("globalThis.__nodeStreamBackpressureOk === true"),
+            )
+            .map_err(|e| format!("check script failed: {e}"))?;
+
+        let is_ok = {
+            deno_core::scope!(scope, js_runtime);
+            let local_val = val.open(scope);
+            local_val.is_true()
+        };
+
+        if is_ok {
+            Ok(())
+        } else {
+            let dbg = js_runtime
+                .execute_script(
+                    "<debug>",
+                    deno_core::ascii_str!("String(globalThis.__nodeStreamBackpressureDebug || 'no-debug')"),
+                )
+                .map_err(|e| format!("debug script failed: {e}"))?;
+            let dbg_text = {
+                deno_core::scope!(scope2, js_runtime);
+                let dbg_local = dbg.open(scope2);
+                dbg_local.to_rust_string_lossy(scope2)
+            };
+            Err(format!("node:stream long-flow backpressure check failed: {dbg_text}"))
+        }
+    });
+
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
 fn node_os_module_can_be_imported() {
     deno_core::JsRuntime::init_platform(None);
 

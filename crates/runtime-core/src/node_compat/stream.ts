@@ -2,6 +2,17 @@ import { EventEmitter } from "node:events";
 
 type Callback = (err?: unknown, value?: unknown) => void;
 
+type AbortSignalLike = {
+  aborted: boolean;
+  reason?: unknown;
+  addEventListener: (type: string, listener: () => void, options?: unknown) => void;
+  removeEventListener: (type: string, listener: () => void) => void;
+};
+
+type PipelineOptions = {
+  signal?: AbortSignalLike;
+};
+
 class Stream extends EventEmitter {}
 
 class Readable extends Stream {
@@ -128,9 +139,12 @@ class Writable extends Stream {
   destroyed = false;
   writableEnded = false;
   #writeImpl?: (chunk: unknown, encoding: string, cb: Callback) => void;
-  #buffer: unknown[] = [];
+  #buffer: Array<{ data: unknown; encoding: string; size: number }> = [];
   #highWaterMark: number;
   #writing = false;
+  #bufferedBytes = 0;
+  #ending = false;
+  #endCallbacks: Array<() => void> = [];
 
   constructor(options: Record<string, unknown> = {}) {
     super();
@@ -141,10 +155,11 @@ class Writable extends Stream {
   }
 
   write(chunk: unknown, encodingOrCb?: string | Callback, maybeCb?: Callback) {
-    if (this.destroyed || this.writableEnded) return false;
+    if (this.destroyed || this.writableEnded || this.#ending) return false;
 
     const encoding = typeof encodingOrCb === "string" ? encodingOrCb : "utf8";
     const cb = (typeof encodingOrCb === "function" ? encodingOrCb : maybeCb) ?? (() => {});
+    const size = byteLengthOfChunk(chunk, encoding);
 
     const done = () => {
       cb();
@@ -152,26 +167,27 @@ class Writable extends Stream {
 
       // Flush buffer if there's more data
       if (this.#buffer.length > 0) {
-        const nextChunk = this.#buffer.shift();
-        const nextEncoding = typeof nextChunk === 'object' && nextChunk !== null && 'encoding' in nextChunk
-          ? (nextChunk as any).encoding
-          : 'utf8';
-        const nextData = typeof nextChunk === 'object' && nextChunk !== null && 'data' in nextChunk
-          ? (nextChunk as any).data
-          : nextChunk;
-        this.write(nextData, nextEncoding);
+        const nextChunk = this.#buffer.shift()!;
+        this.#bufferedBytes = Math.max(0, this.#bufferedBytes - nextChunk.size);
+        this.write(nextChunk.data, nextChunk.encoding);
+        return;
       }
 
       // Emit drain when buffer is flushed
       if (this.#buffer.length === 0) {
         queueMicrotask(() => this.emit("drain"));
       }
+
+      if (this.#ending) {
+        this.#finalizeEnd();
+      }
     };
 
     // If already writing, buffer the chunk
     if (this.#writing || this.#buffer.length > 0) {
-      this.#buffer.push(chunk);
-      return this.#buffer.length < this.#highWaterMark;
+      this.#buffer.push({ data: chunk, encoding, size });
+      this.#bufferedBytes += size;
+      return this.#bufferedBytes < this.#highWaterMark;
     }
 
     this.#writing = true;
@@ -182,7 +198,7 @@ class Writable extends Stream {
       done();
     }
 
-    return this.#buffer.length === 0;
+    return this.#bufferedBytes < this.#highWaterMark;
   }
 
   end(chunkOrCb?: unknown, encodingOrCb?: string | Callback, maybeCb?: Callback) {
@@ -196,12 +212,26 @@ class Writable extends Stream {
       (typeof encodingOrCb === "function" ? encodingOrCb : maybeCb) ??
       (typeof chunkOrCb === "function" ? chunkOrCb : undefined);
 
+    if (typeof cb === "function") {
+      this.#endCallbacks.push(() => cb());
+    }
+
+    this.#ending = true;
+    if (!this.#writing && this.#buffer.length === 0) {
+      this.#finalizeEnd();
+    }
+    return this;
+  }
+
+  #finalizeEnd() {
+    if (this.writableEnded) return;
     this.writableEnded = true;
     this.emit("finish");
     this.emit("close");
-
-    if (typeof cb === "function") cb();
-    return this;
+    for (const cb of this.#endCallbacks) {
+      cb();
+    }
+    this.#endCallbacks = [];
   }
 
   destroy(error?: unknown) {
@@ -313,10 +343,37 @@ class PassThrough extends Transform {
   }
 }
 
+function byteLengthOfChunk(chunk: unknown, encoding: string): number {
+  if (chunk === null || chunk === undefined) return 0;
+  if (typeof chunk === "string") {
+    return Buffer.byteLength(chunk, encoding as BufferEncoding);
+  }
+  if (chunk instanceof Uint8Array) {
+    return chunk.byteLength;
+  }
+  if (ArrayBuffer.isView(chunk)) {
+    return chunk.byteLength;
+  }
+  if (chunk instanceof ArrayBuffer) {
+    return chunk.byteLength;
+  }
+  return Buffer.byteLength(String(chunk), encoding as BufferEncoding);
+}
+
 function pipeline(...streamsOrCb: unknown[]) {
+  let options: PipelineOptions | undefined;
   const cb = typeof streamsOrCb[streamsOrCb.length - 1] === "function"
     ? (streamsOrCb.pop() as (err?: unknown) => void)
     : undefined;
+
+  const maybeOptions = streamsOrCb[streamsOrCb.length - 1];
+  if (
+    maybeOptions &&
+    typeof maybeOptions === "object" &&
+    "signal" in (maybeOptions as Record<string, unknown>)
+  ) {
+    options = streamsOrCb.pop() as PipelineOptions;
+  }
 
   const streams = streamsOrCb as Array<Readable | Writable | Transform | Duplex>;
 
@@ -330,9 +387,65 @@ function pipeline(...streamsOrCb: unknown[]) {
   }
 
   const last = streams[streams.length - 1] as Writable;
+
+  let settled = false;
+  const done = (err?: unknown) => {
+    if (settled) return;
+    settled = true;
+
+    if (signal && onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
+
+    if (cb) cb(err);
+  };
+
+  const handleStreamError = (err: unknown) => {
+    done(err);
+  };
+
+  for (const stream of streams) {
+    stream.once("error", handleStreamError);
+  }
+
+  const signal = options?.signal;
+  const toAbortError = () => {
+    const reason = signal?.reason;
+    if (reason instanceof Error) {
+      return reason;
+    }
+    return new Error("The operation was aborted");
+  };
+
+  const abortAllStreams = (err: Error) => {
+    for (const stream of streams) {
+      if (typeof (stream as { destroy?: (error?: unknown) => void }).destroy === "function") {
+        (stream as { destroy: (error?: unknown) => void }).destroy(err);
+      }
+    }
+  };
+
+  const onAbort = signal
+    ? () => {
+        const abortErr = toAbortError();
+        abortAllStreams(abortErr);
+        done(abortErr);
+      }
+    : undefined;
+
+  if (signal?.aborted) {
+    const abortErr = toAbortError();
+    abortAllStreams(abortErr);
+    done(abortErr);
+    return last;
+  }
+
+  if (signal && onAbort) {
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+
   if (cb) {
-    last.once("finish", () => cb());
-    last.once("error", (err: unknown) => cb(err));
+    last.once("finish", () => done());
   }
 
   return last;

@@ -56,7 +56,9 @@ struct NodeCompatCheck {
 
 /// Evaluate a JS expression and return its string result.
 fn eval_js(runtime: &mut JsRuntime, js: &str) -> String {
-    for _ in 0..6 {
+    // Node compat checks rely heavily on dynamic imports; allow extra pump cycles
+    // to avoid classifying slow async resolution as "none".
+    for _ in 0..24 {
         let status = eval_js_once(runtime, js);
         if status != "pending" {
             return status;
@@ -135,6 +137,37 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                             } catch (_e) {
                                 return 'none';
                             }
+                        })()"#,
+                        status: String::new(),
+                },
+                NodeCompatCheck {
+                        api: "node:crypto",
+                        profile: "Partial",
+                        notes: "Subset funcional com `randomBytes`/`randomFill` e hashing/HMAC (`createHash`/`createHmac`) sobre WebCrypto + ops nativas.",
+                        js_check: r#"(() => {
+                            const key = '__edge_node_crypto_check';
+                            if (globalThis[key] === undefined) {
+                                globalThis[key] = 'pending';
+                                import('node:crypto').then((m) => {
+                                    try {
+                                        const bytes = m.randomBytes(8);
+                                        const hash = m.createHash('sha256').update('abc').digest('hex');
+                                        const hmac = m.createHmac('sha256', 'secret').update('abc').digest('hex');
+                                        globalThis[key] =
+                                            typeof m.randomFillSync === 'function' &&
+                                            bytes?.length === 8 &&
+                                            typeof hash === 'string' && hash.length > 0 &&
+                                            typeof hmac === 'string' && hmac.length > 0
+                                            ? 'partial' : 'none';
+                                    } catch (_err) {
+                                        globalThis[key] = 'none';
+                                    }
+                                }).catch(() => {
+                                    globalThis[key] = 'none';
+                                });
+                                return 'pending';
+                            }
+                            return globalThis[key];
                         })()"#,
                         status: String::new(),
                 },
@@ -1589,11 +1622,65 @@ fn define_checks() -> Vec<ApiCheck> {
     ]
 }
 
+fn verify_node_report_coverage(node_checks: &[NodeCompatCheck]) {
+    let report_modules: std::collections::BTreeSet<String> = node_checks
+        .iter()
+        .map(|c| c.api.to_string())
+        .collect();
+
+    let node_compat_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("missing crates dir")
+        .join("runtime-core")
+        .join("src")
+        .join("node_compat");
+
+    let mut runtime_modules = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&node_compat_dir).expect("failed to read node_compat dir") {
+        let entry = entry.expect("failed to read node_compat entry");
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("ts") {
+            continue;
+        }
+
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("invalid node_compat filename");
+
+        // Internal helper shim, not part of official Node built-ins matrix.
+        if stem == "request" {
+            continue;
+        }
+
+        let module = if stem == "timers_promises" {
+            "node:timers/promises".to_string()
+        } else if stem == "fs_promises" {
+            "node:fs/promises".to_string()
+        } else {
+            format!("node:{stem}")
+        };
+        runtime_modules.insert(module);
+    }
+
+    let missing_in_report: Vec<String> = runtime_modules
+        .difference(&report_modules)
+        .cloned()
+        .collect();
+
+    assert!(
+        missing_in_report.is_empty(),
+        "Node modules implemented in runtime but missing from web_api_report checks: {}",
+        missing_in_report.join(", ")
+    );
+}
+
 #[test]
 fn generate_web_standards_report() {
     let mut runtime = make_runtime();
     let mut checks = define_checks();
     let mut node_checks = define_node_compat_checks();
+    verify_node_report_coverage(&node_checks);
 
     // Run all checks
     for check in checks.iter_mut() {
@@ -1787,3 +1874,4 @@ fn generate_web_standards_report() {
     // Remove unused variable warning
     let _ = categories;
 }
+

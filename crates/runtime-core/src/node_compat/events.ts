@@ -1,13 +1,4 @@
-import { AsyncLocalStorage, alsRegistry } from "node:async_hooks";
-
-// Registry to capture AsyncLocalStorage instances (shared with async_hooks)
-const alsRegistry = new WeakSet<AsyncLocalStorage<unknown>>();
-
-// Store to track listener contexts
-const listenerToContext = new WeakMap<
-  (... args: unknown[]) => void,
-  Map<AsyncLocalStorage<unknown>, unknown>
->();
+import { AsyncLocalStorage, alsRegistry as globalAlsRegistry } from "node:async_hooks";
 
 /**
  * Captures current ALS context snapshot
@@ -15,10 +6,8 @@ const listenerToContext = new WeakMap<
 function captureAlsContext(): Map<AsyncLocalStorage<unknown>, unknown> {
   const context = new Map<AsyncLocalStorage<unknown>, unknown>();
 
-  // Iterate through all AsyncLocalStorage instances
-  // Note: This requires careful handling since AsyncLocalStorage uses private fields
-  // We read the __store and __enabled directly (they're marked as such in async_hooks.ts)
-  for (const als of alsRegistry) {
+  // Iterate through all AsyncLocalStorage instances from async_hooks registry.
+  for (const als of globalAlsRegistry ?? []) {
     if ((als as any).__enabled) {
       context.set(als, (als as any).__store);
     }
@@ -78,11 +67,6 @@ class EventEmitter {
   addListener(eventName: string | symbol, listener: (...args: unknown[]) => void) {
     if (typeof listener !== "function") {
       throw new TypeError("listener must be a function");
-    }
-
-    // Register the AsyncLocalStorage instance if it's new
-    for (const als of alsRegistry) {
-      // Registry is set up in async_hooks module
     }
 
     // Capture ALS context at registration time
