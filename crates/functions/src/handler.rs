@@ -1,7 +1,7 @@
 use anyhow::Error;
 use base64::Engine;
 use deno_core::{op2, Extension, JsRuntime, OpState};
-use runtime_core::isolate::{IsolateResponse, IsolateResponseBody, OutgoingProxyConfig};
+use runtime_core::isolate::{IsolateConfig, IsolateResponse, IsolateResponseBody, OutgoingProxyConfig};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -98,12 +98,24 @@ fn unregister_response_stream(js_runtime: &mut JsRuntime, stream_id: &str) {
 ///
 /// Or we can override `Deno.serve` to do this automatically.
 pub fn inject_request_bridge(js_runtime: &mut JsRuntime) -> Result<(), Error> {
-    inject_request_bridge_with_proxy(js_runtime, &OutgoingProxyConfig::default())
+    inject_request_bridge_with_proxy_and_config(
+        js_runtime,
+        &OutgoingProxyConfig::default(),
+        &IsolateConfig::default(),
+    )
 }
 
 pub fn inject_request_bridge_with_proxy(
     js_runtime: &mut JsRuntime,
     outgoing_proxy: &OutgoingProxyConfig,
+) -> Result<(), Error> {
+    inject_request_bridge_with_proxy_and_config(js_runtime, outgoing_proxy, &IsolateConfig::default())
+}
+
+pub fn inject_request_bridge_with_proxy_and_config(
+    js_runtime: &mut JsRuntime,
+    outgoing_proxy: &OutgoingProxyConfig,
+    isolate_config: &IsolateConfig,
 ) -> Result<(), Error> {
     let proxy_json = serde_json::to_string(outgoing_proxy)
         .map_err(|e| anyhow::anyhow!("failed to serialize outgoing proxy config: {e}"))?;
@@ -112,6 +124,13 @@ pub fn inject_request_bridge_with_proxy(
         "edge-internal:///runtime_proxy_config.js",
         set_proxy_config,
     )?;
+
+    let set_vfs_config = format!(
+        "globalThis.__edgeRuntimeVfsConfig = {{ totalQuotaBytes: {}, maxFileBytes: {} }};",
+        isolate_config.vfs_total_quota_bytes,
+        isolate_config.vfs_max_file_bytes
+    );
+    js_runtime.execute_script("edge-internal:///runtime_vfs_config.js", set_vfs_config)?;
 
     js_runtime.execute_script(
         "edge-internal:///runtime_bridge.js",

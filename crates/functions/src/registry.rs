@@ -59,6 +59,14 @@ impl FunctionRegistry {
         if let Some(wall_clock_timeout_ms) = manifest.resources.wall_clock_timeout_ms {
             config.wall_clock_timeout_ms = wall_clock_timeout_ms;
         }
+
+        if let Some(vfs_total_quota_bytes) = manifest.resources.vfs_total_quota_bytes {
+            config.vfs_total_quota_bytes = vfs_total_quota_bytes as usize;
+        }
+
+        if let Some(vfs_max_file_bytes) = manifest.resources.vfs_max_file_bytes {
+            config.vfs_max_file_bytes = vfs_max_file_bytes as usize;
+        }
     }
 
     fn all_request_channels_closed(&self) -> bool {

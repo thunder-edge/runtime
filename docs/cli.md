@@ -5,6 +5,7 @@ This document describes the `edge-cli` crate command-line interface exposed by t
 Related docs:
 
 - [Function Manifest (v1)](./function-manifest.md)
+- [Virtual File System (VFS)](./vfs.md)
 
 ## Binary
 
@@ -136,6 +137,8 @@ These are consumed mainly by `start` and `watch`:
 - `EDGE_RUNTIME_MAX_HEAP_MIB`
 - `EDGE_RUNTIME_CPU_TIME_LIMIT_MS`
 - `EDGE_RUNTIME_WALL_CLOCK_TIMEOUT_MS`
+- `EDGE_RUNTIME_VFS_TOTAL_QUOTA_BYTES`
+- `EDGE_RUNTIME_VFS_MAX_FILE_BYTES`
 
 **Security Options:**
 - `EDGE_RUNTIME_DISABLE_SSRF_PROTECTION`
@@ -383,6 +386,14 @@ This prevents functions from accessing sensitive internal endpoints like cloud m
   - Default: `60000`
   - `0` means unlimited.
   - Env: `EDGE_RUNTIME_WALL_CLOCK_TIMEOUT_MS`
+- `--vfs-total-quota-bytes <BYTES>`
+  - Writable VFS quota per isolate (used by `node:fs` on `/tmp`).
+  - Default: `10485760` (10 MiB)
+  - Env: `EDGE_RUNTIME_VFS_TOTAL_QUOTA_BYTES`
+- `--vfs-max-file-bytes <BYTES>`
+  - Max writable file size per isolate in VFS (`/tmp`).
+  - Default: `5242880` (5 MiB)
+  - Env: `EDGE_RUNTIME_VFS_MAX_FILE_BYTES`
 - `--print-isolate-logs`
   - Print user `console.*` output from isolates into runtime logs/stdout.
   - Default: `true`
@@ -639,6 +650,14 @@ thunder watch [OPTIONS]
   - Default: `60000`
   - `0` means unlimited.
   - Env: `EDGE_RUNTIME_WALL_CLOCK_TIMEOUT_MS`
+- `--vfs-total-quota-bytes <BYTES>`
+  - Writable VFS quota per isolate (`node:fs` `/tmp` mount).
+  - Default: `10485760` (10 MiB)
+  - Env: `EDGE_RUNTIME_VFS_TOTAL_QUOTA_BYTES`
+- `--vfs-max-file-bytes <BYTES>`
+  - Max writable file size per isolate in VFS.
+  - Default: `5242880` (5 MiB)
+  - Env: `EDGE_RUNTIME_VFS_MAX_FILE_BYTES`
 - `--print-isolate-logs`
   - Print user `console.*` output from isolates into runtime logs/stdout.
   - Default: `true`

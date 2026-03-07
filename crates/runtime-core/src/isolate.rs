@@ -68,6 +68,14 @@ pub struct IsolateConfig {
     /// If false, logs are captured by the isolate log collector only.
     #[serde(default = "default_print_isolate_logs")]
     pub print_isolate_logs: bool,
+
+    /// VFS total writable quota in bytes (default: 10 MiB).
+    #[serde(default = "default_vfs_total_quota_bytes")]
+    pub vfs_total_quota_bytes: usize,
+
+    /// VFS max file size in bytes (default: 5 MiB).
+    #[serde(default = "default_vfs_max_file_bytes")]
+    pub vfs_max_file_bytes: usize,
 }
 
 fn default_max_heap() -> usize {
@@ -90,6 +98,14 @@ fn default_print_isolate_logs() -> bool {
     true
 }
 
+fn default_vfs_total_quota_bytes() -> usize {
+    10 * 1024 * 1024
+}
+
+fn default_vfs_max_file_bytes() -> usize {
+    5 * 1024 * 1024
+}
+
 impl Default for IsolateConfig {
     fn default() -> Self {
         Self {
@@ -102,6 +118,8 @@ impl Default for IsolateConfig {
             enable_source_maps: default_enable_source_maps(),
             ssrf_config: SsrfConfig::default(),
             print_isolate_logs: default_print_isolate_logs(),
+            vfs_total_quota_bytes: default_vfs_total_quota_bytes(),
+            vfs_max_file_bytes: default_vfs_max_file_bytes(),
         }
     }
 }
@@ -262,6 +280,8 @@ mod tests {
         assert!(config.enable_source_maps);
         assert!(config.ssrf_config.enabled);
         assert!(config.print_isolate_logs);
+        assert_eq!(config.vfs_total_quota_bytes, 10 * 1024 * 1024);
+        assert_eq!(config.vfs_max_file_bytes, 5 * 1024 * 1024);
     }
 
     #[test]
@@ -275,6 +295,8 @@ mod tests {
         assert!(config.enable_source_maps);
         assert!(config.ssrf_config.enabled);
         assert!(config.print_isolate_logs);
+        assert_eq!(config.vfs_total_quota_bytes, 10 * 1024 * 1024);
+        assert_eq!(config.vfs_max_file_bytes, 5 * 1024 * 1024);
     }
 
     #[test]
@@ -301,6 +323,8 @@ mod tests {
         assert!(json.contains("\"enable_source_maps\""));
         assert!(json.contains("\"ssrf_config\""));
         assert!(json.contains("\"print_isolate_logs\""));
+        assert!(json.contains("\"vfs_total_quota_bytes\""));
+        assert!(json.contains("\"vfs_max_file_bytes\""));
     }
 
     #[test]

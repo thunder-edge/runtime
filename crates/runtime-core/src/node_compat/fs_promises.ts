@@ -1,46 +1,39 @@
 import fs from "node:fs";
 
-function rejectFs(op: string, path?: string) {
+function resolveSync<T>(fn: () => T): Promise<T> {
   try {
-    if (op === "readFile") {
-      fs.readFileSync(path ?? "");
-    }
-    if (op === "writeFile") {
-      fs.writeFileSync(path ?? "");
-    }
-    if (op === "stat") {
-      fs.statSync(path ?? "");
-    }
-    if (op === "lstat") {
-      fs.lstatSync(path ?? "");
-    }
-    if (op === "readdir") {
-      fs.readdirSync(path ?? "");
-    }
+    return Promise.resolve(fn());
   } catch (e) {
     return Promise.reject(e);
   }
-  return Promise.reject(new Error("[edge-runtime] unexpected fs stub state"));
 }
 
-function readFile(path: string): Promise<never> {
-  return rejectFs("readFile", path);
+function readFile(path: string, options?: unknown): Promise<unknown> {
+  return resolveSync(() => fs.readFileSync(path, options));
 }
 
-function writeFile(path: string): Promise<never> {
-  return rejectFs("writeFile", path);
+function writeFile(path: string, data?: unknown): Promise<void> {
+  return resolveSync(() => {
+    fs.writeFileSync(path, data);
+  });
 }
 
-function stat(path: string): Promise<never> {
-  return rejectFs("stat", path);
+function stat(path: string): Promise<unknown> {
+  return resolveSync(() => fs.statSync(path));
 }
 
-function lstat(path: string): Promise<never> {
-  return rejectFs("lstat", path);
+function lstat(path: string): Promise<unknown> {
+  return resolveSync(() => fs.lstatSync(path));
 }
 
-function readdir(path: string): Promise<never> {
-  return rejectFs("readdir", path);
+function readdir(path: string): Promise<string[]> {
+  return resolveSync(() => fs.readdirSync(path));
+}
+
+function mkdir(path: string, options?: unknown): Promise<void> {
+  return resolveSync(() => {
+    fs.mkdirSync(path, options as { recursive?: boolean } | undefined);
+  });
 }
 
 const fsPromises = {
@@ -49,7 +42,8 @@ const fsPromises = {
   stat,
   lstat,
   readdir,
+  mkdir,
 };
 
-export { readFile, writeFile, stat, lstat, readdir };
+export { readFile, writeFile, stat, lstat, readdir, mkdir };
 export default fsPromises;

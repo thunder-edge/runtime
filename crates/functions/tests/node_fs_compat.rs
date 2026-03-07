@@ -180,23 +180,27 @@ fn node_fs_stub_exposes_expected_surface() {
 }
 
 #[test]
-fn node_fs_sync_calls_fail_with_deterministic_error_shape() {
+fn node_fs_sync_supports_tmp_and_blocks_bundle_writes() {
     let source = r#"
       import fs from "node:fs";
 
-      let errOk = false;
+            fs.mkdirSync("/tmp/cache", { recursive: true });
+            fs.writeFileSync("/tmp/cache/test.txt", "hello-vfs");
+            const roundTrip = fs.readFileSync("/tmp/cache/test.txt", "utf8") === "hello-vfs";
+
+            let bundleReadOnly = false;
       try {
-        fs.readFileSync("/tmp/test.txt");
+                fs.writeFileSync("/bundle/blocked.txt", "x");
       } catch (err) {
-        errOk =
-          err?.code === "EOPNOTSUPP" &&
-          err?.errno === 95 &&
-          err?.syscall === "readFile" &&
-          err?.path === "/tmp/test.txt" &&
-          String(err?.message || "").includes("sem acesso real ao FS neste runtime");
+                bundleReadOnly =
+                    err?.code === "EROFS" &&
+                    err?.errno === 30 &&
+                    err?.syscall === "writeFile" &&
+                    err?.path === "/bundle/blocked.txt";
       }
 
-      globalThis.__nodeFsSyncErrOk = errOk && fs.existsSync("/tmp/test.txt") === false;
+            const entries = fs.readdirSync("/tmp/cache");
+            globalThis.__nodeFsSyncErrOk = roundTrip && bundleReadOnly && entries.includes("test.txt");
     "#;
 
     run_module_and_check(
@@ -207,17 +211,16 @@ fn node_fs_sync_calls_fail_with_deterministic_error_shape() {
 }
 
 #[test]
-fn node_fs_callback_api_returns_error_in_callback() {
+fn node_fs_callback_api_supports_vfs_io() {
     let source = r#"
       import fs from "node:fs";
 
-      let callbackOk = false;
-            fs.readFile("/tmp/test.txt", null, (err) => {
-        callbackOk =
-          err?.code === "EOPNOTSUPP" &&
-          err?.errno === 95 &&
-          err?.syscall === "readFile" &&
-          err?.path === "/tmp/test.txt";
+            let callbackOk = false;
+            fs.writeFile("/tmp/callback.txt", "cb-ok", null, (err) => {
+                if (err) return;
+                fs.readFile("/tmp/callback.txt", "utf8", (err2, value) => {
+                    callbackOk = !err2 && value === "cb-ok";
+                });
       });
 
       globalThis.__nodeFsCallbackOk = callbackOk;
@@ -231,20 +234,25 @@ fn node_fs_callback_api_returns_error_in_callback() {
 }
 
 #[test]
-fn node_fs_promises_reject_with_deterministic_error_shape() {
+fn node_fs_promises_honor_vfs_quota_limits() {
     let source = r#"
       import fsp from "node:fs/promises";
 
-      let promiseErrOk = false;
-      await fsp.readdir("/tmp").catch((err) => {
-        promiseErrOk =
-          err?.code === "EOPNOTSUPP" &&
-          err?.errno === 95 &&
-          err?.syscall === "readdir" &&
-          err?.path === "/tmp";
+            const fourMiB = "a".repeat(4 * 1024 * 1024);
+            await fsp.writeFile("/tmp/a.txt", fourMiB);
+            await fsp.writeFile("/tmp/b.txt", fourMiB);
+
+            let totalQuotaErr = false;
+            await fsp.writeFile("/tmp/c.txt", "b".repeat(3 * 1024 * 1024)).catch((err) => {
+                totalQuotaErr = err?.code === "ENOSPC" && err?.syscall === "writeFile";
       });
 
-      globalThis.__nodeFsPromisesOk = promiseErrOk;
+            let perFileErr = false;
+            await fsp.writeFile("/tmp/too-large.txt", "c".repeat((5 * 1024 * 1024) + 1)).catch((err) => {
+                perFileErr = err?.code === "ENOSPC" && err?.syscall === "writeFile";
+            });
+
+            globalThis.__nodeFsPromisesOk = totalQuotaErr && perFileErr;
     "#;
 
     run_module_and_check(

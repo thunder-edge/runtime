@@ -265,20 +265,27 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                 },
                 NodeCompatCheck {
                         api: "node:fs",
-                        profile: "Stub",
-                        notes: "Imports and feature-detection succeed; real filesystem operations fail deterministically (`EOPNOTSUPP`, no host FS access).",
+                        profile: "Partial",
+                        notes: "VFS-backed module: `/bundle` read-only, `/tmp` writable/ephemeral, `/dev/null` sink. Host filesystem stays inaccessible.",
                         js_check: r#"(() => {
                             const key = '__edge_node_fs_check';
                             if (globalThis[key] === undefined) {
                                 globalThis[key] = 'pending';
                                 import('node:fs').then((fs) => {
-                                    let deterministic = false;
+                                    let writableTmp = false;
+                                    let bundleReadOnly = false;
                                     try {
-                                        fs.readFileSync('/tmp/test.txt');
+                                        fs.writeFileSync('/tmp/report.txt', 'ok');
+                                        writableTmp = fs.readFileSync('/tmp/report.txt', 'utf8') === 'ok';
                                     } catch (err) {
-                                        deterministic = err?.code === 'EOPNOTSUPP';
+                                        writableTmp = false;
                                     }
-                                    globalThis[key] = typeof fs.existsSync === 'function' && deterministic ? 'partial' : 'none';
+                                    try {
+                                        fs.writeFileSync('/bundle/blocked.txt', 'x');
+                                    } catch (err) {
+                                        bundleReadOnly = err?.code === 'EROFS';
+                                    }
+                                    globalThis[key] = typeof fs.existsSync === 'function' && writableTmp && bundleReadOnly ? 'partial' : 'none';
                                 }).catch(() => {
                                     globalThis[key] = 'none';
                                 });
@@ -290,16 +297,17 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                 },
                 NodeCompatCheck {
                         api: "node:fs/promises",
-                        profile: "Stub",
-                        notes: "Promise APIs reject deterministically with stable error shape; no real disk access.",
+                        profile: "Partial",
+                        notes: "Promise APIs mirror VFS behavior, including writable `/tmp` and deterministic quota/read-only errors.",
                         js_check: r#"(() => {
                             const key = '__edge_node_fs_promises_check';
                             if (globalThis[key] === undefined) {
                                 globalThis[key] = 'pending';
                                 import('node:fs/promises').then((fsp) => {
-                                    fsp.readFile('/tmp/test.txt')
-                                        .then(() => { globalThis[key] = 'none'; })
-                                        .catch((err) => { globalThis[key] = err?.code === 'EOPNOTSUPP' ? 'partial' : 'none'; });
+                                    fsp.writeFile('/tmp/report-promises.txt', 'ok')
+                                        .then(() => fsp.readFile('/tmp/report-promises.txt', 'utf8'))
+                                        .then((value) => { globalThis[key] = value === 'ok' ? 'partial' : 'none'; })
+                                        .catch(() => { globalThis[key] = 'none'; });
                                 }).catch(() => {
                                     globalThis[key] = 'none';
                                 });

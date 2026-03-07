@@ -61,6 +61,22 @@ pub struct WatchArgs {
     )]
     print_isolate_logs: bool,
 
+    /// Default VFS total writable quota in bytes per isolate.
+    #[arg(
+        long,
+        default_value_t = 10 * 1024 * 1024,
+        env = "EDGE_RUNTIME_VFS_TOTAL_QUOTA_BYTES"
+    )]
+    vfs_total_quota_bytes: usize,
+
+    /// Default VFS max writable file size in bytes per isolate.
+    #[arg(
+        long,
+        default_value_t = 5 * 1024 * 1024,
+        env = "EDGE_RUNTIME_VFS_MAX_FILE_BYTES"
+    )]
+    vfs_max_file_bytes: usize,
+
     /// Outgoing HTTP proxy URL (eg. http://proxy.local:8080, socks5://proxy.local:1080)
     #[arg(long, env = "EDGE_RUNTIME_HTTP_OUTGOING_PROXY")]
     http_outgoing_proxy: Option<String>,
@@ -376,6 +392,8 @@ async fn load_and_deploy_functions(
             enable_source_maps: default_config.enable_source_maps,
             ssrf_config: default_config.ssrf_config.clone(),
             print_isolate_logs: default_config.print_isolate_logs,
+            vfs_total_quota_bytes: default_config.vfs_total_quota_bytes,
+            vfs_max_file_bytes: default_config.vfs_max_file_bytes,
         };
 
         match bundle_file(file_path).await {
@@ -544,6 +562,8 @@ fn build_watch_default_config(args: &WatchArgs) -> IsolateConfig {
         // Watch mode is local-dev oriented: do not enforce SSRF network denylist.
         ssrf_config: runtime_core::ssrf::SsrfConfig::disabled(),
         print_isolate_logs: args.print_isolate_logs,
+        vfs_total_quota_bytes: args.vfs_total_quota_bytes,
+        vfs_max_file_bytes: args.vfs_max_file_bytes,
     }
 }
 
@@ -581,6 +601,8 @@ mod tests {
             inspect_brk: false,
             inspect_allow_remote: false,
             print_isolate_logs: true,
+            vfs_total_quota_bytes: 10 * 1024 * 1024,
+            vfs_max_file_bytes: 5 * 1024 * 1024,
             http_outgoing_proxy: None,
             https_outgoing_proxy: None,
             tcp_outgoing_proxy: None,

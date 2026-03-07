@@ -172,8 +172,8 @@ Unsupported privileged behavior fails with deterministic errors (for example `EO
 | `node:stream` | 🟢 Supported (practical subset) | Partial | Partial | Basic stream primitives/pipeline for compatibility paths; not full Node stream semantics. |
 | `node:os` | 🟡 Partial (stub/non-functional) | Stub/Partial | Partial | Contract-stable environment info and deterministic errors for unsupported host-affecting calls. |
 | `node:module` | 🟢 Supported (practical subset) | Partial | Partial | `createRequire` and built-in-only `require()` with explicit deterministic policy for unsupported modules. |
-| `node:fs` | 🟡 Partial (stub/non-functional) | Stub | Partial | Imports and feature-detection succeed; real filesystem operations fail deterministically (`EOPNOTSUPP`, no host FS access). |
-| `node:fs/promises` | 🟡 Partial (stub/non-functional) | Stub | Partial | Promise APIs reject deterministically with stable error shape; no real disk access. |
+| `node:fs` | 🟢 Supported (practical subset) | Partial | Partial | VFS-backed module: `/bundle` read-only, `/tmp` writable/ephemeral, `/dev/null` sink. Host filesystem stays inaccessible. |
+| `node:fs/promises` | 🟢 Supported (practical subset) | Partial | Partial | Promise APIs mirror VFS behavior, including writable `/tmp` and deterministic quota/read-only errors. |
 | `node:async_hooks` | 🟡 Partial (stub/non-functional) | Stub/Partial | Partial | Async context tracking compatibility surface for ecosystems that import async hooks. |
 | `node:child_process` | 🟡 Partial (stub/non-functional) | Stub/Partial | Partial | Non-functional process-spawn APIs with deterministic not-implemented behavior. |
 | `node:cluster` | 🟡 Partial (stub/non-functional) | Stub/Partial | Partial | Non-functional cluster orchestration APIs with deterministic failures. |

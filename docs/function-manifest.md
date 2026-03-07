@@ -15,6 +15,7 @@ The manifest lets each function declare:
 - Environment variables (`env.allow`, `env.secretRefs`)
 - Network allowlist (`network.allow`)
 - Optional resource limits (`resources`)
+  - Including VFS quotas for `node:fs` compatibility in sandbox
 - Optional auth and observability preferences
 - Optional per-environment profile overrides (`profiles`)
 
@@ -35,6 +36,7 @@ At runtime, when a manifest is attached to a function:
 - `network.allow` is enforced as a per-function allowlist.
 - `env.allow` and `env.secretRefs` are enforced as a per-function env allowlist.
 - Resource fields from `resources` are applied into `IsolateConfig` limits.
+  - VFS fields from `resources` override runtime-global defaults for that function only.
 
 When no manifest is attached, runtime behavior remains the default policy (global SSRF protection + no env access).
 
@@ -97,7 +99,9 @@ If validation fails, response is `400 Bad Request` with an error payload.
   "resources": {
     "maxHeapMiB": 128,
     "cpuTimeMs": 50000,
-    "wallClockTimeoutMs": 60000
+    "wallClockTimeoutMs": 60000,
+    "vfsTotalQuotaBytes": 10485760,
+    "vfsMaxFileBytes": 5242880
   },
   "auth": {
     "verifyJwt": true
@@ -146,3 +150,25 @@ curl -X POST \
 
 Schema validation uses `jsonschema` with Draft 2020-12.
 Semantic validation additionally checks denylist collisions and wildcard restrictions.
+
+## Resource Fields for VFS
+
+`resources` supports two VFS-specific fields:
+
+- `vfsTotalQuotaBytes`
+  - Total writable bytes allowed in `/tmp` for the isolate.
+  - Default (when omitted): runtime global default (CLI/env), which defaults to `10485760` (10 MiB).
+- `vfsMaxFileBytes`
+  - Maximum size of a single writable file in `/tmp`.
+  - Default (when omitted): runtime global default (CLI/env), which defaults to `5242880` (5 MiB).
+
+Precedence order:
+
+1. Per-function manifest `resources` value
+2. Runtime global value from CLI flag or environment variable
+3. Built-in runtime default
+
+Validation notes:
+
+- Values must be integers `>= 0`.
+- If the runtime receives inconsistent values, effective behavior is clamped by runtime safety rules in the VFS layer.

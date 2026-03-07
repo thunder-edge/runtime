@@ -191,6 +191,22 @@ pub struct StartArgs {
     )]
     print_isolate_logs: bool,
 
+    /// Default VFS total writable quota in bytes per isolate.
+    #[arg(
+        long,
+        default_value_t = 10 * 1024 * 1024,
+        env = "EDGE_RUNTIME_VFS_TOTAL_QUOTA_BYTES"
+    )]
+    vfs_total_quota_bytes: usize,
+
+    /// Default VFS max writable file size in bytes per isolate.
+    #[arg(
+        long,
+        default_value_t = 5 * 1024 * 1024,
+        env = "EDGE_RUNTIME_VFS_MAX_FILE_BYTES"
+    )]
+    vfs_max_file_bytes: usize,
+
     /// Source map handling for modules loaded from eszip
     #[arg(
         long,
@@ -252,6 +268,8 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             enable_source_maps: matches!(args.sourcemap, SourceMapMode::Inline),
             ssrf_config,
             print_isolate_logs: args.print_isolate_logs,
+            vfs_total_quota_bytes: args.vfs_total_quota_bytes,
+            vfs_max_file_bytes: args.vfs_max_file_bytes,
         };
 
         let pool_config = PoolRuntimeConfig {

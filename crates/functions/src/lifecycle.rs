@@ -818,7 +818,11 @@ async fn load_from_eszip_with_init(
     }
 
     // Register the request handler bridge in the JS global scope
-    handler::inject_request_bridge(&mut js_runtime)?;
+    handler::inject_request_bridge_with_proxy_and_config(
+        &mut js_runtime,
+        &OutgoingProxyConfig::default(),
+        config,
+    )?;
 
     // Initialize the inspector BEFORE loading user modules so V8 is in debug
     // mode during script compilation. This guarantees that when a debugger

@@ -54,6 +54,8 @@ pub struct ManifestResources {
     pub max_heap_mi_b: Option<u64>,
     pub cpu_time_ms: Option<u64>,
     pub wall_clock_timeout_ms: Option<u64>,
+    pub vfs_total_quota_bytes: Option<u64>,
+    pub vfs_max_file_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -253,6 +255,12 @@ pub fn resolve_manifest_for_profile(
             }
             if let Some(wall_clock_timeout_ms) = profile_resources.wall_clock_timeout_ms {
                 resources.wall_clock_timeout_ms = Some(wall_clock_timeout_ms);
+            }
+            if let Some(vfs_total_quota_bytes) = profile_resources.vfs_total_quota_bytes {
+                resources.vfs_total_quota_bytes = Some(vfs_total_quota_bytes);
+            }
+            if let Some(vfs_max_file_bytes) = profile_resources.vfs_max_file_bytes {
+                resources.vfs_max_file_bytes = Some(vfs_max_file_bytes);
             }
         }
 
@@ -529,6 +537,8 @@ mod tests {
         assert_eq!(resolved.env_secret_refs, vec!["PROD_SECRET"]);
         assert_eq!(resolved.resources.max_heap_mi_b, Some(256));
         assert_eq!(resolved.resources.cpu_time_ms, Some(100));
+        assert_eq!(resolved.resources.vfs_total_quota_bytes, None);
+        assert_eq!(resolved.resources.vfs_max_file_bytes, None);
     }
 
     #[test]

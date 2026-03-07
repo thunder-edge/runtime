@@ -3,7 +3,7 @@
 > Baseado na auditoria de segurança e arquitetura realizada em 05/03/2026.
 > Cada item referencia o finding correspondente no `AUDIT.md`.
 >
-> Última atualização: 07/03/2026 (P1 de `node:http`/`node:https` avançado para compat client-side via `fetch`, com adapter `request` por contrato).
+> Última atualização: 07/03/2026 (P1 de VFS seguro em `node:fs` concluído com quotas configuráveis por manifest/flag/env, além de `http/https` client-side compat).
 > Commits de referência: `92aa473`, `6607a2b`, `4933dda`.
 > Inclui também mudanças locais ainda não commitadas em `functions/runtime-core`.
 
@@ -800,7 +800,10 @@ Notas de cobertura:
 
 - [x] **P0:** fechar `node:url` para sair de `None` no relatório (incluindo `domainToASCII`/`domainToUnicode`).
 - [x] **P0:** adicionar `process.stdout/stderr/stdin` compatíveis e `cwd` virtual (`/bundle`), sem acesso ao host.
-- [ ] **P1:** implementar VFS seguro (`/bundle`, `/tmp`, `/dev`) para `node:fs` sem quebrar isolamento.
+- [x] **P1:** implementar VFS seguro (`/bundle`, `/tmp`, `/dev`) para `node:fs` sem quebrar isolamento.
+    - Status aplicado: `/bundle` read-only (`EROFS`), `/tmp` writable efêmero em memória, `/dev/null` como sink virtual.
+    - Status aplicado: quotas VFS com defaults de 10 MiB total e 5 MiB por arquivo.
+    - Status aplicado: quotas ajustáveis por função via manifest (`resources.vfsTotalQuotaBytes`, `resources.vfsMaxFileBytes`) e globalmente via CLI/env (`--vfs-total-quota-bytes`, `--vfs-max-file-bytes`).
 - [x] **P1:** modo `http/https` compat opcional (wrapper `fetch` dentro de handler) mantendo default seguro atual.
     - Status aplicado: client-side `request/get` em `node:http` e `node:https` já operam via wrapper `fetch`; APIs server-side permanecem não funcionais por sandbox.
     - Status aplicado: adapter `request` com contrato básico (`get/post/put/patch/del/delete`, callback `(err,res,body)`, `write/end`) sobre o wrapper HTTP compat.
