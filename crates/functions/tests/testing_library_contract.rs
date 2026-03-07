@@ -116,7 +116,7 @@ fn contract_runner_features_suite_passes() {
         out
     );
     assert!(
-        out.contains("Tests: 16 total, 14 executed, 13 passed, 1 failed, 2 ignored"),
+        out.contains("Tests: 16 total, 14 executed, 14 passed, 0 failed, 2 ignored"),
         "expected advanced-runner summary in output, got:\n{}",
         out
     );

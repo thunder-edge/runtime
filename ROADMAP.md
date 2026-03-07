@@ -504,7 +504,7 @@ Implementacao atual:
 - [x] `GET /{function}/` sem key → funciona (ingress público)
 
 ### 4.4 Testes de Resiliência
-- [ ] Isolate panic → status muda para Error → auto-restart
+- [x] Isolate panic → status muda para Error → auto-restart
 - [x] Shutdown com request in-flight → request completa ou recebe erro
 - [x] Deploy de bundle corrompido → erro 400, não crash
 
@@ -512,7 +512,7 @@ Notas de cobertura:
 - Testes de sandbox adicionados em `crates/functions/tests/sandbox_security.rs`.
 - Stress de `20.000` conexões foi adicionado como teste `#[ignore]` em `crates/server/src/lib.rs` (`stress_20k_connections_excess_are_dropped`) para evitar flakiness em ambientes com limite de recursos. O comportamento de drop também é validado por teste rápido não-ignorado (`e2e_connection_limit_drops_excess_connections`).
 - Auth da fase 4.3 agora também possui cobertura E2E em `crates/server/src/lib.rs` (`e2e_admin_auth_and_public_ingress_behavior`) para `POST /_internal/functions` sem key, key inválida, key válida e `GET /{function}/` público sem key.
-- Auto-restart após panic permanece pendente: já existe validação de transição para `Error` e fail-fast, e há teste dedicado marcado `#[ignore]` em `crates/functions/tests/timeout_and_timers.rs` (`test_panic_auto_restart_recovers_to_running`) até estabilizar a recuperação automática.
+- Auto-restart após panic validado por teste ativo em `crates/functions/tests/timeout_and_timers.rs` (`test_panic_auto_restart_recovers_to_running`).
 
 ---
 

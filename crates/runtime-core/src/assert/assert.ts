@@ -25,6 +25,7 @@ export type TestOptions = {
   timeout?: number;
   concurrent?: boolean;
   retry?: number;
+  expectFailure?: boolean;
 };
 
 export type TestCase = {
@@ -36,6 +37,7 @@ export type TestCase = {
   timeout?: number;
   concurrent?: boolean;
   retry?: number;
+  expectFailure?: boolean;
 };
 
 type LegacyTestCase = {
@@ -46,6 +48,7 @@ type LegacyTestCase = {
   timeout?: number;
   concurrent?: boolean;
   retry?: number;
+  expectFailure?: boolean;
 };
 
 export type SuiteEntry = TestCase | HookCase | LegacyTestCase | SuiteEntry[];
@@ -501,6 +504,7 @@ function flattenEntries(entries: SuiteEntry[]): Array<TestCase | HookCase> {
           timeout: testEntry.timeout,
           concurrent: testEntry.concurrent,
           retry: testEntry.retry,
+          expectFailure: testEntry.expectFailure,
         });
       }
     }
@@ -785,18 +789,28 @@ export async function runSuite(
 
   for (const testCase of sequentialTests) {
     const result = await runSingleTestCase(suiteName, testCase, hooks.beforeEach, hooks.afterEach);
-    if (result.ok) {
+    if (result.ok && !testCase.expectFailure) {
       passed += 1;
       stats.testsPassed += 1;
       console.log(`${testCase.name}... ${green("OK")}`);
+    } else if (!result.ok && testCase.expectFailure) {
+      passed += 1;
+      stats.testsPassed += 1;
+      console.log(`${testCase.name}... ${green("OK")} ${gray("(expected failure)")}`);
     } else {
       failed += 1;
       stats.testsFailed += 1;
       const error = result.error;
       const isError = error instanceof Error;
-      const status = isError ? `${red("FAIL")} (${red("ERROR")})` : red("FAIL");
+      const status = testCase.expectFailure
+        ? `${red("FAIL")} ${gray("(expected failure but passed)")}`
+        : (isError ? `${red("FAIL")} (${red("ERROR")})` : red("FAIL"));
       console.log(`${testCase.name}... ${status}`);
-      failures.push(isError ? `${testCase.name}: ${error.message}` : `${testCase.name}: ${String(error)}`);
+      if (testCase.expectFailure) {
+        failures.push(`${testCase.name}: expected failure but test passed`);
+      } else {
+        failures.push(isError ? `${testCase.name}: ${error.message}` : `${testCase.name}: ${String(error)}`);
+      }
     }
   }
 
@@ -809,18 +823,28 @@ export async function runSuite(
     );
 
     for (const { testCase, result } of concurrentResults) {
-      if (result.ok) {
+      if (result.ok && !testCase.expectFailure) {
         passed += 1;
         stats.testsPassed += 1;
         console.log(`${testCase.name}... ${green("OK")}`);
+      } else if (!result.ok && testCase.expectFailure) {
+        passed += 1;
+        stats.testsPassed += 1;
+        console.log(`${testCase.name}... ${green("OK")} ${gray("(expected failure)")}`);
       } else {
         failed += 1;
         stats.testsFailed += 1;
         const error = result.error;
         const isError = error instanceof Error;
-        const status = isError ? `${red("FAIL")} (${red("ERROR")})` : red("FAIL");
+        const status = testCase.expectFailure
+          ? `${red("FAIL")} ${gray("(expected failure but passed)")}`
+          : (isError ? `${red("FAIL")} (${red("ERROR")})` : red("FAIL"));
         console.log(`${testCase.name}... ${status}`);
-        failures.push(isError ? `${testCase.name}: ${error.message}` : `${testCase.name}: ${String(error)}`);
+        if (testCase.expectFailure) {
+          failures.push(`${testCase.name}: expected failure but test passed`);
+        } else {
+          failures.push(isError ? `${testCase.name}: ${error.message}` : `${testCase.name}: ${String(error)}`);
+        }
       }
     }
   }

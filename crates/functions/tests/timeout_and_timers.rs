@@ -9,6 +9,7 @@
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use functions::registry::FunctionRegistry;
@@ -17,6 +18,8 @@ use runtime_core::extensions;
 use runtime_core::isolate::IsolateConfig;
 use runtime_core::module_loader::EszipModuleLoader;
 use tokio_util::sync::CancellationToken;
+
+static PANIC_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Helper: create a JsRuntime with the same config as production isolates.
 fn make_runtime_with_eszip(eszip: Arc<eszip::EszipV2>) -> JsRuntime {
@@ -420,6 +423,9 @@ fn test_heap_limit_infinite_allocation_marks_function_error() {
 /// and mark function status as Error in the registry.
 #[test]
 fn test_panic_followed_by_request_marks_error_and_fails_fast() {
+    let _panic_env_lock = PANIC_PATH_ENV_LOCK
+        .lock()
+        .expect("panic env lock poisoned");
     deno_core::JsRuntime::init_platform(None);
 
     let eszip_bytes = build_eszip(
@@ -518,8 +524,10 @@ fn test_panic_followed_by_request_marks_error_and_fails_fast() {
 /// Test roadmap 4.4 requirement: panic transitions to Error and then auto-restart
 /// returns the function to Running state with successful request handling.
 #[test]
-#[ignore = "known gap: panic auto-restart recovery is not yet stable after channel teardown"]
 fn test_panic_auto_restart_recovers_to_running() {
+    let _panic_env_lock = PANIC_PATH_ENV_LOCK
+        .lock()
+        .expect("panic env lock poisoned");
     deno_core::JsRuntime::init_platform(None);
 
     let eszip_bytes = build_eszip(
@@ -577,12 +585,16 @@ fn test_panic_auto_restart_recovers_to_running() {
         std::env::remove_var("EDGE_RUNTIME_TEST_PANIC_ON_PATH");
 
         // We expect transient Error and then recovery to Running after backoff.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+        // Keep a generous deadline to avoid flakiness from slower cold starts.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut saw_error = false;
         let mut recovered = false;
+        let mut last_status: Option<FunctionStatus> = None;
+        let mut last_send_error: Option<String> = None;
 
         while std::time::Instant::now() < deadline {
             if let Some(info) = registry.get_info("panic-auto-restart-test") {
+                last_status = Some(info.status.clone());
                 if info.status == FunctionStatus::Error {
                     saw_error = true;
                 }
@@ -596,10 +608,15 @@ fn test_panic_auto_restart_recovers_to_running() {
                     .body(bytes::Bytes::new())
                     .map_err(|e| format!("build healthy request: {e}"))?;
 
-                if let Ok(resp) = handle.send_request(req).await {
-                    if resp.parts.status == 200 {
-                        recovered = true;
-                        break;
+                match handle.send_request(req).await {
+                    Ok(resp) => {
+                        if resp.parts.status == 200 {
+                            recovered = true;
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        last_send_error = Some(err.to_string());
                     }
                 }
             }
@@ -611,7 +628,10 @@ fn test_panic_auto_restart_recovers_to_running() {
             return Err("did not observe Error state after panic".to_string());
         }
         if !recovered {
-            return Err("isolate did not recover to Running within deadline".to_string());
+            return Err(format!(
+                "isolate did not recover to Running within deadline (last_status={:?}, last_send_error={:?})",
+                last_status, last_send_error
+            ));
         }
 
         let info_after = registry

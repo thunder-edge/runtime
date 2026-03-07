@@ -58,6 +58,21 @@ fn timeout_response() -> IsolateResponse {
     IsolateResponse::from_full_response(response)
 }
 
+async fn parse_eszip_bundle(
+    eszip_bytes: Vec<u8>,
+) -> Result<(Arc<eszip::EszipV2>, deno_core::ModuleSpecifier), Error> {
+    let reader = futures_util::io::BufReader::new(futures_util::io::Cursor::new(eszip_bytes));
+    let (eszip, loader_fut) = eszip::EszipV2::parse(reader)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to parse eszip: {e}"))?;
+
+    tokio::spawn(loader_fut);
+
+    let eszip = Arc::new(eszip);
+    let root_specifier = determine_root_specifier(&eszip)?;
+    Ok((eszip, root_specifier))
+}
+
 impl Drop for InspectorServerGuard {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -94,18 +109,8 @@ pub async fn create_function(
         }
     };
 
-    // Parse eszip asynchronously
-    let reader =
-        futures_util::io::BufReader::new(futures_util::io::Cursor::new(eszip_bytes_vec.clone()));
-    let (eszip, loader_fut) = eszip::EszipV2::parse(reader)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to parse eszip: {e}"))?;
-
-    // Spawn the lazy loader future
-    tokio::spawn(loader_fut);
-
-    let eszip = Arc::new(eszip);
-    let root_specifier = determine_root_specifier(&eszip)?;
+    // Validate that the bundle can be parsed before spawning isolate supervisor.
+    let _ = parse_eszip_bundle(eszip_bytes_vec.clone()).await?;
 
     // Create the request channel
     let (request_tx, request_rx) = mpsc::unbounded_channel::<IsolateRequest>();
@@ -144,6 +149,7 @@ pub async fn create_function(
     } else {
         None
     };
+    let eszip_bytes_for_thread = eszip_bytes_vec.clone();
     let supervisor_handle = handle.clone();
 
     std::thread::Builder::new()
@@ -156,27 +162,36 @@ pub async fn create_function(
 
             let mut request_rx = request_rx;
             let mut restart_count = 0_u32;
+            let eszip_bytes_for_restart = eszip_bytes_for_thread;
 
             loop {
                 let local = tokio::task::LocalSet::new();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     local.block_on(
                         &rt,
-                        run_isolate(
-                            isolate_name.clone(),
-                            eszip.clone(),
-                            root_specifier.clone(),
-                            isolate_config.clone(),
-                            isolate_manifest.clone(),
-                            &mut request_rx,
-                            shutdown.clone(),
-                            isolate_metrics.clone(),
-                            bundle_format,
-                            snapshot_bytes.clone(),
-                            bundle_package.v8_version.clone(),
-                            inspector_stop_for_thread.clone(),
-                            supervisor_handle.clone(),
-                        ),
+                        async {
+                            // Re-parse eszip on each restart attempt because module sources
+                            // are consumed by the loader during execution.
+                            let (eszip, root_specifier) =
+                                parse_eszip_bundle(eszip_bytes_for_restart.clone()).await?;
+
+                            run_isolate(
+                                isolate_name.clone(),
+                                eszip,
+                                root_specifier,
+                                isolate_config.clone(),
+                                isolate_manifest.clone(),
+                                &mut request_rx,
+                                shutdown.clone(),
+                                isolate_metrics.clone(),
+                                bundle_format,
+                                snapshot_bytes.clone(),
+                                bundle_package.v8_version.clone(),
+                                inspector_stop_for_thread.clone(),
+                                supervisor_handle.clone(),
+                            )
+                            .await
+                        },
                     )
                 }));
 

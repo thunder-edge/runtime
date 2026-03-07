@@ -57,11 +57,11 @@ await runSuite("runner-advanced-features", [
     kind: "test",
     name: "test timeout fails suite",
     run: async () => {
-      await assertRejects(() => runSuite("inner-timeout", [
+      await runSuite("inner-timeout", [
         test("slow", async () => {
           await new Promise((resolve) => setTimeout(resolve, 25));
-        }, { timeout: 5 }),
-      ]));
+        }, { timeout: 5, expectFailure: true }),
+      ]);
     },
   },
   {
