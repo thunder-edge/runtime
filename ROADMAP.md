@@ -457,6 +457,25 @@ Implementacao atual:
 
 **Status:** Concluido
 
+### 3.9 Proxy de Rede de Saida (Outgoing)
+
+**Objetivo:** suportar proxy de saida para trafego HTTP, HTTPS e TCP com bypass configuravel por protocolo.
+
+- [ ] Adicionar suporte a proxy HTTP de saida
+- [ ] Adicionar suporte a proxy HTTPS de saida
+- [ ] Adicionar suporte a proxy TCP de saida
+- [ ] Adicionar configuracao `no-proxy` para HTTP
+- [ ] Adicionar configuracao `no-proxy` para HTTPS
+- [ ] Adicionar configuracao `no-proxy` para TCP
+- [ ] Expor configuracao via CLI e env vars dedicadas
+- [ ] Garantir compatibilidade com regras SSRF e allowlists existentes
+- [ ] Adicionar testes de integracao para:
+    - [ ] rota com proxy habilitado
+    - [ ] rota em `no-proxy` (bypass)
+    - [ ] fallback quando proxy indisponivel (erro claro)
+
+**Critério de aceite:** requests e conexoes de saida usam proxy por protocolo quando configurado e respeitam `no-proxy` sem regressao de seguranca.
+
 ---
 
 ## Fase 4 — Testes de Segurança
