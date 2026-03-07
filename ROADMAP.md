@@ -385,10 +385,19 @@ Implementacao atual:
 
 ### 3.3 Isolate Pooling / Reuse
 
-- [ ] Pool de isolates quentes prontos para receber requests
-- [ ] Reutilizar isolate entre requests da mesma função
-- [ ] Pre-warm isolates para funções com alto tráfego
-- [ ] Evict LRU quando pool estiver cheio
+- [x] Pool de isolates quentes prontos para receber requests
+- [x] Reutilizar isolate entre requests da mesma função
+- [x] Pre-warm isolates para funções com alto tráfego
+- [x] Evict LRU quando pool estiver cheio
+
+**Status:** ✅ Concluído
+
+Implementacao atual:
+- Configuracao de pooling em nivel de processo via CLI (`--pool-enabled`, `--pool-global-max-isolates`, `--pool-min-free-memory-mib`)
+- Limites dinamicos por funcao via API admin (`GET/PUT /_internal/functions/{name}/pool`)
+- Escalonamento com bloqueio por memoria minima livre e logs de guardrail
+- Roteamento round-robin entre handles da funcao (primary + replicas)
+- Eviccao LRU explicita de replicas extras quando o limite global de isolates e atingido (preserva isolate primario)
 
 ### 3.4 Hot-Reload de Certificado TLS
 

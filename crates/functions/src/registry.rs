@@ -2,9 +2,11 @@ use anyhow::Error;
 use bytes::Bytes;
 use chrono::Utc;
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use sysinfo::System;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use runtime_core::isolate::IsolateConfig;
 use runtime_core::manifest::ResolvedFunctionManifest;
@@ -36,6 +38,8 @@ pub struct FunctionRegistry {
     default_config: IsolateConfig,
     pool_config: PoolRuntimeConfig,
     default_pool_limits: PoolLimits,
+    usage_clock: AtomicU64,
+    handle_last_used: DashMap<Uuid, u64>,
 }
 
 impl FunctionRegistry {
@@ -69,10 +73,18 @@ impl FunctionRegistry {
         })
     }
 
-    fn reconcile_entry_status(entry: &mut FunctionEntry) {
-        entry
-            .extra_isolate_handles
-            .retain(|handle| handle.is_alive());
+    fn reconcile_entry_status(entry: &mut FunctionEntry) -> Vec<Uuid> {
+        let mut removed_handles = Vec::new();
+
+        let mut alive_extras = Vec::with_capacity(entry.extra_isolate_handles.len());
+        for handle in entry.extra_isolate_handles.drain(..) {
+            if handle.is_alive() {
+                alive_extras.push(handle);
+            } else {
+                removed_handles.push(handle.id);
+            }
+        }
+        entry.extra_isolate_handles = alive_extras;
 
         let mut alive_count = entry
             .extra_isolate_handles
@@ -84,6 +96,7 @@ impl FunctionRegistry {
             if handle.is_alive() {
                 alive_count += 1;
             } else {
+                removed_handles.push(handle.id);
                 entry.isolate_handle = None;
             }
         }
@@ -101,6 +114,92 @@ impl FunctionRegistry {
             entry.status = FunctionStatus::Running;
             entry.updated_at = Utc::now();
         }
+
+        removed_handles
+    }
+
+    fn next_usage_tick(&self) -> u64 {
+        self.usage_clock
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1)
+    }
+
+    fn mark_handle_used(&self, handle_id: Uuid) {
+        self.handle_last_used.insert(handle_id, self.next_usage_tick());
+    }
+
+    fn mark_entry_handles_used(&self, entry: &FunctionEntry) {
+        if let Some(handle) = &entry.isolate_handle {
+            self.mark_handle_used(handle.id);
+        }
+        for handle in &entry.extra_isolate_handles {
+            self.mark_handle_used(handle.id);
+        }
+    }
+
+    fn remove_handle_usage(&self, handle_id: Uuid) {
+        self.handle_last_used.remove(&handle_id);
+    }
+
+    fn remove_entry_handle_usage(&self, entry: &FunctionEntry) {
+        if let Some(handle) = &entry.isolate_handle {
+            self.remove_handle_usage(handle.id);
+        }
+        for handle in &entry.extra_isolate_handles {
+            self.remove_handle_usage(handle.id);
+        }
+    }
+
+    /// Evict one least-recently-used replica (never primary isolate) to free pool capacity.
+    fn evict_lru_replica_for_capacity(&self) -> bool {
+        let mut candidate_function = None::<String>;
+        let mut candidate_handle = None::<Uuid>;
+        let mut candidate_tick = u64::MAX;
+
+        for entry in self.functions.iter() {
+            if entry.current_pool_size() <= entry.pool_limits.min {
+                continue;
+            }
+
+            for handle in &entry.extra_isolate_handles {
+                let tick = self
+                    .handle_last_used
+                    .get(&handle.id)
+                    .map(|value| *value)
+                    .unwrap_or(0);
+                if tick < candidate_tick {
+                    candidate_tick = tick;
+                    candidate_function = Some(entry.key().clone());
+                    candidate_handle = Some(handle.id);
+                }
+            }
+        }
+
+        let (Some(function_name), Some(handle_id)) = (candidate_function, candidate_handle) else {
+            return false;
+        };
+
+        let Some(mut entry) = self.functions.get_mut(&function_name) else {
+            return false;
+        };
+
+        let Some(pos) = entry
+            .extra_isolate_handles
+            .iter()
+            .position(|h| h.id == handle_id)
+        else {
+            return false;
+        };
+
+        let handle = entry.extra_isolate_handles.remove(pos);
+        self.remove_handle_usage(handle.id);
+        handle.shutdown.cancel();
+        handle.close_request_tx();
+        info!(
+            "evicted LRU replica '{}' from function '{}' to free pool capacity",
+            handle.id, function_name
+        );
+        true
     }
 
     pub fn new(global_shutdown: CancellationToken, default_config: IsolateConfig) -> Self {
@@ -124,6 +223,8 @@ impl FunctionRegistry {
             default_config,
             pool_config,
             default_pool_limits,
+            usage_clock: AtomicU64::new(0),
+            handle_last_used: DashMap::new(),
         }
     }
 
@@ -163,11 +264,21 @@ impl FunctionRegistry {
         }
 
         if self.current_total_isolates() >= self.pool_config.global_max_isolates {
-            warn!(
-                "pool scale blocked for '{}' due to global isolate limit ({})",
-                function_name, self.pool_config.global_max_isolates
-            );
-            return Ok(None);
+            if !self.evict_lru_replica_for_capacity() {
+                warn!(
+                    "pool scale blocked for '{}' due to global isolate limit ({}) and no evictable replica",
+                    function_name, self.pool_config.global_max_isolates
+                );
+                return Ok(None);
+            }
+
+            if self.current_total_isolates() >= self.pool_config.global_max_isolates {
+                warn!(
+                    "pool scale blocked for '{}' after LRU eviction attempt (global limit: {})",
+                    function_name, self.pool_config.global_max_isolates
+                );
+                return Ok(None);
+            }
         }
 
         if !self.can_scale_with_memory(function_name) {
@@ -251,6 +362,7 @@ impl FunctionRegistry {
         }
 
         let info = entry.to_info();
+        self.mark_entry_handles_used(&entry);
         self.functions.insert(name, entry);
         Ok(info)
     }
@@ -259,7 +371,10 @@ impl FunctionRegistry {
     /// Returns None if function doesn't exist, isn't running, or the isolate is dead.
     pub fn get_handle(&self, name: &str) -> Option<runtime_core::isolate::IsolateHandle> {
         self.functions.get_mut(name).and_then(|mut entry| {
-            Self::reconcile_entry_status(&mut entry);
+            let removed_handles = Self::reconcile_entry_status(&mut entry);
+            for handle_id in removed_handles {
+                self.remove_handle_usage(handle_id);
+            }
             if entry.status != FunctionStatus::Running {
                 return None;
             }
@@ -282,7 +397,9 @@ impl FunctionRegistry {
 
             let idx = (entry.next_handle_index as usize) % handles.len();
             entry.next_handle_index = entry.next_handle_index.wrapping_add(1);
-            Some(handles[idx].clone())
+            let selected = handles[idx].clone();
+            self.mark_handle_used(selected.id);
+            Some(selected)
         })
     }
 
@@ -308,7 +425,10 @@ impl FunctionRegistry {
     /// Get info about a specific function.
     pub fn get_info(&self, name: &str) -> Option<FunctionInfo> {
         self.functions.get_mut(name).map(|mut entry| {
-            Self::reconcile_entry_status(&mut entry);
+            let removed_handles = Self::reconcile_entry_status(&mut entry);
+            for handle_id in removed_handles {
+                self.remove_handle_usage(handle_id);
+            }
             entry.to_info()
         })
     }
@@ -327,6 +447,7 @@ impl FunctionRegistry {
         // Destroy the old entry
         if let Some((_, old_entry)) = self.functions.remove(name) {
             info!("shutting down old isolate for function '{}'", name);
+            self.remove_entry_handle_usage(&old_entry);
             lifecycle::destroy_function(&old_entry).await;
         }
 
@@ -351,6 +472,7 @@ impl FunctionRegistry {
         .await?;
 
         let info = entry.to_info();
+        self.mark_entry_handles_used(&entry);
         self.functions.insert(name.to_string(), entry);
         Ok(info)
     }
@@ -359,6 +481,7 @@ impl FunctionRegistry {
     pub async fn delete(&self, name: &str) -> Result<(), Error> {
         if let Some((_, entry)) = self.functions.remove(name) {
             info!("deleting function '{}'", name);
+            self.remove_entry_handle_usage(&entry);
             for extra in &entry.extra_isolate_handles {
                 extra.shutdown.cancel();
                 extra.close_request_tx();
@@ -392,6 +515,7 @@ impl FunctionRegistry {
 
         // Destroy old, recreate from same bytes
         if let Some((_, old_entry)) = self.functions.remove(name) {
+            self.remove_entry_handle_usage(&old_entry);
             for extra in &old_entry.extra_isolate_handles {
                 extra.shutdown.cancel();
                 extra.close_request_tx();
@@ -411,6 +535,7 @@ impl FunctionRegistry {
         .await?;
 
         let info = entry.to_info();
+        self.mark_entry_handles_used(&entry);
         self.functions.insert(name.to_string(), entry);
         Ok(info)
     }
@@ -441,9 +566,11 @@ impl FunctionRegistry {
             entry.status = FunctionStatus::ShuttingDown;
             entry.updated_at = Utc::now();
             if let Some(handle) = &entry.isolate_handle {
+                self.remove_handle_usage(handle.id);
                 handle.shutdown.cancel();
             }
             for handle in &entry.extra_isolate_handles {
+                self.remove_handle_usage(handle.id);
                 handle.shutdown.cancel();
                 handle.close_request_tx();
             }
@@ -453,6 +580,7 @@ impl FunctionRegistry {
         while started.elapsed() < deadline {
             if self.all_request_channels_closed() {
                 self.functions.clear();
+                self.handle_last_used.clear();
                 info!("all function channels closed before shutdown deadline");
                 return;
             }
@@ -483,6 +611,7 @@ impl FunctionRegistry {
         }
 
         self.functions.clear();
+        self.handle_last_used.clear();
     }
 
     /// Number of deployed functions.
@@ -517,6 +646,7 @@ impl FunctionRegistry {
         // Shrink extra replicas above max (primary handle is always retained if alive).
         while entry.current_pool_size() > entry.pool_limits.max {
             if let Some(extra) = entry.extra_isolate_handles.pop() {
+                self.remove_handle_usage(extra.id);
                 extra.shutdown.cancel();
                 extra.close_request_tx();
             } else {
@@ -538,7 +668,10 @@ impl FunctionRegistry {
                     )
                     .await
                 {
-                    Ok(Some(handle)) => entry.extra_isolate_handles.push(handle),
+                    Ok(Some(handle)) => {
+                        self.mark_handle_used(handle.id);
+                        entry.extra_isolate_handles.push(handle)
+                    }
                     Ok(None) => break,
                     Err(err) => {
                         warn!("failed to scale pool for '{}': {}", name, err);
@@ -549,6 +682,7 @@ impl FunctionRegistry {
         }
 
         let info = entry.to_info();
+        self.mark_entry_handles_used(&entry);
         self.functions.insert(key, entry);
         Ok(info)
     }
@@ -790,5 +924,137 @@ mod tests {
         let limits = reg.get_pool_limits("pool-fn").expect("pool limits missing");
         assert_eq!(limits.min, 1);
         assert_eq!(limits.max, 3);
+    }
+
+    #[test]
+    fn evict_lru_replica_prefers_oldest_extra_handle() {
+        let reg = make_registry_with_pool(true);
+
+        let (primary_a_tx, _primary_a_rx) = tokio::sync::mpsc::unbounded_channel();
+        let primary_a = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(primary_a_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+        let (extra_a_tx, _extra_a_rx) = tokio::sync::mpsc::unbounded_channel();
+        let extra_a = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(extra_a_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let entry_a = FunctionEntry {
+            name: "fn-a".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(primary_a),
+            extra_isolate_handles: vec![extra_a.clone()],
+            pool_limits: PoolLimits { min: 1, max: 2 },
+            next_handle_index: 0,
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig::default(),
+            manifest: None,
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+
+        let (primary_b_tx, _primary_b_rx) = tokio::sync::mpsc::unbounded_channel();
+        let primary_b = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(primary_b_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+        let (extra_b_tx, _extra_b_rx) = tokio::sync::mpsc::unbounded_channel();
+        let extra_b = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(extra_b_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let entry_b = FunctionEntry {
+            name: "fn-b".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(primary_b),
+            extra_isolate_handles: vec![extra_b.clone()],
+            pool_limits: PoolLimits { min: 1, max: 2 },
+            next_handle_index: 0,
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig::default(),
+            manifest: None,
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+
+        reg.functions.insert("fn-a".to_string(), entry_a);
+        reg.functions.insert("fn-b".to_string(), entry_b);
+
+        // Lower tick means older usage and should be evicted first.
+        reg.handle_last_used.insert(extra_a.id, 10);
+        reg.handle_last_used.insert(extra_b.id, 20);
+
+        assert!(reg.evict_lru_replica_for_capacity());
+
+        {
+            let fn_a = reg.functions.get("fn-a").expect("missing fn-a");
+            assert!(fn_a.extra_isolate_handles.is_empty());
+        }
+        {
+            let fn_b = reg.functions.get("fn-b").expect("missing fn-b");
+            assert_eq!(fn_b.extra_isolate_handles.len(), 1);
+        }
+    }
+
+    #[test]
+    fn evict_lru_replica_respects_min_pool_size() {
+        let reg = make_registry_with_pool(true);
+
+        let (primary_tx, _primary_rx) = tokio::sync::mpsc::unbounded_channel();
+        let primary = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(primary_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+        let (extra_tx, _extra_rx) = tokio::sync::mpsc::unbounded_channel();
+        let extra = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(extra_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let entry = FunctionEntry {
+            name: "fn-min".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(primary),
+            extra_isolate_handles: vec![extra],
+            pool_limits: PoolLimits { min: 2, max: 2 },
+            next_handle_index: 0,
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig::default(),
+            manifest: None,
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+        reg.functions.insert("fn-min".to_string(), entry);
+
+        assert!(!reg.evict_lru_replica_for_capacity());
+        let current = reg.functions.get("fn-min").expect("missing fn-min");
+        assert_eq!(current.extra_isolate_handles.len(), 1);
     }
 }
