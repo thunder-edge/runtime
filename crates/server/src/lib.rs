@@ -118,6 +118,8 @@ pub async fn run_dual_server(
     // Warn if no API key configured
     if config.admin.api_key.is_none() {
         warn!(
+            function_name = "runtime",
+            request_id = "system",
             "admin API running without authentication (no --api-key set). \
              This is insecure for production use."
         );
@@ -126,6 +128,8 @@ pub async fn run_dual_server(
     // Create connection semaphore shared across all listeners
     let connection_semaphore = Arc::new(Semaphore::new(config.max_connections));
     info!(
+        function_name = "runtime",
+        request_id = "system",
         "connection limit set to {} concurrent connections",
         config.max_connections
     );
@@ -151,7 +155,7 @@ pub async fn run_dual_server(
         if let Err(e) =
             run_admin_listener(admin_config, admin_router, admin_shutdown, admin_semaphore).await
         {
-            error!("admin listener error: {}", e);
+            error!(function_name = "runtime", request_id = "system", "admin listener error: {}", e);
         }
     });
 
@@ -168,13 +172,13 @@ pub async fn run_dual_server(
         )
         .await
         {
-            error!("ingress listener error: {}", e);
+            error!(function_name = "runtime", request_id = "system", "ingress listener error: {}", e);
         }
     });
 
     // Wait for shutdown signal
     shutdown.cancelled().await;
-    info!("shutdown signal received, stopping listeners...");
+    info!(function_name = "runtime", request_id = "system", "shutdown signal received, stopping listeners...");
 
     // Wait for listeners to finish with deadline
     let deadline = Duration::from_secs(config.graceful_exit_deadline_secs);
@@ -185,6 +189,8 @@ pub async fn run_dual_server(
     .await;
 
     info!(
+        function_name = "runtime",
+        request_id = "system",
         "waited up to {}s for connections to drain",
         config.graceful_exit_deadline_secs
     );
@@ -217,6 +223,8 @@ async fn run_admin_listener(
 
     if tls_acceptor.is_none() {
         warn!(
+            function_name = "runtime",
+            request_id = "system",
             "admin listener started without TLS on {}. Traffic is unencrypted.",
             config.addr
         );
@@ -227,7 +235,7 @@ async fn run_admin_listener(
     } else {
         "http"
     };
-    info!("admin API listening on {}://{}", scheme, config.addr);
+    info!(function_name = "runtime", request_id = "system", "admin API listening on {}://{}", scheme, config.addr);
 
     let svc = EdgeService::new(router);
 
@@ -240,7 +248,7 @@ async fn run_admin_listener(
                         let permit = match connection_semaphore.clone().try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
-                                warn!("admin: connection limit reached, rejecting {}", peer_addr);
+                                warn!(function_name = "runtime", request_id = "system", "admin: connection limit reached, rejecting {}", peer_addr);
                                 drop(stream);
                                 continue;
                             }
@@ -274,12 +282,12 @@ async fn run_admin_listener(
                         });
                     }
                     Err(e) => {
-                        error!("admin accept error: {}", e);
+                        error!(function_name = "runtime", request_id = "system", "admin accept error: {}", e);
                     }
                 }
             }
             _ = shutdown.cancelled() => {
-                info!("admin listener stopping");
+                info!(function_name = "runtime", request_id = "system", "admin listener stopping");
                 break;
             }
         }
@@ -327,6 +335,8 @@ async fn run_tcp_ingress(
 
     if tls_acceptor.is_none() {
         warn!(
+            function_name = "runtime",
+            request_id = "system",
             "ingress listener started without TLS on {}. Traffic is unencrypted.",
             addr
         );
@@ -337,7 +347,7 @@ async fn run_tcp_ingress(
     } else {
         "http"
     };
-    info!("ingress listening on {}://{}", scheme, addr);
+    info!(function_name = "runtime", request_id = "system", "ingress listening on {}://{}", scheme, addr);
 
     let svc = EdgeService::new(router);
 
@@ -350,7 +360,7 @@ async fn run_tcp_ingress(
                         let permit = match connection_semaphore.clone().try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
-                                warn!("ingress: connection limit reached, rejecting {}", peer_addr);
+                                warn!(function_name = "runtime", request_id = "system", "ingress: connection limit reached, rejecting {}", peer_addr);
                                 drop(stream);
                                 continue;
                             }
@@ -384,12 +394,12 @@ async fn run_tcp_ingress(
                         });
                     }
                     Err(e) => {
-                        error!("ingress accept error: {}", e);
+                        error!(function_name = "runtime", request_id = "system", "ingress accept error: {}", e);
                     }
                 }
             }
             _ = shutdown.cancelled() => {
-                info!("ingress TCP listener stopping");
+                info!(function_name = "runtime", request_id = "system", "ingress TCP listener stopping");
                 break;
             }
         }
@@ -411,7 +421,7 @@ async fn run_unix_ingress(
     }
 
     let listener = UnixListener::bind(&path)?;
-    info!("ingress listening on unix:{}", path.display());
+    info!(function_name = "runtime", request_id = "system", "ingress listening on unix:{}", path.display());
 
     let svc = EdgeService::new(router);
     let cleanup_path = path.clone();
@@ -425,7 +435,7 @@ async fn run_unix_ingress(
                         let permit = match connection_semaphore.clone().try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
-                                warn!("unix ingress: connection limit reached, rejecting connection");
+                                warn!(function_name = "runtime", request_id = "system", "unix ingress: connection limit reached, rejecting connection");
                                 drop(stream);
                                 continue;
                             }
@@ -447,12 +457,12 @@ async fn run_unix_ingress(
                         });
                     }
                     Err(e) => {
-                        error!("unix accept error: {}", e);
+                        error!(function_name = "runtime", request_id = "system", "unix accept error: {}", e);
                     }
                 }
             }
             _ = shutdown.cancelled() => {
-                info!("ingress Unix listener stopping");
+                info!(function_name = "runtime", request_id = "system", "ingress Unix listener stopping");
                 break;
             }
         }
@@ -461,6 +471,8 @@ async fn run_unix_ingress(
     // Cleanup socket file
     if let Err(e) = std::fs::remove_file(&cleanup_path) {
         warn!(
+            function_name = "runtime",
+            request_id = "system",
             "failed to remove Unix socket {}: {}",
             cleanup_path.display(),
             e
@@ -491,6 +503,8 @@ pub async fn run_server(
     // Create connection semaphore
     let connection_semaphore = Arc::new(Semaphore::new(config.max_connections));
     info!(
+        function_name = "runtime",
+        request_id = "system",
         "connection limit set to {} concurrent connections",
         config.max_connections
     );
@@ -508,6 +522,8 @@ pub async fn run_server(
 
     if tls_acceptor.is_none() {
         warn!(
+            function_name = "runtime",
+            request_id = "system",
             "server started without TLS on {}. Traffic is unencrypted.",
             config.addr
         );
@@ -518,7 +534,7 @@ pub async fn run_server(
     } else {
         "http"
     };
-    info!("edge-runtime listening on {}://{}", scheme, config.addr);
+    info!(function_name = "runtime", request_id = "system", "edge-runtime listening on {}://{}", scheme, config.addr);
 
     loop {
         tokio::select! {
@@ -529,7 +545,7 @@ pub async fn run_server(
                         let permit = match connection_semaphore.clone().try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
-                                warn!("connection limit reached, rejecting {}", peer_addr);
+                                warn!(function_name = "runtime", request_id = "system", "connection limit reached, rejecting {}", peer_addr);
                                 drop(stream);
                                 continue;
                             }
@@ -564,12 +580,12 @@ pub async fn run_server(
                         });
                     }
                     Err(e) => {
-                        error!("failed to accept connection: {}", e);
+                        error!(function_name = "runtime", request_id = "system", "failed to accept connection: {}", e);
                     }
                 }
             }
             _ = shutdown.cancelled() => {
-                info!("shutdown signal received, stopping server...");
+                info!(function_name = "runtime", request_id = "system", "shutdown signal received, stopping server...");
                 break;
             }
         }
@@ -577,6 +593,8 @@ pub async fn run_server(
 
     // Graceful shutdown: wait for in-flight connections
     info!(
+        function_name = "runtime",
+        request_id = "system",
         "waiting up to {}s for connections to drain",
         config.graceful_exit_deadline_secs
     );

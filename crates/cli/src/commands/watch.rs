@@ -50,6 +50,15 @@ pub struct WatchArgs {
     )]
     wall_clock_timeout_ms: u64,
 
+    /// Print user function `console.*` logs to runtime stdout.
+    /// If disabled, logs are captured only by the internal isolate collector.
+    #[arg(
+        long,
+        default_value_t = true,
+        env = "EDGE_RUNTIME_PRINT_ISOLATE_LOGS"
+    )]
+    print_isolate_logs: bool,
+
     /// Enable V8 inspector protocol in watch mode (optional base port, default: 9229)
     ///
     /// When multiple functions are loaded, ports are assigned sequentially:
@@ -389,6 +398,7 @@ async fn load_and_deploy_functions(
             inspect_allow_remote: default_config.inspect_allow_remote,
             enable_source_maps: default_config.enable_source_maps,
             ssrf_config: default_config.ssrf_config.clone(),
+            print_isolate_logs: default_config.print_isolate_logs,
         };
 
         match bundle_file(file_path).await {
@@ -556,6 +566,7 @@ fn build_watch_default_config(args: &WatchArgs) -> IsolateConfig {
         enable_source_maps: true,
         // Watch mode is local-dev oriented: do not enforce SSRF network denylist.
         ssrf_config: runtime_core::ssrf::SsrfConfig::disabled(),
+        print_isolate_logs: args.print_isolate_logs,
     }
 }
 
@@ -576,6 +587,7 @@ mod tests {
             inspect: None,
             inspect_brk: false,
             inspect_allow_remote: false,
+            print_isolate_logs: true,
         };
 
         let cfg = build_watch_default_config(&args);

@@ -46,6 +46,11 @@ pub struct IsolateConfig {
     /// SSRF protection configuration.
     #[serde(default)]
     pub ssrf_config: SsrfConfig,
+
+    /// If true, user `console.*` logs are printed to runtime stdout/stderr.
+    /// If false, logs are captured by the isolate log collector only.
+    #[serde(default = "default_print_isolate_logs")]
+    pub print_isolate_logs: bool,
 }
 
 fn default_max_heap() -> usize {
@@ -64,6 +69,10 @@ fn default_enable_source_maps() -> bool {
     true
 }
 
+fn default_print_isolate_logs() -> bool {
+    true
+}
+
 impl Default for IsolateConfig {
     fn default() -> Self {
         Self {
@@ -75,6 +84,7 @@ impl Default for IsolateConfig {
             inspect_allow_remote: false,
             enable_source_maps: default_enable_source_maps(),
             ssrf_config: SsrfConfig::default(),
+            print_isolate_logs: default_print_isolate_logs(),
         }
     }
 }
@@ -234,6 +244,7 @@ mod tests {
         assert!(!config.inspect_brk);
         assert!(config.enable_source_maps);
         assert!(config.ssrf_config.enabled);
+        assert!(config.print_isolate_logs);
     }
 
     #[test]
@@ -246,6 +257,7 @@ mod tests {
         assert!(!config.inspect_brk);
         assert!(config.enable_source_maps);
         assert!(config.ssrf_config.enabled);
+        assert!(config.print_isolate_logs);
     }
 
     #[test]
@@ -271,6 +283,7 @@ mod tests {
         assert!(json.contains("\"inspect_brk\""));
         assert!(json.contains("\"enable_source_maps\""));
         assert!(json.contains("\"ssrf_config\""));
+        assert!(json.contains("\"print_isolate_logs\""));
     }
 
     #[test]

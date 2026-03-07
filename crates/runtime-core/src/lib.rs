@@ -1,6 +1,7 @@
 pub mod cpu_timer;
 pub mod extensions;
 pub mod isolate;
+pub mod isolate_logs;
 pub mod manifest;
 pub mod mem_check;
 pub mod module_loader;

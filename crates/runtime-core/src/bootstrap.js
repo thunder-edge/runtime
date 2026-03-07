@@ -84,6 +84,10 @@ import("ext:edge_assert/mod.ts").catch(() => {
 const core = globalThis.Deno?.core ?? globalThis.__bootstrap?.core;
 if (!globalThis.console) {
   globalThis.console = new Console((msg, level) => {
+    if (core?.ops?.op_edge_runtime_console_log) {
+      core.ops.op_edge_runtime_console_log(msg, level);
+      return;
+    }
     core?.print?.(msg, level > 1);
   });
 }

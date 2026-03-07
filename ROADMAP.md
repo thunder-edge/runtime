@@ -443,6 +443,16 @@ Implementacao atual:
 - [ ] Ou embutir assets no binário via `include_str!` / `include_bytes!`
 - [ ] Adicionar testes que rodam de diretórios não-raiz
 
+### 3.8 Observabilidade de Logs (Runtime + Isolate)
+
+- [x] Adicionar formato JSON opcional de logs (`--log-format json`)
+- [x] Manter formato default `pretty` (incluindo `watch`)
+- [x] Enriquecer logs internos com `function_name` e `request_id` onde aplicável
+- [x] Tornar saída de logs `console.*` de isolate configurável (`--print-isolate-logs`)
+- [ ] Expor coletor interno de logs de isolate para stack externa por função (API/integração)
+
+**Status:** Parcial (integracao externa pendente)
+
 ---
 
 ## Fase 4 — Testes de Segurança

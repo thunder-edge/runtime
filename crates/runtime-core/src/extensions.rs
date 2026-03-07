@@ -5,11 +5,14 @@ use std::sync::Arc;
 
 use deno_ast::{EmitOptions, MediaType, ParseParams, TranspileModuleOptions, TranspileOptions};
 use deno_core::url::Url;
-use deno_core::{op2, Extension, ModuleCodeString, ModuleName, RuntimeOptions, SourceMapData};
+use deno_core::{op2, Extension, ModuleCodeString, ModuleName, OpState, RuntimeOptions, SourceMapData};
 use node_resolver::errors::{
     PackageFolderResolveError, PackageFolderResolveErrorKind, PackageNotFoundError,
 };
 use node_resolver::{InNpmPackageChecker, NpmPackageFolderResolver, UrlOrPathRef};
+use tracing::{error, info, warn};
+
+use crate::isolate_logs::{push_collected_log, IsolateConsoleLog, IsolateLogConfig};
 
 // Bootstrap extension: imports all extension ESM modules so they get evaluated.
 //
@@ -95,6 +98,56 @@ deno_core::extension!(
     ops = [op_set_raw, op_console_size, op_tls_peer_certificate,],
 );
 
+#[op2(fast)]
+fn op_edge_runtime_console_log(
+    state: &mut OpState,
+    #[string] message: String,
+    level: u8,
+) -> Result<(), deno_error::JsErrorBox> {
+    let config = state.try_borrow::<IsolateLogConfig>().cloned().unwrap_or_default();
+
+    if config.emit_to_stdout {
+        match level {
+            0 => info!(
+                function_name = %config.function_name,
+                request_id = "isolate-console",
+                target = "isolate",
+                "{}",
+                message.trim_end_matches('\n')
+            ),
+            1 => warn!(
+                function_name = %config.function_name,
+                request_id = "isolate-console",
+                target = "isolate",
+                "{}",
+                message.trim_end_matches('\n')
+            ),
+            _ => error!(
+                function_name = %config.function_name,
+                request_id = "isolate-console",
+                target = "isolate",
+                "{}",
+                message.trim_end_matches('\n')
+            ),
+        }
+    } else {
+        // TODO: expose this collector to an external log stack per function owner.
+        push_collected_log(IsolateConsoleLog {
+            timestamp: chrono::Utc::now(),
+            function_name: config.function_name,
+            level,
+            message,
+        });
+    }
+
+    Ok(())
+}
+
+deno_core::extension!(
+    edge_runtime_logging,
+    ops = [op_edge_runtime_console_log],
+);
+
 // === Stub types for deno_node (no npm support in edge runtime) ===
 
 /// Stub npm package checker - always returns false (no npm packages).
@@ -157,6 +210,8 @@ pub fn get_extensions_with_edge_assert(include_edge_assert: bool) -> Vec<Extensi
     let fs: deno_fs::FileSystemRc = Rc::new(deno_fs::RealFs);
 
     let mut extensions = vec![
+        // Runtime log routing for isolate console output.
+        edge_runtime_logging::init(),
         // 0. Stub ops for edge runtime (TTY ops not needed in serverless)
         edge_stubs::init(),
         // 1. Core (no deps)

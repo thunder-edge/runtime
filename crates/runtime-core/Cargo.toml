@@ -50,6 +50,7 @@ ctor.workspace = true
 base64.workspace = true
 jsonschema.workspace = true
 ipnet.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 deno_graph.workspace = true

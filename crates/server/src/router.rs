@@ -109,7 +109,13 @@ fn truncate_for_log(message: &str, max_bytes: usize) -> String {
 
 fn log_truncated_error(context: &str, err: &impl std::fmt::Display) {
     let truncated = truncate_for_log(&err.to_string(), MAX_LOG_ERROR_BYTES);
-    error!("{}: {}", context, truncated);
+    error!(
+        function_name = "runtime",
+        request_id = "system",
+        "{}: {}",
+        context,
+        truncated
+    );
 }
 
 fn boxed_full_response(response: Response<Full<Bytes>>) -> Response<BoxBody> {
@@ -123,6 +129,7 @@ where
 {
     let request_id = Uuid::new_v4().to_string();
     error!(
+        function_name = "runtime",
         request_id = %request_id,
         error = ?err,
         "{}",
@@ -356,14 +363,27 @@ impl Router {
                         Response::from_parts(parts, Full::new(bytes).boxed())
                     }
                     IsolateResponseBody::Stream(receiver) => {
-                        let stream = futures_util::stream::unfold(receiver, |mut rx| async move {
-                            match rx.recv().await {
-                                Some(Ok(chunk)) => Some((Ok(http_body::Frame::data(chunk)), rx)),
-                                Some(Err(err)) => {
-                                    error!("streaming response chunk failed: {}", err);
-                                    None
+                        let log_function_name = function_name.to_string();
+                        let log_request_id = trace_ctx.trace_id.clone();
+                        let stream = futures_util::stream::unfold(receiver, move |mut rx| {
+                            let log_function_name = log_function_name.clone();
+                            let log_request_id = log_request_id.clone();
+                            async move {
+                                match rx.recv().await {
+                                    Some(Ok(chunk)) => {
+                                        Some((Ok(http_body::Frame::data(chunk)), rx))
+                                    }
+                                    Some(Err(err)) => {
+                                        error!(
+                                            function_name = %log_function_name,
+                                            request_id = %log_request_id,
+                                            "streaming response chunk failed: {}",
+                                            err
+                                        );
+                                        None
+                                    }
+                                    None => None,
                                 }
-                                None => None,
                             }
                         });
                         Response::from_parts(parts, StreamBody::new(stream).boxed())
@@ -383,6 +403,7 @@ impl Router {
 
         info!(
             trace_id = %trace_ctx.trace_id,
+            request_id = %trace_ctx.trace_id,
             sampled = trace_ctx.sampled,
             function_name = %function_name,
             status = %response.status(),

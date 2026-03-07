@@ -2,6 +2,12 @@ mod commands;
 
 use clap::{Parser, Subcommand};
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum LogFormat {
+    Pretty,
+    Json,
+}
+
 #[derive(Parser)]
 #[command(
     name = "deno-edge-runtime",
@@ -15,6 +21,16 @@ struct Cli {
     /// Enable verbose logging (RUST_LOG=debug)
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Runtime log format.
+    #[arg(
+        long,
+        value_enum,
+        default_value = "pretty",
+        global = true,
+        env = "EDGE_RUNTIME_LOG_FORMAT"
+    )]
+    log_format: LogFormat,
 }
 
 #[derive(Subcommand)]
@@ -39,12 +55,22 @@ fn main() -> Result<(), anyhow::Error> {
 
     // Initialize tracing
     let env_filter = if cli.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(env_filter)),
-        )
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(env_filter));
+
+    match cli.log_format {
+        LogFormat::Pretty => {
+            tracing_subscriber::fmt().with_env_filter(env_filter).init();
+        }
+        LogFormat::Json => {
+            tracing_subscriber::fmt()
+                .json()
+                .with_current_span(true)
+                .with_span_list(false)
+                .with_env_filter(env_filter)
+                .init();
+        }
+    }
 
     // Initialize V8 platform (must be done on main thread, before any JsRuntime)
     deno_core::JsRuntime::init_platform(None);

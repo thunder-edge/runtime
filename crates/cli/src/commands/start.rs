@@ -158,6 +158,15 @@ pub struct StartArgs {
     )]
     wall_clock_timeout_ms: u64,
 
+    /// Print user function `console.*` logs to runtime stdout.
+    /// If disabled, logs are captured only by the internal isolate collector.
+    #[arg(
+        long,
+        default_value_t = true,
+        env = "EDGE_RUNTIME_PRINT_ISOLATE_LOGS"
+    )]
+    print_isolate_logs: bool,
+
     /// Source map handling for modules loaded from eszip
     #[arg(
         long,
@@ -218,6 +227,7 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             inspect_allow_remote: false,
             enable_source_maps: matches!(args.sourcemap, SourceMapMode::Inline),
             ssrf_config,
+            print_isolate_logs: args.print_isolate_logs,
         };
 
         let registry = Arc::new(FunctionRegistry::new_with_pool(

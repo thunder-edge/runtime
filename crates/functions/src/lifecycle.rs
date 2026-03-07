@@ -24,6 +24,7 @@ use runtime_core::extensions;
 use runtime_core::isolate::{
     determine_root_specifier, IsolateConfig, IsolateHandle, IsolateRequest, IsolateResponse,
 };
+use runtime_core::isolate_logs::IsolateLogConfig;
 use runtime_core::manifest::ResolvedFunctionManifest;
 use runtime_core::mem_check::{near_heap_limit_callback, HeapLimitState};
 use runtime_core::module_loader::EszipModuleLoader;
@@ -181,19 +182,19 @@ pub async fn create_function(
 
                 match result {
                     Ok(Ok(())) => {
-                        info!("isolate '{}' exited cleanly", isolate_name);
+                        info!(function_name = %isolate_name, request_id = "system", "isolate '{}' exited cleanly", isolate_name);
                         break;
                     }
                     Ok(Err(e)) => {
                         if shutdown.is_cancelled() {
-                            info!("isolate '{}' stopped during shutdown", isolate_name);
+                            info!(function_name = %isolate_name, request_id = "system", "isolate '{}' stopped during shutdown", isolate_name);
                             break;
                         }
-                        error!("isolate '{}' exited with error: {}", isolate_name, e);
+                        error!(function_name = %isolate_name, request_id = "system", "isolate '{}' exited with error: {}", isolate_name, e);
                         break;
                     }
                     Err(e) => {
-                        error!("isolate '{}' panicked: {:?}", isolate_name, e);
+                        error!(function_name = %isolate_name, request_id = "system", "isolate '{}' panicked: {:?}", isolate_name, e);
 
                         // Mark dead and close request channel so pending/new requests fail fast.
                         supervisor_handle.mark_dead();
@@ -209,6 +210,8 @@ pub async fn create_function(
 
                         if restart_count >= MAX_ISOLATE_RESTARTS {
                             error!(
+                                function_name = %isolate_name,
+                                request_id = "system",
                                 "isolate '{}' exceeded max restart attempts ({}), giving up",
                                 isolate_name, MAX_ISOLATE_RESTARTS
                             );
@@ -218,6 +221,8 @@ pub async fn create_function(
                         restart_count += 1;
                         let backoff_secs = (1_u64 << (restart_count.saturating_sub(1))).min(60);
                         warn!(
+                            function_name = %isolate_name,
+                            request_id = "system",
                             "restarting isolate '{}' after panic (attempt {}/{}), backoff={}s",
                             isolate_name, restart_count, MAX_ISOLATE_RESTARTS, backoff_secs
                         );
@@ -719,11 +724,16 @@ async fn load_from_eszip_with_init(
         }
 
         let op_state = js_runtime.op_state();
-        op_state.borrow_mut().put(create_permissions_with_policy(
+        let mut state = op_state.borrow_mut();
+        state.put(create_permissions_with_policy(
             &config.ssrf_config,
             net_allow,
             env_allow,
         ));
+        state.put(IsolateLogConfig {
+            function_name: function_name.to_string(),
+            emit_to_stdout: config.print_isolate_logs,
+        });
     }
 
     // Register the request handler bridge in the JS global scope

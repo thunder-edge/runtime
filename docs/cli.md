@@ -54,6 +54,11 @@ deno-edge-runtime [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 
 - `-v, --verbose`
   - Enables debug logging (`RUST_LOG=debug` behavior unless overridden by environment).
+- `--log-format <pretty|json>`
+  - Runtime log output format.
+  - Default: `pretty`
+  - Env: `EDGE_RUNTIME_LOG_FORMAT`
+  - `watch` keeps the same default (`pretty`) unless overridden.
 
 ### Subcommands
 
@@ -102,6 +107,8 @@ These are consumed mainly by `start` and `watch`:
 **Other:**
 - `EDGE_RUNTIME_RATE_LIMIT`
 - `EDGE_RUNTIME_SOURCE_MAP`
+- `EDGE_RUNTIME_LOG_FORMAT`
+- `EDGE_RUNTIME_PRINT_ISOLATE_LOGS`
 
 ## Command Reference
 
@@ -291,6 +298,11 @@ This prevents functions from accessing sensitive internal endpoints like cloud m
   - Default: `60000`
   - `0` means unlimited.
   - Env: `EDGE_RUNTIME_WALL_CLOCK_TIMEOUT_MS`
+- `--print-isolate-logs`
+  - Print user `console.*` output from isolates into runtime logs/stdout.
+  - Default: `true`
+  - If disabled, isolate logs are captured only in the internal collector.
+  - Env: `EDGE_RUNTIME_PRINT_ISOLATE_LOGS`
 - `--sourcemap <SOURCEMAP>`
   - Source map handling for modules loaded from ESZIP.
   - Values: `none`, `inline`
@@ -540,6 +552,11 @@ deno-edge-runtime watch [OPTIONS]
   - Default: `60000`
   - `0` means unlimited.
   - Env: `EDGE_RUNTIME_WALL_CLOCK_TIMEOUT_MS`
+- `--print-isolate-logs`
+  - Print user `console.*` output from isolates into runtime logs/stdout.
+  - Default: `true`
+  - If disabled, isolate logs are captured only in the internal collector.
+  - Env: `EDGE_RUNTIME_PRINT_ISOLATE_LOGS`
 - `--inspect [PORT]`
   - Optional base port for V8 inspector in watch mode.
   - If provided without value, default is `9229`.

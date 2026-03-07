@@ -197,6 +197,8 @@ impl FunctionRegistry {
         handle.shutdown.cancel();
         handle.close_request_tx();
         info!(
+            function_name = %function_name,
+            request_id = "system",
             "evicted LRU replica '{}' from function '{}' to free pool capacity",
             handle.id, function_name
         );
@@ -242,10 +244,16 @@ impl FunctionRegistry {
         let available_mib = sys.available_memory() / (1024 * 1024);
         if available_mib < self.pool_config.min_free_memory_mib {
             warn!(
+                function_name = %function_name,
+                request_id = "system",
                 "pool scale blocked for '{}' due to low memory (available={}MiB, min_required={}MiB)",
                 function_name, available_mib, self.pool_config.min_free_memory_mib
             );
-            warn!("TODO: trigger external alert hook for low-memory pool scale block");
+            warn!(
+                function_name = %function_name,
+                request_id = "system",
+                "TODO: trigger external alert hook for low-memory pool scale block"
+            );
             return false;
         }
         true
@@ -265,6 +273,8 @@ impl FunctionRegistry {
         if self.current_total_isolates() >= self.pool_config.global_max_isolates {
             if !self.evict_lru_replica_for_capacity() {
                 warn!(
+                    function_name = %function_name,
+                    request_id = "system",
                     "pool scale blocked for '{}' due to global isolate limit ({}) and no evictable replica",
                     function_name, self.pool_config.global_max_isolates
                 );
@@ -273,6 +283,8 @@ impl FunctionRegistry {
 
             if self.current_total_isolates() >= self.pool_config.global_max_isolates {
                 warn!(
+                    function_name = %function_name,
+                    request_id = "system",
                     "pool scale blocked for '{}' after LRU eviction attempt (global limit: {})",
                     function_name, self.pool_config.global_max_isolates
                 );
@@ -316,7 +328,7 @@ impl FunctionRegistry {
             Self::apply_manifest_resources(&mut config, policy);
         }
 
-        info!("deploying function '{}'", name);
+        info!(function_name = %name, request_id = "system", "deploying function '{}'", name);
 
         let entry = lifecycle::create_function(
             name.clone(),
@@ -350,7 +362,7 @@ impl FunctionRegistry {
                     Ok(Some(handle)) => entry.extra_isolate_handles.push(handle),
                     Ok(None) => break,
                     Err(err) => {
-                        warn!("failed to pre-warm replica for '{}': {}", name, err);
+                        warn!(function_name = %name, request_id = "system", "failed to pre-warm replica for '{}': {}", name, err);
                         break;
                     }
                 }
@@ -445,7 +457,7 @@ impl FunctionRegistry {
 
         // Destroy the old entry
         if let Some((_, old_entry)) = self.functions.remove(name) {
-            info!("shutting down old isolate for function '{}'", name);
+            info!(function_name = %name, request_id = "system", "shutting down old isolate for function '{}'", name);
             self.remove_entry_handle_usage(&old_entry);
             lifecycle::destroy_function(&old_entry).await;
         }
@@ -459,7 +471,7 @@ impl FunctionRegistry {
             Self::apply_manifest_resources(&mut config, policy);
         }
 
-        info!("deploying updated function '{}'", name);
+        info!(function_name = %name, request_id = "system", "deploying updated function '{}'", name);
 
         let entry = lifecycle::create_function(
             name.to_string(),
@@ -479,7 +491,7 @@ impl FunctionRegistry {
     /// Delete a function entirely.
     pub async fn delete(&self, name: &str) -> Result<(), Error> {
         if let Some((_, entry)) = self.functions.remove(name) {
-            info!("deleting function '{}'", name);
+            info!(function_name = %name, request_id = "system", "deleting function '{}'", name);
             self.remove_entry_handle_usage(&entry);
             for extra in &entry.extra_isolate_handles {
                 extra.shutdown.cancel();
@@ -522,7 +534,7 @@ impl FunctionRegistry {
             lifecycle::destroy_function(&old_entry).await;
         }
 
-        info!("hot-reloading function '{}'", name);
+        info!(function_name = %name, request_id = "system", "hot-reloading function '{}'", name);
 
         let entry = lifecycle::create_function(
             name.to_string(),
@@ -554,6 +566,8 @@ impl FunctionRegistry {
     pub async fn shutdown_all_with_deadline(&self, deadline: std::time::Duration) {
         let total = self.functions.len();
         info!(
+            function_name = "runtime",
+            request_id = "system",
             "shutting down all functions ({} total, deadline={}ms)",
             total,
             deadline.as_millis()
@@ -580,7 +594,7 @@ impl FunctionRegistry {
             if self.all_request_channels_closed() {
                 self.functions.clear();
                 self.handle_last_used.clear();
-                info!("all function channels closed before shutdown deadline");
+                info!(function_name = "runtime", request_id = "system", "all function channels closed before shutdown deadline");
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -604,6 +618,8 @@ impl FunctionRegistry {
 
         if still_open > 0 {
             warn!(
+                function_name = "runtime",
+                request_id = "system",
                 "shutdown deadline reached with {} function(s) still open; forcing clear",
                 still_open
             );
@@ -673,7 +689,7 @@ impl FunctionRegistry {
                     }
                     Ok(None) => break,
                     Err(err) => {
-                        warn!("failed to scale pool for '{}': {}", name, err);
+                        warn!(function_name = %name, request_id = "system", "failed to scale pool for '{}': {}", name, err);
                         break;
                     }
                 }
