@@ -1,6 +1,145 @@
 const kCustomInspect = Symbol.for("nodejs.util.inspect.custom");
 const kPromisifyCustom = Symbol.for("nodejs.util.promisify.custom");
 
+const TOKEN_RE = /^[!#$%&'*+\-.^_`|~0-9a-zA-Z]+$/;
+
+function assertToken(value: string, field: string): string {
+  const token = String(value ?? "").trim().toLowerCase();
+  if (!token || !TOKEN_RE.test(token)) {
+    throw new TypeError(`Invalid MIME ${field}: '${value}'`);
+  }
+  return token;
+}
+
+function parseMime(input: string): { type: string; subtype: string; params: Array<[string, string]> } {
+  const raw = String(input ?? "").trim();
+  if (!raw) throw new TypeError("MIMEType input must be a non-empty string");
+
+  const [essencePart, ...paramParts] = raw.split(";");
+  const essence = essencePart.trim().toLowerCase();
+  const slashIdx = essence.indexOf("/");
+  if (slashIdx <= 0 || slashIdx === essence.length - 1) {
+    throw new TypeError(`Invalid MIME type: '${input}'`);
+  }
+
+  const type = assertToken(essence.slice(0, slashIdx), "type");
+  const subtype = assertToken(essence.slice(slashIdx + 1), "subtype");
+
+  const params: Array<[string, string]> = [];
+  for (const part of paramParts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const eqIdx = trimmed.indexOf("=");
+    const keyRaw = eqIdx >= 0 ? trimmed.slice(0, eqIdx) : trimmed;
+    const valueRaw = eqIdx >= 0 ? trimmed.slice(eqIdx + 1) : "";
+    const key = assertToken(keyRaw, "parameter name");
+    const value = valueRaw.trim().replace(/^"|"$/g, "");
+    params.push([key, value]);
+  }
+
+  return { type, subtype, params };
+}
+
+class MIMEParams {
+  #map = new Map<string, string>();
+
+  constructor(initial?: Array<[string, string]>) {
+    for (const [k, v] of initial ?? []) this.set(k, v);
+  }
+
+  get(name: string): string | null {
+    const key = assertToken(name, "parameter name");
+    return this.#map.has(key) ? this.#map.get(key)! : null;
+  }
+
+  has(name: string): boolean {
+    const key = assertToken(name, "parameter name");
+    return this.#map.has(key);
+  }
+
+  set(name: string, value: string): void {
+    const key = assertToken(name, "parameter name");
+    this.#map.set(key, String(value ?? ""));
+  }
+
+  delete(name: string): boolean {
+    const key = assertToken(name, "parameter name");
+    return this.#map.delete(key);
+  }
+
+  entries(): IterableIterator<[string, string]> {
+    return this.#map.entries();
+  }
+
+  keys(): IterableIterator<string> {
+    return this.#map.keys();
+  }
+
+  values(): IterableIterator<string> {
+    return this.#map.values();
+  }
+
+  forEach(callback: (value: string, key: string, parent: MIMEParams) => void, thisArg?: unknown): void {
+    for (const [key, value] of this.#map.entries()) {
+      callback.call(thisArg, value, key, this);
+    }
+  }
+
+  [Symbol.iterator](): IterableIterator<[string, string]> {
+    return this.entries();
+  }
+
+  toString(): string {
+    return Array.from(this.#map.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join(";");
+  }
+}
+
+class MIMEType {
+  #type: string;
+  #subtype: string;
+  #params: MIMEParams;
+
+  constructor(input: string) {
+    const parsed = parseMime(input);
+    this.#type = parsed.type;
+    this.#subtype = parsed.subtype;
+    this.#params = new MIMEParams(parsed.params);
+  }
+
+  get type(): string {
+    return this.#type;
+  }
+
+  set type(value: string) {
+    this.#type = assertToken(value, "type");
+  }
+
+  get subtype(): string {
+    return this.#subtype;
+  }
+
+  set subtype(value: string) {
+    this.#subtype = assertToken(value, "subtype");
+  }
+
+  get essence(): string {
+    return `${this.#type}/${this.#subtype}`;
+  }
+
+  get params(): MIMEParams {
+    return this.#params;
+  }
+
+  toString(): string {
+    const params = Array.from(this.#params.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; ");
+    return params ? `${this.essence}; ${params}` : this.essence;
+  }
+}
+
 function formatValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
@@ -146,6 +285,8 @@ const utilModule = {
   deprecate,
   callbackify,
   promisify,
+  MIMEType,
+  MIMEParams,
   types,
 };
 
@@ -156,6 +297,8 @@ export {
   deprecate,
   callbackify,
   promisify,
+  MIMEType,
+  MIMEParams,
   types,
 };
 

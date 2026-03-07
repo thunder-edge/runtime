@@ -164,14 +164,20 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                 NodeCompatCheck {
                         api: "node:util",
                         profile: "Partial",
-                        notes: "Utility subset (`format`, `inspect`, `promisify`, `types`) used by dependencies.",
+                        notes: "Utility subset (`format`, `inspect`, `promisify`, `types`, `MIMEType`) used by dependencies.",
                         js_check: r#"(() => {
                             const key = '__edge_node_util_check';
                             if (globalThis[key] === undefined) {
                                 globalThis[key] = 'pending';
                                 import('node:util').then((util) => {
                                     const formatted = util.format('x:%d', 2);
-                                    globalThis[key] = typeof util.promisify === 'function' && formatted === 'x:2' ? 'partial' : 'none';
+                                    const mime = new util.MIMEType('text/plain; charset=utf-8');
+                                    globalThis[key] =
+                                        typeof util.promisify === 'function' &&
+                                        formatted === 'x:2' &&
+                                        mime.essence === 'text/plain' &&
+                                        mime.params.get('charset') === 'utf-8'
+                                        ? 'partial' : 'none';
                                 }).catch(() => {
                                     globalThis[key] = 'none';
                                 });
@@ -401,7 +407,7 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                 NodeCompatCheck {
                         api: "node:diagnostics_channel",
                         profile: "Partial",
-                        notes: "Basic publish/subscribe diagnostics channel surface.",
+                        notes: "Basic publish/subscribe channel plus `TracingChannel` hooks for sync/promise tracing flows.",
                         js_check: r#"(() => {
                             const key = '__edge_node_diag_channel_check';
                             if (globalThis[key] === undefined) {
@@ -413,7 +419,17 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                                     ch.subscribe(fn);
                                     ch.publish({ ok: true });
                                     ch.unsubscribe(fn);
-                                    globalThis[key] = called ? 'partial' : 'none';
+
+                                    const tracer = new m.TracingChannel('edge.trace');
+                                    let starts = 0;
+                                    let ends = 0;
+                                    tracer.subscribe({
+                                        start: () => { starts++; },
+                                        end: () => { ends++; },
+                                    });
+                                    const result = tracer.traceSync((a, b) => a + b, null, 2, 3);
+
+                                    globalThis[key] = called && starts === 1 && ends === 1 && result === 5 ? 'partial' : 'none';
                                 }).catch(() => {
                                     globalThis[key] = 'none';
                                 });

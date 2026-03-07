@@ -167,7 +167,7 @@ Unsupported privileged behavior fails with deterministic errors (for example `EO
 | `node:process` | 🟢 Supported (practical subset) | Partial | Partial | Sandboxed process subset with in-memory `env`, virtual cwd (`/bundle`), and stdio compatibility streams. |
 | `node:buffer` | 🟢 Supported (practical subset) | Partial | Partial | Common Buffer operations for SSR/tooling (`from`, `alloc`, `concat`, `byteLength`, `toString`). |
 | `node:events` | 🟢 Supported (practical subset) | Partial | Partial | EventEmitter-compatible surface for common listener/emit flows. |
-| `node:util` | 🟢 Supported (practical subset) | Partial | Partial | Utility subset (`format`, `inspect`, `promisify`, `types`) used by dependencies. |
+| `node:util` | 🟢 Supported (practical subset) | Partial | Partial | Utility subset (`format`, `inspect`, `promisify`, `types`, `MIMEType`) used by dependencies. |
 | `node:path` | 🟢 Supported (practical subset) | Partial | Partial | Deterministic path helpers for module/tooling compatibility. |
 | `node:stream` | 🟢 Supported (practical subset) | Partial | Partial | Basic stream primitives/pipeline for compatibility paths; not full Node stream semantics. |
 | `node:os` | 🟡 Partial (stub/non-functional) | Stub/Partial | Partial | Contract-stable environment info and deterministic errors for unsupported host-affecting calls. |
@@ -178,7 +178,7 @@ Unsupported privileged behavior fails with deterministic errors (for example `EO
 | `node:child_process` | 🟡 Partial (stub/non-functional) | Stub/Partial | Partial | Non-functional process-spawn APIs with deterministic not-implemented behavior. |
 | `node:cluster` | 🟡 Partial (stub/non-functional) | Stub/Partial | Partial | Non-functional cluster orchestration APIs with deterministic failures. |
 | `node:console` | 🟢 Supported (practical subset) | Partial | Partial | Console module compatibility maps to runtime console implementation. |
-| `node:diagnostics_channel` | 🟢 Supported (practical subset) | Partial | Partial | Basic publish/subscribe diagnostics channel surface. |
+| `node:diagnostics_channel` | 🟢 Supported (practical subset) | Partial | Partial | Basic publish/subscribe channel plus `TracingChannel` hooks for sync/promise tracing flows. |
 | `node:dns` | 🟢 Supported (practical subset) | Partial | Partial | DoH-backed subset (`lookup`, `resolve*`, `reverse`) with bounded answers/timeouts; unsupported APIs remain deterministic stubs. |
 | `node:http` | 🟡 Partial (stub/non-functional) | Stub/Partial | Partial | HTTP client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional. |
 | `node:https` | 🟡 Partial (stub/non-functional) | Stub/Partial | Partial | HTTPS client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional. |

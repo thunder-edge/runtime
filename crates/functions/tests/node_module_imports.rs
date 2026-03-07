@@ -309,7 +309,7 @@ fn node_util_module_can_be_imported() {
     deno_core::JsRuntime::init_platform(None);
 
     let source = r#"
-      import util, { format, promisify, types } from "node:util";
+    import util, { format, promisify, types, MIMEType } from "node:util";
 
       const formatted = format("hello %s %d", "edge", 42);
 
@@ -322,9 +322,18 @@ fn node_util_module_can_be_imported() {
         types.isUint8Array(new Uint8Array(1)) &&
         typeof util.inspect({ a: 1 }) === "string";
 
+            const mime = new MIMEType("text/html; charset=utf-8");
+            mime.params.set("q", "0.9");
+            const mimeChecks =
+                mime.type === "text" &&
+                mime.subtype === "html" &&
+                mime.essence === "text/html" &&
+                mime.params.get("charset") === "utf-8" &&
+                mime.toString().includes("q=0.9");
+
       globalThis.__nodeUtilCompatOk = false;
       promised(1).then((value) => {
-        globalThis.__nodeUtilCompatOk = formatted === "hello edge 42" && value === 2 && typeChecks;
+                globalThis.__nodeUtilCompatOk = formatted === "hello edge 42" && value === 2 && typeChecks && mimeChecks;
       });
     "#;
 
@@ -890,7 +899,15 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
             const asciiDomain = urlMod.domainToASCII('español.com');
             const unicodeDomain = urlMod.domainToUnicode('xn--espaol-zwa.com');
 
-    const channel = diagnostics.channel('edge');
+        const channel = diagnostics.channel('edge');
+            const tracing = new diagnostics.TracingChannel('edge.trace');
+            let traceStart = 0;
+            let traceEnd = 0;
+            tracing.subscribe({
+                start: () => { traceStart++; },
+                end: () => { traceEnd++; },
+            });
+            const tracedValue = tracing.traceSync((a, b) => a + b, null, 2, 3);
       const parsed = querystring.parse('a=1&b=2');
       const decoded = new stringDecoder.StringDecoder('utf-8').end(new Uint8Array([65]));
 
@@ -909,6 +926,11 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
                 typeof querystring.stringify === 'function' &&
                 typeof timers.setTimeout === 'function' &&
                 typeof timersPromises.setTimeout === 'function' &&
+                typeof diagnostics.TracingChannel === 'function' &&
+                typeof diagnostics.tracingChannel === 'function' &&
+                tracedValue === 5 &&
+                traceStart === 1 &&
+                traceEnd === 1 &&
                 fileUrl.protocol === 'file:' &&
                 typeof asciiDomain === 'string' &&
                 typeof unicodeDomain === 'string' &&
