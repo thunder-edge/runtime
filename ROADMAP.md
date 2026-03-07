@@ -401,9 +401,16 @@ Implementacao atual:
 
 ### 3.4 Hot-Reload de Certificado TLS
 
-- [ ] Watch no cert/key file via `notify`
-- [ ] Rotacionar `TlsAcceptor` sem restart do servidor
-- [ ] Logar rotação com fingerprint do novo cert
+- [x] Watch no cert/key file via `notify`
+- [x] Rotacionar `TlsAcceptor` sem restart do servidor
+- [x] Logar rotação com fingerprint do novo cert
+
+**Status:** ✅ Concluído
+
+Implementacao atual:
+- `DynamicTlsAcceptor` com troca atomica do acceptor em runtime
+- Watcher `notify` em background para cert/key com recarga e retries curtos
+- Logs de carga inicial e reload com fingerprint SHA-256 do certificado
 
 ### 3.5 HTTP/3 (QUIC)
 

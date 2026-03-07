@@ -201,7 +201,11 @@ async fn run_admin_listener(
     let listener = TcpListener::bind(config.addr).await?;
 
     let tls_acceptor = if let Some(ref tls_config) = config.tls {
-        Some(tls::build_tls_acceptor(tls_config)?)
+        Some(tls::build_dynamic_tls_acceptor(
+            tls_config.clone(),
+            shutdown.clone(),
+            "admin listener",
+        )?)
     } else {
         None
     };
@@ -307,7 +311,11 @@ async fn run_tcp_ingress(
     let listener = TcpListener::bind(addr).await?;
 
     let tls_acceptor = if let Some(ref tls) = tls_config {
-        Some(tls::build_tls_acceptor(tls)?)
+        Some(tls::build_dynamic_tls_acceptor(
+            tls.clone(),
+            shutdown.clone(),
+            "ingress listener",
+        )?)
     } else {
         None
     };
@@ -484,7 +492,11 @@ pub async fn run_server(
 
     // Optional TLS acceptor
     let tls_acceptor = if let Some(ref tls_config) = config.tls {
-        Some(tls::build_tls_acceptor(tls_config)?)
+        Some(tls::build_dynamic_tls_acceptor(
+            tls_config.clone(),
+            shutdown.clone(),
+            "legacy listener",
+        )?)
     } else {
         None
     };
