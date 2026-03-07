@@ -1,5 +1,6 @@
 pub mod admin_router;
 pub mod body_limits;
+pub mod bundle_signature;
 pub mod graceful;
 pub mod ingress_router;
 pub mod middleware;
@@ -23,6 +24,7 @@ use tracing::{error, info, warn};
 use functions::registry::FunctionRegistry;
 
 use crate::admin_router::AdminRouter;
+use crate::bundle_signature::{BundleSignatureConfig, BundleSignatureVerifier};
 use crate::ingress_router::IngressRouter;
 use crate::service::EdgeService;
 
@@ -54,6 +56,8 @@ pub struct AdminListenerConfig {
     pub tls: Option<TlsConfig>,
     /// Body size limits.
     pub body_limits: BodyLimitsConfig,
+    /// Bundle signature verification policy for deploy/update endpoints.
+    pub bundle_signature: BundleSignatureConfig,
 }
 
 /// Ingress listener configuration (TCP or Unix socket).
@@ -131,6 +135,7 @@ pub async fn run_dual_server(
         registry.clone(),
         config.admin.api_key.clone(),
         config.admin.body_limits,
+        BundleSignatureVerifier::from_config(config.admin.bundle_signature.clone())?,
     );
     let ingress_router = IngressRouter::new(
         registry.clone(),
@@ -891,6 +896,10 @@ mod tests {
                 api_key: None,
                 tls: None,
                 body_limits: BodyLimitsConfig::default(),
+                bundle_signature: BundleSignatureConfig {
+                    required: false,
+                    public_key_path: None,
+                },
             },
             ingress: IngressListenerConfig {
                 listener_type: IngressListenerType::Tcp(ingress_addr),

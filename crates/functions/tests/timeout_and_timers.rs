@@ -295,8 +295,7 @@ fn test_isolate_timeout_returns_504() {
         if response.parts.status != 504 {
             return Err(format!(
                 "expected 504, got {} body={}",
-                response.parts.status,
-                body_text
+                response.parts.status, body_text
             ));
         }
 
@@ -1048,7 +1047,10 @@ fn test_isolate_reusable_after_timeout() {
             body, "ok",
             "second request should succeed after first timeout"
         );
-        assert_eq!(result2.parts.status, 200, "second request should return 200");
+        assert_eq!(
+            result2.parts.status, 200,
+            "second request should return 200"
+        );
 
         Ok(())
     });

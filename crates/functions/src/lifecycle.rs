@@ -297,7 +297,7 @@ async fn run_isolate(
                                 manifest.as_ref(),
                                 &name,
                             )
-                                .await?
+                            .await?
                         }
                     }
                 } else {
@@ -328,14 +328,8 @@ async fn run_isolate(
             }
         }
         BundleFormat::Eszip => {
-            load_from_eszip_with_init(
-                &eszip,
-                &root_specifier,
-                &config,
-                manifest.as_ref(),
-                &name,
-            )
-            .await?
+            load_from_eszip_with_init(&eszip, &root_specifier, &config, manifest.as_ref(), &name)
+                .await?
         }
     };
 
@@ -725,13 +719,11 @@ async fn load_from_eszip_with_init(
         }
 
         let op_state = js_runtime.op_state();
-        op_state
-            .borrow_mut()
-            .put(create_permissions_with_policy(
-                &config.ssrf_config,
-                net_allow,
-                env_allow,
-            ));
+        op_state.borrow_mut().put(create_permissions_with_policy(
+            &config.ssrf_config,
+            net_allow,
+            env_allow,
+        ));
     }
 
     // Register the request handler bridge in the JS global scope

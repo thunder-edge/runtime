@@ -12,8 +12,8 @@ use tokio::sync::RwLock;
 use tracing::{error, info};
 use uuid::Uuid;
 
-use functions::registry::FunctionRegistry;
 use crate::service::BoxBody;
+use functions::registry::FunctionRegistry;
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
@@ -347,9 +347,10 @@ impl Router {
                 let (parts, body) = (resp.parts, resp.body);
                 match body {
                     IsolateResponseBody::Full(bytes) => {
-                        if let Some(error_resp) =
-                            check_response_body_size(&bytes, self.body_limits.max_response_body_bytes)
-                        {
+                        if let Some(error_resp) = check_response_body_size(
+                            &bytes,
+                            self.body_limits.max_response_body_bytes,
+                        ) {
                             return boxed_full_response(error_resp);
                         }
                         Response::from_parts(parts, Full::new(bytes).boxed())
@@ -357,9 +358,7 @@ impl Router {
                     IsolateResponseBody::Stream(receiver) => {
                         let stream = futures_util::stream::unfold(receiver, |mut rx| async move {
                             match rx.recv().await {
-                                Some(Ok(chunk)) => {
-                                    Some((Ok(http_body::Frame::data(chunk)), rx))
-                                }
+                                Some(Ok(chunk)) => Some((Ok(http_body::Frame::data(chunk)), rx)),
                                 Some(Err(err)) => {
                                     error!("streaming response chunk failed: {}", err);
                                     None
@@ -821,7 +820,7 @@ pub fn json_response(status: StatusCode, body: &str) -> Response<BoxBody> {
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
-    .body(Full::new(Bytes::from(body.to_string())).boxed())
+        .body(Full::new(Bytes::from(body.to_string())).boxed())
         .unwrap()
 }
 

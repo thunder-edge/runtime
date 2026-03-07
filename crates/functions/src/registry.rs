@@ -125,7 +125,8 @@ impl FunctionRegistry {
     }
 
     fn mark_handle_used(&self, handle_id: Uuid) {
-        self.handle_last_used.insert(handle_id, self.next_usage_tick());
+        self.handle_last_used
+            .insert(handle_id, self.next_usage_tick());
     }
 
     fn mark_entry_handles_used(&self, entry: &FunctionEntry) {
@@ -244,9 +245,7 @@ impl FunctionRegistry {
                 "pool scale blocked for '{}' due to low memory (available={}MiB, min_required={}MiB)",
                 function_name, available_mib, self.pool_config.min_free_memory_mib
             );
-            warn!(
-                "TODO: trigger external alert hook for low-memory pool scale block"
-            );
+            warn!("TODO: trigger external alert hook for low-memory pool scale block");
             return false;
         }
         true
@@ -351,10 +350,7 @@ impl FunctionRegistry {
                     Ok(Some(handle)) => entry.extra_isolate_handles.push(handle),
                     Ok(None) => break,
                     Err(err) => {
-                        warn!(
-                            "failed to pre-warm replica for '{}': {}",
-                            name, err
-                        );
+                        warn!("failed to pre-warm replica for '{}': {}", name, err);
                         break;
                     }
                 }
@@ -442,7 +438,10 @@ impl FunctionRegistry {
         manifest: Option<ResolvedFunctionManifest>,
     ) -> Result<FunctionInfo, Error> {
         let old_config = self.functions.get(name).map(|entry| entry.config.clone());
-        let old_manifest = self.functions.get(name).and_then(|entry| entry.manifest.clone());
+        let old_manifest = self
+            .functions
+            .get(name)
+            .and_then(|entry| entry.manifest.clone());
 
         // Destroy the old entry
         if let Some((_, old_entry)) = self.functions.remove(name) {

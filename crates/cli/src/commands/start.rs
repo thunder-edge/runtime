@@ -6,10 +6,10 @@ use clap::{Args, ValueEnum};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use runtime_core::isolate::IsolateConfig;
-use runtime_core::ssrf::SsrfConfig;
 use functions::registry::{FunctionRegistry, PoolRuntimeConfig};
 use functions::types::PoolLimits;
+use runtime_core::isolate::IsolateConfig;
+use runtime_core::ssrf::SsrfConfig;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SourceMapMode {
@@ -41,6 +41,18 @@ pub struct StartArgs {
     /// TLS private key file path for admin API
     #[arg(long, env = "EDGE_RUNTIME_ADMIN_TLS_KEY")]
     admin_tls_key: Option<String>,
+
+    /// Require Ed25519 signature verification for bundle deploy/update on admin API.
+    #[arg(
+        long,
+        default_value_t = false,
+        env = "EDGE_RUNTIME_REQUIRE_BUNDLE_SIGNATURE"
+    )]
+    require_bundle_signature: bool,
+
+    /// Path to bundle signature Ed25519 public key (PEM, base64 raw 32-byte key, or hex).
+    #[arg(long, env = "EDGE_RUNTIME_BUNDLE_PUBLIC_KEY_PATH")]
+    bundle_public_key_path: Option<String>,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Ingress Listener Configuration (TCP port or Unix socket)
@@ -231,6 +243,16 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             max_response_body_bytes: args.max_response_body_size,
         };
 
+        if args.require_bundle_signature && args.bundle_public_key_path.is_none() {
+            return Err(anyhow::anyhow!(
+                "--require-bundle-signature requires --bundle-public-key-path"
+            ));
+        }
+
+        if let Some(path) = &args.bundle_public_key_path {
+            edge_server::bundle_signature::ensure_public_key_path_exists(path)?;
+        }
+
         // Build admin listener config
         let admin_addr: SocketAddr = format!("{}:{}", args.admin_host, args.admin_port).parse()?;
         let admin_tls = match (&args.admin_tls_cert, &args.admin_tls_key) {
@@ -269,6 +291,10 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
                 api_key: args.api_key,
                 tls: admin_tls,
                 body_limits,
+                bundle_signature: edge_server::bundle_signature::config_from_flag(
+                    args.require_bundle_signature,
+                    args.bundle_public_key_path,
+                ),
             },
             ingress: edge_server::IngressListenerConfig {
                 listener_type: ingress_type,

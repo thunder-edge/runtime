@@ -17,6 +17,7 @@ use crate::body_limits::{
     check_content_length, collect_body_with_limit, payload_too_large_response, BodyLimitError,
     BodyLimitsConfig,
 };
+use crate::bundle_signature::BundleSignatureVerifier;
 use crate::router::{
     build_metrics_body, is_valid_function_name, json_response, normalize_function_name,
     sanitize_internal_error, MetricsCache, METRICS_CACHE_TTL_SECS,
@@ -93,6 +94,7 @@ pub struct AdminRouter {
     api_key: Option<String>,
     body_limits: BodyLimitsConfig,
     metrics_cache: Arc<MetricsCache>,
+    bundle_signature_verifier: BundleSignatureVerifier,
 }
 
 impl AdminRouter {
@@ -105,6 +107,7 @@ impl AdminRouter {
         registry: Arc<FunctionRegistry>,
         api_key: Option<String>,
         body_limits: BodyLimitsConfig,
+        bundle_signature_verifier: BundleSignatureVerifier,
     ) -> Self {
         Self {
             registry,
@@ -113,6 +116,7 @@ impl AdminRouter {
             metrics_cache: Arc::new(MetricsCache::new(Duration::from_secs(
                 METRICS_CACHE_TTL_SECS,
             ))),
+            bundle_signature_verifier,
         }
     }
 
@@ -271,6 +275,16 @@ impl AdminRouter {
             return json_response(StatusCode::BAD_REQUEST, r#"{"error":"empty eszip bundle"}"#);
         }
 
+        if let Err(sig_err) = self
+            .bundle_signature_verifier
+            .verify_headers_and_body(&parts.headers, &body_bytes)
+        {
+            return json_response(
+                StatusCode::UNAUTHORIZED,
+                &format!(r#"{{"error":"{}"}}"#, sig_err.as_client_message()),
+            );
+        }
+
         match self
             .registry
             .deploy(name, body_bytes, None, resolved_manifest)
@@ -376,6 +390,16 @@ impl AdminRouter {
                         }
                     };
 
+                if let Err(sig_err) = self
+                    .bundle_signature_verifier
+                    .verify_headers_and_body(&parts.headers, &body_bytes)
+                {
+                    return json_response(
+                        StatusCode::UNAUTHORIZED,
+                        &format!(r#"{{"error":"{}"}}"#, sig_err.as_client_message()),
+                    );
+                }
+
                 match self
                     .registry
                     .update(name, body_bytes, None, resolved_manifest)
@@ -477,15 +501,18 @@ impl AdminRouter {
                     }
                 };
 
-                match self.registry.set_pool_limits(name, update.min, update.max).await {
+                match self
+                    .registry
+                    .set_pool_limits(name, update.min, update.max)
+                    .await
+                {
                     Ok(info) => {
                         let json = serde_json::to_string(&info).unwrap_or_default();
                         json_response(StatusCode::OK, &json)
                     }
-                    Err(e) => json_response(
-                        StatusCode::BAD_REQUEST,
-                        &format!(r#"{{"error":"{}"}}"#, e),
-                    ),
+                    Err(e) => {
+                        json_response(StatusCode::BAD_REQUEST, &format!(r#"{{"error":"{}"}}"#, e))
+                    }
                 }
             }
 

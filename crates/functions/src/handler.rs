@@ -48,7 +48,11 @@ fn op_edge_stream_error(
 
 deno_core::extension!(
     edge_response_stream,
-    ops = [op_edge_stream_chunk, op_edge_stream_end, op_edge_stream_error],
+    ops = [
+        op_edge_stream_chunk,
+        op_edge_stream_end,
+        op_edge_stream_error
+    ],
 );
 
 pub fn response_stream_extension() -> Extension {
@@ -799,8 +803,7 @@ mod tests {
 
         let response = result.expect("dispatch_request should not error");
         assert_eq!(
-            response.parts.status,
-            503,
+            response.parts.status, 503,
             "should return 503 when no handler registered"
         );
     }
@@ -919,12 +922,10 @@ mod tests {
             .await;
 
             let mut out = Vec::new();
-            while let Some(chunk) = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                body_rx.recv(),
-            )
-            .await
-            .expect("timed out receiving stream chunk")
+            while let Some(chunk) =
+                tokio::time::timeout(std::time::Duration::from_millis(100), body_rx.recv())
+                    .await
+                    .expect("timed out receiving stream chunk")
             {
                 let chunk = chunk.expect("chunk error");
                 out.extend_from_slice(&chunk);

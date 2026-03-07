@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn validates_minimal_manifest() {
-                let json = r#"{
+        let json = r#"{
                     "$schema": "https://edge-runtime.dev/schemas/function-manifest.v1.schema.json",
                     "manifestVersion": 1,
                     "name": "hello",
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn rejects_manifest_with_denylisted_ip() {
-                let json = r#"{
+        let json = r#"{
                     "manifestVersion": 1,
                     "name": "hello",
                     "entrypoint": "./index.ts",
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn rejects_manifest_with_wildcard_allow() {
-                let json = r#"{
+        let json = r#"{
                     "manifestVersion": 1,
                     "name": "hello",
                     "entrypoint": "./index.ts",
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn rejects_manifest_missing_required_network() {
-                let json = r#"{
+        let json = r#"{
                     "manifestVersion": 1,
                     "name": "hello",
                     "entrypoint": "./index.ts"

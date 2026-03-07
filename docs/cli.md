@@ -73,6 +73,8 @@ These are consumed mainly by `start` and `watch`:
 - `EDGE_RUNTIME_API_KEY`
 - `EDGE_RUNTIME_ADMIN_TLS_CERT`
 - `EDGE_RUNTIME_ADMIN_TLS_KEY`
+- `EDGE_RUNTIME_REQUIRE_BUNDLE_SIGNATURE`
+- `EDGE_RUNTIME_BUNDLE_PUBLIC_KEY_PATH`
 
 **Ingress Listener:**
 - `EDGE_RUNTIME_HOST`
@@ -198,6 +200,17 @@ deno-edge-runtime start [OPTIONS]
   - Useful for corporate networks or internal services.
   - Env: `EDGE_RUNTIME_ALLOW_PRIVATE_NET`
 
+- `--require-bundle-signature`
+  - Require Ed25519 signature verification for function deploy/update payloads on admin API.
+  - Default: `false`
+  - When enabled, requests must include `x-bundle-signature-ed25519`.
+  - Env: `EDGE_RUNTIME_REQUIRE_BUNDLE_SIGNATURE`
+- `--bundle-public-key-path <PATH>`
+  - Path to Ed25519 public key used to verify bundle signatures.
+  - Accepted formats: PEM, base64 raw key (32 bytes), or hex raw key (32 bytes).
+  - Required when `--require-bundle-signature` is enabled.
+  - Env: `EDGE_RUNTIME_BUNDLE_PUBLIC_KEY_PATH`
+
 #### SSRF Protection Details
 
 When enabled (default), SSRF protection blocks `fetch()` requests to the following private IP ranges:
@@ -314,6 +327,12 @@ All endpoints below are served on the **admin listener** (default port 9000):
 | `/_internal/functions/{name}/reload` | POST | Hot reload (requires feature flag) |
 | `/_internal/functions/{name}/pool` | GET | Get per-function pool limits |
 | `/_internal/functions/{name}/pool` | PUT | Update per-function pool limits (`min`, `max`) |
+
+When bundle signature verification is enabled, deploy/update must include:
+
+- Header: `x-bundle-signature-ed25519: <base64-signature>`
+
+See: [docs/bundle-signing.md](./bundle-signing.md)
 
 ### Ingress Routing
 

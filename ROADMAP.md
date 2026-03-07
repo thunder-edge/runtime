@@ -412,7 +412,10 @@ Implementacao atual:
 - Watcher `notify` em background para cert/key com recarga e retries curtos
 - Logs de carga inicial e reload com fingerprint SHA-256 do certificado
 
-### 3.5 HTTP/3 (QUIC)
+### 3.5 HTTP/3 (QUIC) — Futuro
+
+**Prioridade:** Baixa (postergado)
+**Status:** Futuro (fora do escopo imediato)
 
 - [ ] Avaliar `quinn` ou `h3` crate
 - [ ] Suportar QUIC listeners em paralelo com TCP
@@ -420,9 +423,17 @@ Implementacao atual:
 
 ### 3.6 Module Integrity (Assinatura de Bundles)
 
-- [ ] Assinar bundles eszip com HMAC-SHA256 ou Ed25519
-- [ ] Verificar assinatura no load antes de execução
-- [ ] Rejeitar bundles sem assinatura válida em modo produção
+- [x] Assinar bundles eszip com HMAC-SHA256 ou Ed25519
+- [x] Verificar assinatura no load antes de execução
+- [x] Rejeitar bundles sem assinatura válida em modo produção
+
+**Status:** ✅ Concluído
+
+Implementacao atual:
+- Verificacao opcional por flag de assinatura Ed25519 nos endpoints de deploy/update (`POST/PUT /_internal/functions...`)
+- Modo de enforcement via `--require-bundle-signature` + `--bundle-public-key-path`
+- Rejeicao com `401` para assinatura ausente/invalida quando enforcement ativo
+- Documentacao operacional detalhada em `docs/bundle-signing.md`
 
 ### 3.7 Resolver Paths Hardcoded no CLI
 

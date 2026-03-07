@@ -11,6 +11,10 @@ This directory contains scripts for bundling, deploying, and load-testing the De
 - **`deploy-and-test-eszip.sh`** - Deploy ESZIP bundles and run k6 load tests
 - **`load-test.js`** - k6 load testing script (JavaScript)
 
+### Security / Integrity Scripts
+- **`sign-bundle.sh`** - Sign an ESZIP/package bundle with Ed25519 and print base64 signature/header
+- **`deploy-signed-bundle.sh`** - Sign and deploy/update a bundle in a single command (sign + curl)
+
 ### Automation Scripts
 - **`run-benchmarks.sh`** - Full end-to-end benchmark (build, bundle, deploy, test everything)
 - **`quick-benchmark.sh`** - Fast re-run of benchmarks without rebuilding
@@ -71,6 +75,29 @@ cargo build --release
 ```bash
 ./target/release/deno-edge-runtime start --host 0.0.0.0 --port 9000
 ```
+
+#### 2.5 (Optional) Sign Bundles for Integrity Verification
+
+```bash
+./scripts/sign-bundle.sh \
+  --bundle ./hello.eszip \
+  --private-key ./bundle-signing-private.pem \
+  --print-header
+```
+
+This prints the `x-bundle-signature-ed25519` value to include in deploy/update requests when bundle signature enforcement is enabled.
+
+#### 2.6 (Optional) Sign + Deploy in One Command
+
+```bash
+./scripts/deploy-signed-bundle.sh \
+  --bundle ./hello.eszip \
+  --function hello \
+  --private-key ./bundle-signing-private.pem \
+  --api-key admin-secret
+```
+
+For update flow, pass `--method PUT`.
 
 #### 3. Deploy and Test
 

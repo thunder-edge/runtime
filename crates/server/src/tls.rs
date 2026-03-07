@@ -7,15 +7,15 @@ use std::time::Duration;
 
 use anyhow::Error;
 use notify::{RecursiveMode, Watcher};
-use sha2::{Digest, Sha256};
 use rustls::ServerConfig;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::RwLock;
-use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
 use crate::TlsConfig;
 
@@ -178,9 +178,10 @@ fn spawn_tls_reload_watcher(
 }
 
 fn event_touches_path(event: &notify::Event, cert_path: &Path, key_path: &Path) -> bool {
-    event.paths.iter().any(|event_path| {
-        paths_equal(event_path, cert_path) || paths_equal(event_path, key_path)
-    })
+    event
+        .paths
+        .iter()
+        .any(|event_path| paths_equal(event_path, cert_path) || paths_equal(event_path, key_path))
 }
 
 fn paths_equal(a: &Path, b: &Path) -> bool {
@@ -205,9 +206,8 @@ async fn reload_tls_with_retry(
         match build_tls_acceptor(config) {
             Ok(next) => {
                 dynamic.replace(next).await;
-                let fp = cert_fingerprint_sha256_hex(&config.cert_path).unwrap_or_else(|e| {
-                    format!("unavailable ({})", e)
-                });
+                let fp = cert_fingerprint_sha256_hex(&config.cert_path)
+                    .unwrap_or_else(|e| format!("unavailable ({})", e));
                 info!(
                     "{} TLS certificate reloaded (fingerprint_sha256={})",
                     listener_name, fp

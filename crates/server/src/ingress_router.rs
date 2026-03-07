@@ -13,8 +13,8 @@ use http_body_util::{BodyExt, Full, StreamBody};
 use runtime_core::isolate::IsolateResponseBody;
 use tracing::info;
 
-use functions::registry::FunctionRegistry;
 use crate::service::BoxBody;
+use functions::registry::FunctionRegistry;
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
@@ -189,9 +189,10 @@ impl IngressRouter {
                 let (parts, body) = (resp.parts, resp.body);
                 match body {
                     IsolateResponseBody::Full(bytes) => {
-                        if let Some(error_resp) =
-                            check_response_body_size(&bytes, self.body_limits.max_response_body_bytes)
-                        {
+                        if let Some(error_resp) = check_response_body_size(
+                            &bytes,
+                            self.body_limits.max_response_body_bytes,
+                        ) {
                             return boxed_full_response(error_resp);
                         }
                         Response::from_parts(parts, Full::new(bytes).boxed())

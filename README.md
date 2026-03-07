@@ -151,6 +151,7 @@ Detailed CLI documentation: [docs/cli.md](docs/cli.md).
 - [docs/load_testing.md](docs/load_testing.md): methodology and interpretation of load tests with k6
 - [docs/streaming-response-body.md](docs/streaming-response-body.md): how to use `ReadableStream`, chunked transfer, and SSE in JS/TS handlers
 - [docs/external-scaling-recommendations.md](docs/external-scaling-recommendations.md): recommended metrics and guardrails for external autoscaling
+- [docs/bundle-signing.md](docs/bundle-signing.md): generate, store, rotate, and enforce Ed25519 bundle signatures for secure deploys
 - [docs/web_standards_api_report.md](docs/web_standards_api_report.md): compatibility report for Web APIs supported by the runtime
 
 ## Internal Runtime API

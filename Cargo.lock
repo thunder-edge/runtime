@@ -2237,6 +2237,7 @@ dependencies = [
  "deno_ast",
  "deno_core",
  "deno_graph",
+ "ed25519-dalek",
  "eszip",
  "functions",
  "futures-util",
