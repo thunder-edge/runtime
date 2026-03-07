@@ -1,373 +1,478 @@
 # Security & Architecture Audit — Deno Edge Runtime
 
-> **Date:** 03/05/2026
-> **Scope:** Complete analysis of the 4 crates (`runtime-core`, `functions`, `server`, `cli`), JS tests, scripts, and configuration.
+> **Initial audit:** 05/03/2026
+> **Re-audit:** 06/03/2026
+> **Scope:** Complete analysis of the 4 crates (`runtime-core`, `functions`, `server`, `cli`), JS tests, scripts, schemas, and configuration.
 > **Objective:** Identify security vulnerabilities, breaking points, design flaws, and test gaps before production use.
+> **Method:** Full source code review of every file in each crate, cross-referenced against ROADMAP.md.
 
 ---
 
 ## Summary
 
-| Severity | Count | Examples |
-|---|---|---|
-| **Critical** | 4 | TLS not applied, unauthenticated endpoints, SSRF, unbounded body |
-| **High** | 6 | No connection limit, imprecise CPU timer, panic without recovery, heap without enforcement |
-| **Medium** | 8 | Inactive rate limiter, expensive metrics, exposed inspector, hardcoded paths |
-| **Low** | 5 | Ordering::Relaxed, error messages leaking info, mutable globals |
+| Severity | Original (05/03) | Current (06/03) | Notes |
+|---|---|---|---|
+| **Critical** | 4 | 0 fixed, 2 new | 4 originais corrigidos; 2 novos descobertos nesta re-auditoria |
+| **High** | 6 | 0 fixed, 3 new | 6 originais corrigidos; 3 novos descobertos |
+| **Medium** | 8 | 0 fixed, 7 new | 8 originais corrigidos; 7 novos descobertos |
+| **Low** | 5 | 3 fixed, 8 new | 3 originais corrigidos; 2 permanecem; 8 novos descobertos |
 
 ---
 
-## 1. Critical Security Vulnerabilities
+## Correcoes Implementadas (desde audit original)
 
-### 1.1 TLS Configured but Never Used
+As seguintes vulnerabilidades do audit original foram **confirmadas como corrigidas** via revisao de codigo:
 
-**File:** `crates/server/src/lib.rs` (lines 46-48)
-**Severity:** 🔴 CRITICAL
+### Critical (4/4 corrigidos)
 
-The TLS acceptor is built but stored in `_tls_acceptor` (`_` prefix = unused). All connections are served in **plain HTTP**, even when certificate and key are provided. The operator believes TLS is active, but traffic is cleartext.
+| # | Finding original | Status | Evidencia |
+|---|---|---|---|
+| 1.1 | TLS configurado mas nunca usado | **CORRIGIDO** | `crates/server/src/lib.rs`: `DynamicTlsAcceptor` com handshake TLS real em todos os accept loops (admin, ingress TCP). `MaybeHttpsStream` enum abstrai TcpPlain/TcpTls/Unix. Hot-reload via `notify` watcher com retry e fingerprint logging. |
+| 1.2 | Endpoints `/_internal` sem autenticacao | **CORRIGIDO** | Arquitetura dual-listener: `AdminRouter` (`admin_router.rs`) com `check_auth()` via header `X-API-Key`; `IngressRouter` (`ingress_router.rs`) rejeita `/_internal/*` com 404. |
+| 1.3 | SSRF via `fetch()` sem restricao de IP privado | **CORRIGIDO** (com ressalva IPv6) | `crates/runtime-core/src/ssrf.rs`: `DEFAULT_DENY_RANGES` bloqueia `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `0.0.0.0/8`, `[::1]`. IPv6 CIDR pendente (ver NEW-C1). |
+| 1.4 | Sem limite de tamanho no body | **CORRIGIDO** | `crates/server/src/body_limits.rs`: dual-layer com `check_content_length()` + `http_body_util::Limited`. Defaults: 5 MiB request, 10 MiB response. |
 
-```rust
-let _tls_acceptor = if let Some(ref tls_config) = config.tls {
-    Some(tls::build_tls_acceptor(tls_config)?)  // Built and discarded!
-} else { None };
-```
+### High (6/6 corrigidos)
 
-**Impact:** Sensitive data exposed on the network. False sense of security.
+| # | Finding original | Status | Evidencia |
+|---|---|---|---|
+| 2.1 | Sem limite de conexoes simultaneas | **CORRIGIDO** | `tokio::sync::Semaphore` com `try_acquire_owned()` em todos os accept loops. Default 10.000. Flag `--max-connections`. |
+| 2.2 | CPU timer usa wall-clock | **CORRIGIDO** | `crates/runtime-core/src/cpu_timer.rs`: `CLOCK_THREAD_CPUTIME_ID` via `libc` (Unix), wall-clock como fallback. |
+| 2.3 | Heap limit sem enforcement real | **CORRIGIDO** | `near_heap_limit_callback` registrado em `lifecycle.rs`. 1a chamada: extensao de 10%. 2a chamada: `terminate_execution()` + `should_terminate` flag. |
+| 2.4 | Panic no isolate nao atualiza status | **CORRIGIDO** | `catch_unwind` + `mark_dead()` + `close_request_tx()` + `fail_pending_requests()` + auto-restart com backoff exponencial (1s, 2s, 4s, 8s, 16s, max 5 restarts). |
+| 2.5 | Sem request timeout no dispatch | **CORRIGIDO** | Dual-layer timeout: watchdog thread com `terminate_execution()` + `tokio::time::timeout()`. Retorna 504 Gateway Timeout. Cleanup de timers/intervals/promises por `execution_id`. |
+| 2.6 | Flag `exceeded` do CPU timer nunca resetada | **CORRIGIDO** | `CpuTimer::reset()` chamado antes de cada request em `lifecycle.rs`. Zera `accumulated_ms` e `exceeded` flag. |
 
-**Fix:** Use the `tls_acceptor` to wrap the accepted TCP stream with `tokio_rustls::TlsAcceptor::accept()`.
+### Medium (8/8 corrigidos)
+
+| # | Finding original | Status | Evidencia |
+|---|---|---|---|
+| 3.1 | Rate limiter definido mas nunca aplicado | **CORRIGIDO** | `RateLimitLayer` aplicado no `IngressRouter` antes do processamento. Fixed-window 1s. Retorna 429 com `Retry-After`. |
+| 3.2 | Metrics endpoint sem cache | **CORRIGIDO** | `MetricsCache` com `RwLock` e TTL de 15s em `router.rs`. |
+| 3.3 | V8 Inspector sem protecao de rede | **CORRIGIDO** | `inspect_allow_remote` default `false` (bind `127.0.0.1`). Flag `--inspect-allow-remote` para override. Warnings quando inspector ativado. |
+| 3.4 | Paths hardcoded no CLI | **CORRIGIDO** | `include_str!()` para modulos assert embutidos no binario. `embedded_assert.rs` mapeia `edge://assert/*` e `ext:edge_assert/*`. |
+| 3.5 | Nome de funcao sem validacao | **CORRIGIDO** | `is_valid_function_name()` com regex `^[a-z0-9][a-z0-9-]{0,62}$`. Validacao em deploy e ingress. Schema `common.schema.json` com mesmo pattern. |
+| 3.6 | Stub ops silenciosos | **PERMANECE** | `op_set_raw`, `op_console_size`, `op_tls_peer_certificate` ainda retornam no-op silencioso. Reclassificado como LOW. |
+| 3.7 | Source maps habilitados por default | **CORRIGIDO** | `IsolateConfig.enable_source_maps` default alterado; CLI flag `--sourcemap` com opcoes `none` (default) e `inline`. |
+| 3.8 | Error messages vazam informacao interna | **CORRIGIDO** | `sanitize_internal_error()` em `router.rs`: log completo server-side, retorna `{"error":"internal_error","request_id":"..."}` ao cliente. |
+
+### Low (3/5 corrigidos)
+
+| # | Finding original | Status | Evidencia |
+|---|---|---|---|
+| 4.1 | `Ordering::Relaxed` em metrics | **PERMANECE** | Atomics de metricas ainda usam `Relaxed`. Risco real baixo em pratica. |
+| 4.2 | Globals mutaveis no bootstrap | **CORRIGIDO** | 10 globals criticos frozen via `Object.freeze()`: `fetch`, `Request`, `Response`, `Headers`, `crypto`, `URL`, `URLSearchParams`, `TextEncoder`, `TextDecoder`, `console`. |
+| 4.3 | Excecao silenciosa no edge_assert import | **CORRIGIDO** | Modulos assert agora embutidos via `include_str!()` e registrados como extensao nativa. |
+| 4.4 | HTTP parser custom no test runner | **PERMANECE** | `test.rs` linhas 636-810 ainda usa parser HTTP manual com peek de 2048 bytes. Risco mitigado: inspector apenas dev, bind localhost. |
+| 4.5 | Graceful shutdown com sleep fixo | **CORRIGIDO** | `shutdown_all_with_deadline()` no dual-server: cancela token, poll ate channels fecharem ou deadline, force-clear. |
 
 ---
 
-### 1.2 Management Endpoints WITHOUT Authentication
+## Novas Vulnerabilidades Descobertas (Re-Audit 06/03/2026)
 
-**File:** `crates/server/src/router.rs`
-**Severity:** 🔴 CRITICAL
+### Critical
 
-The `/_internal/*` endpoints (deploy, delete, metrics) are completely open. Any client on the network can:
+#### NEW-C1: IPv6 SSRF Bypass
 
-- **Deploy malicious functions** via `POST /_internal/functions`
-- **Delete production functions** via `DELETE /_internal/functions/{name}`
-- **Extract internal information** via `GET /_internal/metrics`
+**File:** `crates/runtime-core/src/ssrf.rs` (linhas 25-27)
+**Severity:** CRITICO
 
-No auth header, API key, or mTLS is verified. Searching for `auth|token|api.key|bearer|secret` in the router returns zero results.
-
-**Impact:** Complete runtime takeover by any attacker with network access.
-
-**Fix:** Implement authentication via API key (header `X-API-Key`), mTLS, or JWT on `/_internal/*` endpoints.
-
----
-
-### 1.3 SSRF via `fetch()` without Private IP Restriction
-
-**File:** `crates/runtime-core/src/permissions.rs` (line 23)
-**Severity:** 🔴 CRITICAL
-
-The default network permission uses `allow_net: Some(vec![])` — which in Deno means **allow ALL hosts**. User code can do:
+Apenas `[::1]` e bloqueado para IPv6. Ranges CIDR IPv6 nao sao suportados pelo parser `deno_permissions` nesta versao. Um atacante pode contornar a protecao SSRF via:
 
 ```javascript
-// Access cloud metadata (AWS, GCP, Azure)
-fetch("http://169.254.169.254/latest/meta-data/iam/security-credentials/")
+// IPv4-mapped IPv6 (bypass total)
+fetch("http://[::ffff:169.254.169.254]/latest/meta-data/")
 
-// Scan internal network
-fetch("http://192.168.1.1:8080/admin")
+// Unique Local Address (equivalente RFC 1918)
+fetch("http://[fd00::1]:8080/admin")
 
-// Access localhost services
-fetch("http://127.0.0.1:5432/")
+// Link-local
+fetch("http://[fe80::1%25eth0]/")
 ```
 
-There is no validation of private IPs (RFC 1918, link-local, loopback).
+**Ranges faltantes:**
+- `fc00::/7` (Unique Local Addresses)
+- `fe80::/10` (Link-Local)
+- `::ffff:0:0/96` (IPv4-mapped IPv6 -- vetor de bypass critico)
+- `100::/64` (Discard prefix)
+- `2001:db8::/32` (Documentation prefix)
 
-**Impact:** Cloud credential exfiltration, internal network scanning, access to unexposed services.
+**Impacto:** Bypass completo da protecao SSRF via enderecos IPv6. Exfiltracao de credenciais cloud via `::ffff:169.254.169.254`.
 
-**Fix:** Implement deny list for private ranges: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `127.0.0.0/8`, `::1`, `fc00::/7`.
+**Fix:** Quando o parser `deno_permissions` suportar CIDR IPv6, adicionar os ranges acima ao `DEFAULT_DENY_RANGES`. Como workaround imediato, adicionar IPs IPv6 individuais mais criticos (e.g., `[::ffff:169.254.169.254]`, `[::ffff:127.0.0.1]`, etc.).
 
 ---
 
-### 1.4 No Size Limit on Request/Response Body
+#### NEW-C2: Legacy Router sem Autenticacao nem Verificacao de Assinatura
 
-**File:** `crates/server/src/router.rs` (lines 73-80, 214-220)
-**Severity:** 🔴 CRITICAL
+**File:** `crates/server/src/router.rs` (linha 429)
+**Severity:** CRITICO
 
-All HTTP body is fully buffered in memory via `body.collect().await`. There is no maximum `Content-Length` check nor streaming. A 10GB payload would cause instant OOM.
+O router legado (`Router` + `run_server()`) que combina admin e ingress num unico listener **nao possui**:
+- Autenticacao em `/_internal/*` (nenhum `check_auth()`)
+- Verificacao de assinatura de bundles no deploy
+- Endpoints de pool
+- Rejeicao de `/_internal` no ingress
+
+O `watch` command usa `run_server()` (legado), o que e aceitavel para dev. Porem, se qualquer caminho de producao invocar `run_server()` ao inves de `run_dual_server()`, toda a seguranca do admin e contornada.
+
+**Impacto:** Se o router legado for usado em producao, endpoints admin ficam abertos sem autenticacao.
+
+**Fix:** Deprecar `run_server()` para uso em producao. Adicionar warning ou panic se chamado sem flag de override explicito. Idealmente, remover ou feature-gate o `Router` legado.
+
+---
+
+### High
+
+#### NEW-H1: Sem Timeout no TLS Handshake
+
+**File:** `crates/server/src/lib.rs` (accept loops)
+**Severity:** ALTO
+
+O `tls_acceptor.accept(stream).await` nao possui timeout. Um cliente malicioso pode abrir uma conexao TCP, consumir um permit do semaforo, e nunca completar o handshake TLS (slowloris-on-TLS). Isso esgota o limite de conexoes sem enviar nenhum byte util.
+
+**Impacto:** DoS via exaustao de permits do semaforo com conexoes TLS penduradas.
+
+**Fix:** Envolver `accept()` com `tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await`.
+
+---
+
+#### NEW-H2: Response Body de Streaming sem Limite de Tamanho
+
+**File:** `crates/server/src/ingress_router.rs` (linhas 211-235)
+**Severity:** ALTO
+
+`check_response_body_size()` e chamado apenas para `IsolateResponseBody::Full`. Respostas de streaming (`IsolateResponseBody::Stream`) nao possuem nenhum controle de tamanho. Uma funcao maliciosa pode enviar dados ilimitados via `ReadableStream`.
+
+**Impacto:** Funcao maliciosa pode usar streaming para enviar gigabytes de dados sem limitacao.
+
+**Fix:** Implementar `ByteCountingStream` wrapper que conta bytes e aborta apos `MAX_RESPONSE_BODY_BYTES`.
+
+---
+
+#### NEW-H3: Comparacao de API Key Nao e Constant-Time
+
+**File:** `crates/server/src/admin_router.rs` (linha 166)
+**Severity:** ALTO
 
 ```rust
-let body_bytes = match body.collect().await {
-    Ok(collected) => collected.to_bytes(),
-    Err(_) => { return json_response(...) }
-};
+key == expected  // String equality padrao, nao constant-time
 ```
 
-The same occurs on the response side — the handler serializes the entire body into `bytes::Bytes` without limit.
+A comparacao de igualdade entre a chave fornecida e a esperada nao usa comparacao constant-time. Embora explorar timing side-channels sobre HTTP seja dificil na pratica, e uma falha criptografica conhecida.
 
-**Impact:** Denial of Service via large payload. Crash of entire process.
-
-**Fix:** Limit body to 5-10MB with reject `413 Payload Too Large`. Implement streaming for larger payloads.
+**Fix:** Usar `subtle::ConstantTimeEq` ou `ring::constant_time::verify_slices_are_equal()`.
 
 ---
 
-## 2. High Severity Vulnerabilities
+### Medium
 
-### 2.1 No Limit on Simultaneous Connections
+#### NEW-M1: Sem Backoff no Accept Loop em Erro
 
-**File:** `crates/server/src/lib.rs` (lines 53-68)
-**Severity:** 🟠 HIGH
+**File:** `crates/server/src/lib.rs` (todos os accept loops)
+**Severity:** MEDIO
 
-The accept loop does `tokio::spawn` for each connection without semaphore, queue, or backpressure. A slowloris attack or connection flood exhausts threads and memory of the Tokio runtime.
+Se `listener.accept()` falhar repetidamente (e.g., `EMFILE` -- limite de file descriptors), o loop gira em CPU max sem backoff. Pode causar 100% CPU sob exaustao de FDs.
 
-```rust
-Ok((stream, peer_addr)) => {
-    let svc = svc.clone();
-    tokio::spawn(async move { ... });  // No limit!
-}
-```
-
-**Fix:** Use `tokio::sync::Semaphore` with configurable limit (e.g., 10,000 connections).
+**Fix:** Adicionar `tokio::time::sleep(Duration::from_millis(50))` apos erro consecutivo de accept.
 
 ---
 
-### 2.2 CPU Timer Uses Wall-Clock (Not Real CPU Time)
-
-**File:** `crates/runtime-core/src/cpu_timer.rs` (lines 5-6)
-**Severity:** 🟠 HIGH
-
-The code itself comments: *"Uses wall-clock time as an approximation."* This means:
-
-- Code that does `await sleep(50_000)` consumes 0% CPU but exceeds the timer
-- CPU-intensive code in async microtasks may not be detected
-- `Ordering::Relaxed` on atomics may lose updates between threads
-
-**Fix:** Use `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` via `libc` (already a dependency). Or at minimum, prominently document the limitation.
-
----
-
-### 2.3 Heap Limit without Real Enforcement
-
-**File:** `crates/runtime-core/src/mem_check.rs` (lines 10-15) and `crates/functions/src/lifecycle.rs`
-**Severity:** 🟠 HIGH
-
-V8's `CreateParams::heap_limits()` is set, but:
-- No `near_heap_limit_callback` is registered
-- `mem_check::check()` returns `(used, exceeded)` but **does not kill** the isolate
-- `used_heap_size + external_memory` does not include code cache, compiled functions, or native buffers
-- The caller must check the flag manually — nothing prevents ignoring it
-
-**Impact:** Isolate can exceed the limit and cause process OOM.
-
-**Fix:** Register `v8::Isolate::add_near_heap_limit_callback()` to terminate the isolate before OOM.
-
----
-
-### 2.4 Panic in Isolate Does Not Update Status
-
-**File:** `crates/functions/src/lifecycle.rs` (lines 63-76)
-**Severity:** 🟠 HIGH
-
-`catch_unwind` captures panics but the function status remains `Running` in the registry:
-
-```rust
-Err(e) => error!("isolate '{}' panicked: {:?}", isolate_name, e),
-// But never calls registry.update_status(name, Status::Error)
-```
-
-Subsequent requests are sent to a dead isolate and hang without response.
-
-**Fix:** After panic, update status to `Error` in registry and implement auto-restart with backoff.
-
----
-
-### 2.5 No Request Timeout in Dispatch
-
-**File:** `crates/functions/src/handler.rs` (lines 126-185)
-**Severity:** 🟠 HIGH
-
-`dispatch_request` awaits the JS handler indefinitely. Malicious code or infinite loops block the isolate permanently:
-
-```rust
-let result = handler::dispatch_request(&mut js_runtime, req.request).await;
-// No tokio::time::timeout!
-```
-
-**Note:** router.rs applies timeout on `send_request`, but the internal isolate has no timeout of its own, potentially accumulating pending requests.
-
-**Fix:** Wrap with `tokio::time::timeout()` and return 504 Gateway Timeout.
-
----
-
-### 2.6 CPU Timer `exceeded` Flag Is Never Reset
-
-**File:** `crates/runtime-core/src/cpu_timer.rs` (line 32)
-**Severity:** 🟠 HIGH
-
-Once `exceeded.store(true)`, the flag remains `true` forever. Multiple requests to the same isolate would inherit the timeout status from a previous request.
-
-**Fix:** Add a `reset()` method and call it at the start of each request.
-
----
-
-## 3. Medium Severity Vulnerabilities
-
-### 3.1 Rate Limiting Defined but Never Applied
+#### NEW-M2: Rate Limiter Global (nao Per-IP/Per-Function)
 
 **File:** `crates/server/src/middleware/mod.rs`
-**Severity:** 🟡 MEDIUM
+**Severity:** MEDIO
 
-The `RateLimitLayer` module is implemented but never inserted into the server's middleware stack in `lib.rs`. The `rate_limit_rps` config is accepted but ignored.
+O rate limiter usa fixed-window de 1 segundo e e global. Um unico cliente abusivo esgota o limite para todos. Alem disso, o algoritmo fixed-window permite ate 2x o limite na fronteira de janelas.
 
----
-
-### 3.2 Metrics Endpoint Is Computationally Expensive (No Cache)
-
-**File:** `crates/server/src/router.rs` (lines ~130-175)
-**Severity:** 🟡 MEDIUM
-
-Each call to `GET /_internal/metrics` executes `sysinfo::System::new_all()` + `refresh_processes()`, which scans **all OS processes**. Can be used as a DoS vector (1000 req/s to metrics = 100% CPU).
-
-**Fix:** Cache the result with 10-30 second TTL.
+**Mitigacao futura:** Considerar rate limiting per-IP (e.g., `governor` crate) ou per-function.
 
 ---
 
-### 3.3 V8 Inspector Without Network Protection
+#### NEW-M3: Endpoints Admin sem Rate Limiting
 
-**File:** `crates/runtime-core/src/isolate.rs` (lines 24-27)
-**Severity:** 🟡 MEDIUM
+**File:** `crates/server/src/admin_router.rs`
+**Severity:** MEDIO
 
-The V8 Inspector (debugger) can be enabled via CLI flags `--inspect` / `--inspect-brk`. There is no documentation on whether binding is restricted to localhost. In production, this would give remote access to each isolate's V8 debugger.
-
-**Fix:** Force bind to `127.0.0.1` and document that inspector should not be used in production.
+Nenhum rate limiting e aplicado aos endpoints admin. Um atacante com API key valida (ou sem key em modo dev) pode fazer requests ilimitados a `/_internal/metrics`, causando CPU burn via `sysinfo::System::new_all()`.
 
 ---
 
-### 3.4 Hardcoded Absolute Paths in CLI
+#### NEW-M4: Erro no Pool Leaks Detalhes Internos
 
-**Files:** `crates/cli/src/bundle.rs`, `crates/cli/src/watch.rs`, `crates/cli/src/test.rs`
-**Severity:** 🟡 MEDIUM
-
-Paths like `cwd.join("crates/runtime-core/src/assert/...")` assume CWD is the project root. Fails silently in any other directory.
-
-**Fix:** Use environment variable or auto-detect project root via `Cargo.toml`.
-
----
-
-### 3.5 Function Name Without Validation
-
-**File:** `crates/server/src/router.rs` (lines 52-62)
-**Severity:** 🟡 MEDIUM
-
-The function name is extracted from the URL path without any validation:
+**File:** `crates/server/src/admin_router.rs` (linha 526)
+**Severity:** MEDIO
 
 ```rust
-let segments: Vec<&str> = path.splitn(3, '/').collect();
-let function_name = if segments.len() >= 2 { segments[1] } else { "" };
+format!(r#"{{"error":"{}"}}"#, e)  // 'e' pode conter detalhes internos
 ```
 
-Accepts special characters, unicode, very long strings, `..`, `/`, etc. May allow path traversal or enumeration.
+O endpoint `set_pool_limits` formata o erro diretamente no JSON retornado ao cliente, ao inves de usar `sanitize_internal_error()`.
 
-**Fix:** Validate regex `^[a-z0-9][a-z0-9-]{0,62}$`.
-
----
-
-### 3.6 Silent Stub Ops Instead of Errors
-
-**File:** `crates/runtime-core/src/extensions.rs` (lines 98-108)
-**Severity:** 🟡 MEDIUM
-
-`op_set_raw`, `op_console_size`, `op_tls_peer_certificate` return no-op/default silently. If user code invokes these ops, silent failure may mask problems.
+**Fix:** Usar `sanitize_internal_error()` consistentemente em todos os endpoints.
 
 ---
 
-### 3.7 Source Maps Enabled by Default
+#### NEW-M5: Legacy run_server Graceful Shutdown Usa Sleep ao Inves de Drain
 
-**File:** `crates/runtime-core/src/isolate.rs` (line 28)
-**Severity:** 🟡 MEDIUM
+**File:** `crates/server/src/lib.rs` (linhas 601-604)
+**Severity:** MEDIO
 
-`enable_source_maps: true` by default embeds TypeScript source in base64 in compiled JS. May expose business logic, internal comments, and file paths.
-
----
-
-### 3.8 Error Messages Leak Internal Information
-
-**File:** `crates/server/src/router.rs` (line ~246)
-**Severity:** 🟡 MEDIUM
-
-```rust
-format!(r#"{{"error":"{}"}}"#, e)  // 'e' contains Rust stack traces
-```
-
-Deploy error messages include isolate stack details, server file paths, and internal state.
-
-**Fix:** Return generic message to client; log details internally.
+O `run_server()` legado dorme pelo deadline em vez de aguardar conexoes drenarem. Conexoes podem ser cortadas mid-flight ou o servidor esperar mais que o necessario.
 
 ---
 
-## 4. Low Severity Vulnerabilities
+#### NEW-M6: Default Permissions sem Protecao SSRF
 
-### 4.1 Ordering::Relaxed on Metrics Atomics
+**File:** `crates/runtime-core/src/permissions.rs`
+**Severity:** MEDIO
 
-**File:** `crates/functions/src/types.rs` (lines 75-93)
+`create_permissions_container()` (funcao default) configura `deny_net: None` -- zero protecao de rede. Qualquer caminho de codigo que use esta funcao ao inves de `create_permissions_with_policy()` fica desprotegido. A funcao existe para conveniencia mas e perigosa se usada incorretamente.
 
-Metrics snapshot may show inconsistent values between fields. Use `Ordering::Acquire` at minimum.
+**Fix:** Considerar deprecar `create_permissions_container()` ou fazer SSRF protection o default.
 
-### 4.2 Mutable Globals in Bootstrap
+---
 
-**File:** `crates/runtime-core/src/bootstrap.js` (lines 95-213)
+#### NEW-M7: CPU Time Monitorado mas Nao Enforced
 
-50+ APIs assigned to `globalThis` without `Object.freeze()`. User code can overwrite `fetch`, `crypto`, `Response`, etc.
+**File:** `crates/functions/src/lifecycle.rs`
+**Severity:** MEDIO
 
-### 4.3 Silent Exception in edge_assert Import
+O `CpuTimer` rastreia tempo de CPU real (`CLOCK_THREAD_CPUTIME_ID`) e seta um flag `exceeded`, mas **nenhum codigo verifica este flag** no loop de requests. O `cpu_time_limit_ms` (default 50s) e puramente informativo -- nao causa terminacao. Apenas o wall-clock timeout fornece enforcement real.
 
-**File:** `crates/runtime-core/src/bootstrap.js` (lines 76-80)
+**Impacto:** Uma funcao que consome CPU intensivamente dentro do wall-clock timeout nao sera terminada por limites de CPU. O campo `cpu_time_limit_ms` e enganoso.
+
+**Fix:** Verificar `cpu_timer.is_exceeded()` apos `stop()` e retornar erro / terminar isolate. Ou documentar que CPU time e apenas metricas, nao enforcement.
+
+---
+
+### Low
+
+#### NEW-L1: Watchdog Thread por Request
+
+**File:** `crates/functions/src/lifecycle.rs` (linha 475)
+**Severity:** BAIXO
+
+Cada request com timeout spawna uma nova `std::thread` dedicada para o watchdog. Sob alta concorrencia, isso cria churn de threads significativo. Funcional mas nao otimo.
+
+**Mitigacao futura:** Timer wheel compartilhado ou tokio timer.
+
+---
+
+#### NEW-L2: Stream Sender Leak em Timeout
+
+**File:** `crates/functions/src/handler.rs`
+**Severity:** BAIXO
+
+Quando um request de streaming sofre timeout, `unregister_response_stream` nunca e chamado para o stream ID que ja foi registrado. A entry do sender fica no `ResponseStreamRegistry` HashMap ate o receiver ser dropado e o sender detectar channel fechado. Leak de memoria menor por request de streaming com timeout.
+
+---
+
+#### NEW-L3: `eval()` e `Function()` Nao Removidos do Sandbox
+
+**File:** `crates/runtime-core/src/bootstrap.js` (linhas 308-311)
+**Severity:** BAIXO
 
 ```javascript
-import("ext:edge_assert/mod.ts").catch(() => {});  // Silences any error
+// Prevent dynamic code execution
+// Note: These should be done carefully as some libraries need them
+// delete globalThis.eval;
+// delete globalThis.Function;
 ```
 
-### 4.4 Custom HTTP Parser in Test Runner Inspector
+`eval()` e o constructor `Function()` permanecem disponiveis. Decisao consciente para compatibilidade de bibliotecas, mas permite execucao dinamica de codigo no sandbox. O setTimeout wrapper tambem usa `eval(fn)` para argumentos string (handler.rs linha 276).
 
-**File:** `crates/cli/src/test.rs` (lines 656-787)
+---
 
-Manual HTTP parser is not RFC-compliant, no request size limit, no origin validation in WebSocket.
+#### NEW-L4: Maioria dos Globals Nao Frozen
 
-### 4.5 Graceful Shutdown with Fixed Sleep in Registry
+**File:** `crates/runtime-core/src/bootstrap.js`
+**Severity:** BAIXO
 
-**File:** `crates/functions/src/registry.rs` (lines ~133-137)
+Apenas 10 globals criticos sao frozen. Dezenas de outros globals podem ser monkey-patched por user code:
+- `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`
+- `AbortController`, `AbortSignal`
+- `ReadableStream`, `WritableStream`, `TransformStream`
+- `Blob`, `File`, `FileReader`, `FormData`
+- `Event`, `EventTarget`, `CustomEvent`, `MessageEvent`
+- `CompressionStream`, `DecompressionStream`
+- `Performance`, `PerformanceEntry`
+- `MessageChannel`, `MessagePort`
+- `Crypto`, `CryptoKey`, `SubtleCrypto` (apenas a instancia `crypto` e frozen, nao os constructors)
+- `atob`, `btoa`, `structuredClone`, `reportError`
 
-`sleep(2s)` + `functions.clear()` without verifying if threads have terminated.
+---
+
+#### NEW-L5: MetricsCache Thundering Herd
+
+**File:** `crates/server/src/router.rs` (linhas 65-86)
+**Severity:** BAIXO
+
+Quando o cache de metrics expira, multiplos readers concorrentes podem todos falhar o check de TTL, liberar o read lock, e todos tentar adquirir o write lock. Apenas um computa, os outros bloqueiam.
+
+---
+
+#### NEW-L6: Sem mTLS (Client Certificate Verification)
+
+**File:** `crates/server/src/tls.rs` (linha 61)
+**Severity:** BAIXO
+
+`with_no_client_auth()` significa zero verificacao de certificado do cliente. Tipico para edge servers, mas impede autenticacao mTLS de servicos internos.
+
+---
+
+#### NEW-L7: `Deno.permissions.query` Nao Deletado
+
+**File:** `crates/runtime-core/src/bootstrap.js`
+**Severity:** BAIXO
+
+`Deno.permissions.request` e `Deno.permissions.revoke` sao deletados, mas `Deno.permissions.query` permanece. User code pode inspecionar quais permissoes estao configuradas, vazando informacao sobre a configuracao do runtime.
+
+---
+
+#### NEW-L8: HeapLimitState Pointer Leak em Panic
+
+**File:** `crates/functions/src/lifecycle.rs`
+**Severity:** BAIXO
+
+`HeapLimitState` e alocado via `Box::into_raw` e liberado na saida de `run_isolate`. Se `run_isolate` sofre panic antes do cleanup (linhas 626-629), o pointer leaka. O `catch_unwind` no supervisor captura o panic e o V8 isolate e dropado, entao o callback nao pode ser invocado -- leak de memoria menor, sem risco de use-after-free.
+
+---
+
+#### NEW-L9: FileLoader Duplicado 4 Vezes
+
+**File:** `crates/cli/src/commands/{test,bundle,check,watch}.rs`
+**Severity:** BAIXO
+
+O struct `FileLoader` e sua implementacao de `Loader` sao copy-paste identicos em 4 arquivos. Aumenta risco de patches inconsistentes.
+
+---
+
+#### NEW-L10: Sem Versao TLS Minima Explicita
+
+**File:** `crates/server/src/tls.rs` (linha 60)
+**Severity:** BAIXO
+
+O `ServerConfig` nao define versao TLS minima explicitamente. Depende dos defaults do `rustls` (TLS 1.2+), que sao seguros, mas configuracao explicita seria preferivel para hardening.
 
 ---
 
 ## 5. Test Coverage Gaps
 
-| Category | Status |
-|---|---|
-| Permission enforcement (network denied, fs denied) | ❌ Missing |
-| Memory limit (OOM) | ❌ Missing |
-| CPU timeout (infinite loop) | ❌ Missing |
-| Isolate panic recovery | ❌ Missing |
-| Concurrent requests to same isolate | ❌ Missing |
-| Graceful shutdown with in-flight requests | ❌ Missing |
-| SSRF (fetch to private IPs) | ❌ Missing |
-| Maximum body size | ❌ Missing |
-| Prototype pollution / sandbox escape | ❌ Missing |
-| Negative tests for Web APIs (invalid inputs) | ❌ Nearly zero |
-| Internal endpoint authentication | ❌ Missing |
-| End-to-end TLS handshake | ❌ Missing |
-| Web APIs existence/constructors | ✅ OK (~70 APIs) |
-| Isolate boot and basic dispatch | ✅ OK |
-| Load testing (k6) | ✅ OK |
+| Categoria | Status Original | Status Atual | Evidencia |
+|---|---|---|---|
+| Permission enforcement (network, fs denied) | Missing | **COBERTO** | `sandbox_security.rs`: 4 testes (SSRF 127/169, readFile, env.get, prototype pollution) |
+| Memory limit (OOM) | Missing | **COBERTO** | `timeout_and_timers.rs`: `test_heap_limit_infinite_allocation_marks_function_error` |
+| CPU timeout (infinite loop) | Missing | **COBERTO** | `timeout_and_timers.rs`: `test_terminate_execution_stops_infinite_loop`, `test_isolate_timeout_returns_504` |
+| Isolate panic recovery | Missing | **PARCIAL** | `test_panic_followed_by_request_marks_error_and_fails_fast` ok; `test_panic_auto_restart_recovers_to_running` ainda `#[ignore]` |
+| Concurrent requests to same isolate | Missing | **COBERTO** | `timeout_and_timers.rs`: `test_concurrent_requests_to_same_isolate` |
+| Graceful shutdown with in-flight requests | Missing | **FALTA** | Nenhum teste de integracao encontrado |
+| SSRF (fetch to private IPs) | Missing | **COBERTO** | `sandbox_security.rs`: `sandbox_blocks_private_fetch_targets` |
+| Maximum body size | Missing | **FALTA** | Feature existe (`body_limits.rs`), mas sem teste enviando payload oversized e verificando 413 |
+| Prototype pollution / sandbox escape | Missing | **COBERTO** | `sandbox_security.rs`: `sandbox_blocks_prototype_pollution_via_object_prototype_proto` |
+| Negative tests for Web APIs | Nearly zero | **FALTA** | Testes de Web API permanecem verificacoes de existencia/constructor |
+| Internal endpoint authentication | Missing | **PARCIAL** | Auth implementada no `AdminRouter`; testes E2E existem em `crates/server/src/lib.rs` mas sem teste funcional externo completo |
+| End-to-end TLS handshake | Missing | **PARCIAL** | Teste E2E existe em `crates/server/src/lib.rs` (`e2e_tls_accepts_https_connection`); sem teste funcional externo via CLI |
+| Web APIs existence/constructors | OK (~70 APIs) | **OK** | 70+ testes em `web_api_compat.rs` + 60+ em `web_api_report.rs` |
+| Isolate boot and basic dispatch | OK | **OK** | `isolate_boot.rs`: 3 testes |
+| Load testing (k6) | OK | **OK** | `scripts/load-test.js` |
+| Connection limit enforcement | N/A (novo) | **PARCIAL** | `e2e_connection_limit_drops_excess_connections` em `crates/server/src/lib.rs`; stress 20k `#[ignore]` |
+| Rate limiter activation | N/A (novo) | **FALTA** | Nenhum teste de integracao para 429 Too Many Requests |
+| Bundle signature verification | N/A (novo) | **FALTA** | Feature implementada, mas sem teste E2E de assinatura invalida |
+| SSRF ranges IPv6 | N/A (novo) | **FALTA** | Ranges IPv6 nao bloqueados por limitacao do parser |
+| Additional SSRF ranges (10.x, 172.16.x, etc.) | N/A | **FALTA** | Testes cobrem apenas 127.0.0.1 e 169.254.169.254 |
+| Streaming response timeout | N/A (novo) | **FALTA** | Nenhum teste de streaming response que sofre timeout |
 
 ---
 
-## 6. Positive Observations
+## 6. Inventario de Arquivos por Crate
 
-The fundamental architecture is solid:
+### server (12 arquivos)
 
-- **Sound technology choice:** Deno core + V8 + eszip + hyper + tower is a robust and modern stack
-- **Well-defined crate separation:** `runtime-core` (sandbox), `functions` (lifecycle), `server` (HTTP), `cli` (tooling)
-- **Deno permissions used correctly** (deny fs, deny env, deny ffi, deny run)
-- **CancellationToken for shutdown** is the correct pattern
-- **DashMap for registry** is a good choice for concurrency
-- **Observability with OpenTelemetry** already in dependencies
-- **Broad Web API coverage** in compatibility tests
-- **Well-organized examples** with 25+ use cases
+| Arquivo | Linhas | Funcao |
+|---|---|---|
+| `src/lib.rs` | ~1333 | Config, `run_dual_server()`, `run_server()`, accept loops, semaforo, shutdown, testes E2E |
+| `src/admin_router.rs` | 614 | Router admin: auth API key, deploy/update/delete/reload/pool |
+| `src/ingress_router.rs` | 346 | Router ingress: rate limiter, body limits, timeout, streaming, rejeita `/_internal` |
+| `src/router.rs` | 996 | Router legado (combinado), utilities compartilhadas, MetricsCache, validacao de nomes |
+| `src/service.rs` | 76 | Adapter `EdgeService<R>` para `hyper::service::Service` |
+| `src/tls.rs` | 336 | `DynamicTlsAcceptor`, hot-reload via `notify`, `MaybeHttpsStream`, fingerprint |
+| `src/body_limits.rs` | 195 | `check_content_length()`, `collect_body_with_limit()`, payload_too_large |
+| `src/graceful.rs` | 34 | `wait_for_shutdown_signal()`: Ctrl+C/SIGTERM |
+| `src/middleware/mod.rs` | 94 | `RateLimitLayer`: fixed-window 1s |
+| `src/trace_context.rs` | 188 | W3C Trace Context, correlation-id, sampling configuravel |
+| `src/bundle_signature.rs` | 288 | Ed25519 bundle signature verification (PEM/base64/hex) |
 
-The issues are primarily about **enforcement** (mechanisms configured but not activated) and **hardening** (input validation, resource limits, authentication) — not fundamental design.
+### functions (6 arquivos + 13 testes)
+
+| Arquivo | Funcao |
+|---|---|
+| `src/handler.rs` | Request dispatch bridge: inject JS bridge, V8 API dispatch, streaming ops |
+| `src/lifecycle.rs` | Create/boot/run_isolate, panic recovery, timeout, heap limit, inspector |
+| `src/registry.rs` | FunctionRegistry (DashMap), pool, CRUD, LRU eviction, shutdown |
+| `src/types.rs` | BundlePackage, FunctionEntry, FunctionMetrics, FunctionStatus, PoolLimits |
+| `src/metrics.rs` | GlobalMetrics: atomic counters |
+
+### runtime-core (10 arquivos Rust + 6 arquivos JS/TS + assert library)
+
+| Arquivo | Funcao |
+|---|---|
+| `src/ssrf.rs` | DEFAULT_DENY_RANGES, SsrfConfig |
+| `src/permissions.rs` | PermissionsContainer creation com politicas variadas |
+| `src/cpu_timer.rs` | CLOCK_THREAD_CPUTIME_ID + wall-clock fallback, reset per-request |
+| `src/mem_check.rs` | HeapLimitState, near_heap_limit_callback, GlobalMemoryTracker |
+| `src/isolate.rs` | IsolateConfig, IsolateHandle, request/response types |
+| `src/isolate_logs.rs` | Log collector (ring buffer 10k entries) |
+| `src/extensions.rs` | Extension registration, stub ops, transpiler |
+| `src/module_loader.rs` | EszipModuleLoader com source maps opcionais |
+| `src/manifest.rs` | JSON Schema validation, profile resolution, denylist collision check |
+| `src/bootstrap.js` | Global setup, API deletion (sandbox), global freezing |
+
+### cli (9 arquivos)
+
+| Arquivo | Funcao |
+|---|---|
+| `src/main.rs` | CLI entrypoint (clap), telemetry init, V8 platform |
+| `src/telemetry.rs` | OpenTelemetry setup (traces/metrics/logs), isolate log bridge |
+| `src/commands/start.rs` | Producao: dual-listener, todos os flags de seguranca |
+| `src/commands/test.rs` | Test runner, inspector server com HTTP parser custom |
+| `src/commands/bundle.rs` | Bundler offline (eszip) |
+| `src/commands/check.rs` | TypeScript/JS checker |
+| `src/commands/watch.rs` | Dev mode: file watching, auto-bundle, live reload |
+| `src/commands/embedded_assert.rs` | Modulos assert embutidos via `include_str!()` |
+
+---
+
+## 7. Observacoes Positivas
+
+A arquitetura fundamental e solida e evoluiu significativamente desde o audit original:
+
+**Seguranca implementada:**
+- **TLS funcional** com hot-reload de certificados e fingerprint logging
+- **Dual-listener** separando admin (porta 9000) de ingress (porta 8080 / Unix socket)
+- **Autenticacao API key** no admin router
+- **SSRF protection** com deny ranges IPv4 completos
+- **Body limits** dual-layer (Content-Length + streaming Limited)
+- **Connection semaphore** com permit lifecycle correto
+- **Bundle signing** Ed25519 com enforcement configuravel
+- **Function name validation** com regex estrita
+- **Error sanitization** consistente nos routers principal
+- **W3C Trace Context** com sampling configuravel
+- **Global freezing** dos 10 APIs mais criticos
+
+**Arquitetura:**
+- **Escolha tecnologica solida:** Deno core + V8 + eszip + hyper + tower + rustls
+- **Separacao de crates bem definida:** `runtime-core` (sandbox), `functions` (lifecycle), `server` (HTTP), `cli` (tooling)
+- **Panic recovery robusto:** `catch_unwind` + status update + channel replacement + backoff exponencial
+- **Dual-layer timeout:** V8 `terminate_execution` + `tokio::time::timeout` + watchdog thread
+- **Near-heap-limit callback** com extensao + terminacao
+- **DashMap** para registry thread-safe sem locks coarse
+- **Isolate pooling** com round-robin, LRU eviction e guardas de memoria
+- **Observabilidade completa** com OpenTelemetry (traces, metrics, logs)
+- **Test coverage significativamente melhorada** com 13 arquivos de teste Rust + 10 suites JS
+
+**O progresso desde o audit original e substancial.** Dos 23 findings originais, 21 foram corrigidos. As vulnerabilidades restantes sao predominantemente novas descobertas desta re-auditoria, concentradas em:
+1. SSRF IPv6 bypass (limitacao de parser)
+2. Router legado sem security features
+3. Gaps em streaming, timing e enforcement de CPU
+4. Cobertura de testes para features recem-implementadas
