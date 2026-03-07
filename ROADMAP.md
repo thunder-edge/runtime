@@ -439,7 +439,7 @@ Implementacao atual:
 
 **Ref:** AUDIT §3.4
 
-- [ ] Usar variável `EDGE_RUNTIME_ROOT` ou auto-detectar via `Cargo.toml` parent walk
+- [x] Usar variável `EDGE_RUNTIME_ROOT` ou auto-detectar via `Cargo.toml` parent walk (não necessário após adoção de assets embutidos)
 - [x] Ou embutir assets no binário via `include_str!` / `include_bytes!`
 - [x] Adicionar testes que rodam de diretórios não-raiz
 
@@ -533,7 +533,7 @@ Notas de cobertura:
 
 **Objetivo:** habilitar superfície Node mínima exigida por toolchains e libs de SSR/RSC.
 
-- [ ] Expor `globalThis.process` (subset seguro e estável)
+- [x] Expor `globalThis.process` (subset seguro e estável)
 - [ ] Expor `globalThis.Buffer` compatível (`node:buffer`)
 - [ ] Expor `setImmediate`/`clearImmediate`
 - [ ] Implementar suporte inicial aos módulos:

@@ -225,6 +225,199 @@ if (typeof __edgeOriginalFetch === "function") {
   };
 }
 
+// Minimal Node-compatible process global for SSR/tooling compatibility.
+// This intentionally exposes only a safe subset and keeps host access blocked.
+if (typeof globalThis.process === "undefined") {
+  const PROCESS_NOT_IMPLEMENTED_PREFIX = "[edge-runtime]";
+  const processStartMs = typeof performance?.now === "function" ? performance.now() : Date.now();
+  const processEnvStore = Object.create(null);
+
+  const processEnv = new Proxy(processEnvStore, {
+    get(target, prop) {
+      if (prop === Symbol.toStringTag) return "Object";
+      if (typeof prop !== "string") return target[prop];
+      return Object.prototype.hasOwnProperty.call(target, prop) ? target[prop] : undefined;
+    },
+    set(target, prop, value) {
+      if (typeof prop === "string") {
+        target[prop] = String(value);
+        return true;
+      }
+      return false;
+    },
+    deleteProperty(target, prop) {
+      if (typeof prop === "string") {
+        delete target[prop];
+        return true;
+      }
+      return false;
+    },
+    ownKeys(target) {
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      if (Object.prototype.hasOwnProperty.call(target, prop)) {
+        return {
+          value: target[prop],
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        };
+      }
+      return undefined;
+    },
+  });
+
+  function processNotImplemented(api) {
+    throw new Error(`${PROCESS_NOT_IMPLEMENTED_PREFIX} ${api} is not implemented in this runtime profile`);
+  }
+
+  function nowNs() {
+    if (typeof performance?.now === "function") {
+      return BigInt(Math.floor(performance.now() * 1_000_000));
+    }
+    return BigInt(Date.now()) * 1_000_000n;
+  }
+
+  function processNextTick(callback, ...args) {
+    if (typeof callback !== "function") {
+      throw new TypeError("process.nextTick callback must be a function");
+    }
+    queueMicrotask(() => callback(...args));
+  }
+
+  const processHrtime = Object.assign(
+    function hrtime(previousTime) {
+      if (previousTime !== undefined) {
+        if (!Array.isArray(previousTime) || previousTime.length !== 2) {
+          throw new TypeError("process.hrtime previousTime must be [seconds, nanoseconds]");
+        }
+      }
+
+      const nanos = nowNs();
+      let seconds = Number(nanos / 1_000_000_000n);
+      let nanoseconds = Number(nanos % 1_000_000_000n);
+
+      if (previousTime) {
+        seconds -= Number(previousTime[0]);
+        nanoseconds -= Number(previousTime[1]);
+        if (nanoseconds < 0) {
+          seconds -= 1;
+          nanoseconds += 1_000_000_000;
+        }
+      }
+
+      return [seconds, nanoseconds];
+    },
+    {
+      bigint: () => nowNs(),
+    },
+  );
+
+  const processVersions = Object.freeze({
+    node: "20.11.1",
+    edgeRuntime: "1",
+  });
+
+  const processObject = {
+    version: `v${processVersions.node}`,
+    versions: processVersions,
+    platform: "linux",
+    arch: "x64",
+    release: Object.freeze({
+      name: "node",
+      lts: true,
+    }),
+    title: "edge-runtime",
+    argv: ["edge-runtime"],
+    argv0: "edge-runtime",
+    execArgv: [],
+    pid: 1,
+    ppid: 0,
+    env: processEnv,
+    cwd() {
+      return "/";
+    },
+    chdir() {
+      processNotImplemented("process.chdir");
+    },
+    nextTick: processNextTick,
+    hrtime: processHrtime,
+    uptime() {
+      const now = typeof performance?.now === "function" ? performance.now() : Date.now();
+      return Math.max(0, (now - processStartMs) / 1000);
+    },
+    emitWarning(message) {
+      if (typeof console?.warn === "function") {
+        console.warn(String(message));
+      }
+    },
+    memoryUsage() {
+      return {
+        rss: 0,
+        heapTotal: 0,
+        heapUsed: 0,
+        external: 0,
+        arrayBuffers: 0,
+      };
+    },
+    cpuUsage() {
+      processNotImplemented("process.cpuUsage");
+    },
+    getActiveResourcesInfo() {
+      processNotImplemented("process.getActiveResourcesInfo");
+    },
+    kill() {
+      processNotImplemented("process.kill");
+    },
+    binding() {
+      processNotImplemented("process.binding");
+    },
+    dlopen() {
+      processNotImplemented("process.dlopen");
+    },
+    exit() {
+      processNotImplemented("process.exit");
+    },
+    abort() {
+      processNotImplemented("process.abort");
+    },
+    on() {
+      return processObject;
+    },
+    off() {
+      return processObject;
+    },
+    once() {
+      return processObject;
+    },
+    addListener() {
+      return processObject;
+    },
+    removeListener() {
+      return processObject;
+    },
+    removeAllListeners() {
+      return processObject;
+    },
+    emit() {
+      return false;
+    },
+  };
+
+  Object.defineProperty(processObject, Symbol.toStringTag, {
+    value: "process",
+    configurable: true,
+  });
+
+  Object.defineProperty(globalThis, "process", {
+    value: processObject,
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+}
+
 // === SANDBOX SECURITY ===
 // Remove dangerous APIs that should not be available in edge runtime.
 // This ensures code cannot escape the sandbox.
@@ -329,6 +522,7 @@ const criticalGlobalNames = [
   "Request",
   "Response",
   "Headers",
+  "process",
   "crypto",
   "URL",
   "URLSearchParams",

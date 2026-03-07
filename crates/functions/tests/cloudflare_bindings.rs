@@ -82,11 +82,11 @@ fn bindings_env_variables_accessible() {
 
 #[test]
 fn bindings_process_env_available() {
-    // Deno provides environment access via Deno.env, NOT via process.env
-    // process.env is Node.js specific and not available in Deno runtime
+    // Expose a safe process.env subset for Node ecosystem compatibility.
+    // It is an in-memory map and does not grant host environment access.
     assert_js_true(
-        "typeof process === 'undefined' || typeof process.env === 'undefined'",
-        "process.env correctly not available (Deno uses Deno.env instead)",
+        "typeof process === 'object' && typeof process.env === 'object'",
+        "process.env should be available as compatibility surface",
     );
 }
 
