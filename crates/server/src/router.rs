@@ -751,9 +751,17 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
         .iter()
         .map(|f| f.metrics.total_cold_start_time_ms)
         .sum();
+    let total_cold_start_us: u64 = functions
+        .iter()
+        .map(|f| f.metrics.total_cold_start_time_us)
+        .sum();
     let total_warm_start_ms: u64 = functions
         .iter()
         .map(|f| f.metrics.total_warm_start_time_ms)
+        .sum();
+    let total_warm_start_us: u64 = functions
+        .iter()
+        .map(|f| f.metrics.total_warm_start_time_us)
         .sum();
     let routing = registry.routing_metrics_snapshot();
 
@@ -767,6 +775,30 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
         total_warm_start_ms / total_requests
     } else {
         0
+    };
+
+    let avg_cold_start_us = if total_cold_starts > 0 {
+        total_cold_start_us / total_cold_starts
+    } else {
+        0
+    };
+
+    let avg_warm_start_us = if total_requests > 0 {
+        total_warm_start_us / total_requests
+    } else {
+        0
+    };
+
+    let avg_cold_start_ms_precise = if total_cold_starts > 0 {
+        total_cold_start_us as f64 / total_cold_starts as f64 / 1000.0
+    } else {
+        0.0
+    };
+
+    let avg_warm_start_ms_precise = if total_requests > 0 {
+        total_warm_start_us as f64 / total_requests as f64 / 1000.0
+    } else {
+        0.0
     };
 
     // This syscall-heavy section is why caching is needed.
@@ -791,7 +823,13 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
         "total_errors": total_errors,
         "total_cold_starts": total_cold_starts,
         "avg_cold_start_ms": avg_cold_start_ms,
+        "avg_cold_start_us": avg_cold_start_us,
+        "avg_cold_start_ms_precise": avg_cold_start_ms_precise,
         "avg_warm_start_ms": avg_warm_start_ms,
+        "avg_warm_start_us": avg_warm_start_us,
+        "avg_warm_start_ms_precise": avg_warm_start_ms_precise,
+        "total_cold_start_time_us": total_cold_start_us,
+        "total_warm_start_time_us": total_warm_start_us,
         "memory": {
             "process_memory_mb": process_memory_mb,
             "estimated_per_function_mb": estimated_memory_per_function_mb

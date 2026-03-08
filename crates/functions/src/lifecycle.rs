@@ -41,6 +41,8 @@ struct InspectorServerGuard {
 }
 
 const MAX_ISOLATE_RESTARTS: u32 = 5;
+const RUNTIME_BASE_STARTUP_SNAPSHOT: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/runtime_base.snapshot.bin"));
 
 fn fail_pending_requests(request_rx: &mut mpsc::UnboundedReceiver<IsolateRequest>, reason: &str) {
     request_rx.close();
@@ -94,16 +96,17 @@ fn apply_outgoing_proxy_env(config: &runtime_core::isolate::OutgoingProxyConfig)
         if item.is_empty() {
             continue;
         }
-        if !merged_no_proxy.iter().any(|existing| existing == item) {
-            merged_no_proxy.push(item.to_string());
+        if merged_no_proxy.iter().any(|existing| existing == item) {
+            continue;
         }
+        merged_no_proxy.push(item.to_string());
     }
 
     if merged_no_proxy.is_empty() {
         set_env_var_pair("NO_PROXY", None);
     } else {
-        let joined = merged_no_proxy.join(",");
-        set_env_var_pair("NO_PROXY", Some(&joined));
+        let merged = merged_no_proxy.join(",");
+        set_env_var_pair("NO_PROXY", Some(&merged));
     }
 }
 
@@ -477,14 +480,21 @@ async fn run_isolate(
     };
 
     // Record cold start time
-    let cold_start_duration_ms = cold_start_timer.elapsed().as_millis() as u64;
+    let cold_start_duration_us = cold_start_timer.elapsed().as_micros() as u64;
+    let cold_start_duration_ms = cold_start_duration_us / 1000;
     metrics.cold_start_count.fetch_add(1, Ordering::Relaxed);
     metrics
         .total_cold_start_time_ms
         .fetch_add(cold_start_duration_ms, Ordering::Relaxed);
+    metrics
+        .total_cold_start_time_us
+        .fetch_add(cold_start_duration_us, Ordering::Relaxed);
     info!(
-        "function '{}' cold started in {}ms (format: {})",
-        name, cold_start_duration_ms, bundle_format
+        "function '{}' cold started in {:.3}ms ({}us, format: {})",
+        name,
+        cold_start_duration_us as f64 / 1000.0,
+        cold_start_duration_us,
+        bundle_format
     );
 
     info!(
@@ -645,13 +655,17 @@ async fn run_isolate(
 
                     dispatch_result
                 };
-                let warm_duration_ms = warm_start_timer.elapsed().as_millis() as u64;
+                let warm_duration_us = warm_start_timer.elapsed().as_micros() as u64;
+                let warm_duration_ms = warm_duration_us / 1000;
                 let cpu_duration_ms = cpu_timer.stop();
 
                 metrics.active_requests.fetch_sub(1, Ordering::Relaxed);
                 metrics
                     .total_warm_start_time_ms
                     .fetch_add(warm_duration_ms, Ordering::Relaxed);
+                metrics
+                    .total_warm_start_time_us
+                    .fetch_add(warm_duration_us, Ordering::Relaxed);
                 metrics
                     .total_cpu_time_ms
                     .fetch_add(cpu_duration_ms, Ordering::Relaxed);
@@ -750,6 +764,7 @@ async fn load_from_eszip_with_init(
     manifest: Option<&ResolvedFunctionManifest>,
     function_name: &str,
 ) -> Result<(JsRuntime, Option<*mut HeapLimitState>), Error> {
+    let init_total_start = std::time::Instant::now();
     apply_outgoing_proxy_env(outgoing_proxy);
 
     // Set up V8 heap limits
@@ -772,14 +787,21 @@ async fn load_from_eszip_with_init(
         module_loader: Some(module_loader),
         create_params,
         extensions: runtime_extensions,
+        startup_snapshot: Some(RUNTIME_BASE_STARTUP_SNAPSHOT),
         ..Default::default()
     };
     extensions::set_extension_transpiler(&mut runtime_opts);
 
+    let runtime_create_start = std::time::Instant::now();
     let mut js_runtime = JsRuntime::new(runtime_opts);
+    let runtime_create_duration = runtime_create_start.elapsed();
+
+    let response_registry_start = std::time::Instant::now();
     handler::ensure_response_stream_registry(&mut js_runtime);
+    let response_registry_duration = response_registry_start.elapsed();
 
     // Register near-heap-limit callback if heap limit is configured
+    let heap_limit_start = std::time::Instant::now();
     let heap_limit_state_ptr = if config.max_heap_size_bytes > 0 {
         let v8_handle = js_runtime.v8_isolate().thread_safe_handle();
         let state = Box::new(HeapLimitState::new(
@@ -798,8 +820,10 @@ async fn load_from_eszip_with_init(
     } else {
         None
     };
+    let heap_limit_duration = heap_limit_start.elapsed();
 
     // Put permissions into the op_state for extensions
+    let permissions_start = std::time::Instant::now();
     {
         let mut env_allow = None;
         let mut net_allow = None;
@@ -826,24 +850,33 @@ async fn load_from_eszip_with_init(
             emit_to_stdout: config.print_isolate_logs,
         });
     }
+    let permissions_duration = permissions_start.elapsed();
 
     // Register the request handler bridge in the JS global scope
+    let bridge_start = std::time::Instant::now();
     handler::inject_request_bridge_with_proxy_and_config(
         &mut js_runtime,
         &OutgoingProxyConfig::default(),
         config,
     )?;
+    let bridge_duration = bridge_start.elapsed();
 
     // Initialize the inspector BEFORE loading user modules so V8 is in debug
     // mode during script compilation. This guarantees that when a debugger
     // session later sends Debugger.enable, V8 can retroactively send
     // Debugger.scriptParsed for all compiled scripts (including the user module).
+    let inspector_init_start = std::time::Instant::now();
     if config.inspect_port.is_some() {
         js_runtime.maybe_init_inspector();
     }
+    let inspector_init_duration = inspector_init_start.elapsed();
 
     // Load and evaluate the main module
+    let module_load_start = std::time::Instant::now();
     let module_id = js_runtime.load_main_es_module(root_specifier).await?;
+    let module_load_duration = module_load_start.elapsed();
+
+    let module_eval_start = std::time::Instant::now();
     let eval_result = js_runtime.mod_evaluate(module_id);
 
     js_runtime
@@ -854,6 +887,32 @@ async fn load_from_eszip_with_init(
         .await?;
 
     eval_result.await?;
+
+    let module_eval_duration = module_eval_start.elapsed();
+    let init_total_duration = init_total_start.elapsed();
+
+    info!(
+        "function '{}' eszip init stages: runtime={:.3}ms({}us) response_registry={:.3}ms({}us) heap_limit={:.3}ms({}us) permissions={:.3}ms({}us) bridge={:.3}ms({}us) inspector={:.3}ms({}us) load_module={:.3}ms({}us) evaluate={:.3}ms({}us) total={:.3}ms({}us)",
+        function_name,
+        runtime_create_duration.as_secs_f64() * 1000.0,
+        runtime_create_duration.as_micros(),
+        response_registry_duration.as_secs_f64() * 1000.0,
+        response_registry_duration.as_micros(),
+        heap_limit_duration.as_secs_f64() * 1000.0,
+        heap_limit_duration.as_micros(),
+        permissions_duration.as_secs_f64() * 1000.0,
+        permissions_duration.as_micros(),
+        bridge_duration.as_secs_f64() * 1000.0,
+        bridge_duration.as_micros(),
+        inspector_init_duration.as_secs_f64() * 1000.0,
+        inspector_init_duration.as_micros(),
+        module_load_duration.as_secs_f64() * 1000.0,
+        module_load_duration.as_micros(),
+        module_eval_duration.as_secs_f64() * 1000.0,
+        module_eval_duration.as_micros(),
+        init_total_duration.as_secs_f64() * 1000.0,
+        init_total_duration.as_micros()
+    );
 
     Ok((js_runtime, heap_limit_state_ptr))
 }

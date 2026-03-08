@@ -100,7 +100,9 @@ pub struct FunctionMetrics {
     pub total_cpu_time_ms: AtomicU64,
     pub cold_start_count: AtomicU64, // Total de cold starts (inicializações)
     pub total_cold_start_time_ms: AtomicU64, // Tempo acumulado de cold start (ms)
+    pub total_cold_start_time_us: AtomicU64, // Tempo acumulado de cold start (us)
     pub total_warm_start_time_ms: AtomicU64, // Tempo acumulado de requisições após boot (ms)
+    pub total_warm_start_time_us: AtomicU64, // Tempo acumulado de requisições após boot (us)
 }
 
 impl Default for FunctionMetrics {
@@ -112,7 +114,9 @@ impl Default for FunctionMetrics {
             total_cpu_time_ms: AtomicU64::new(0),
             cold_start_count: AtomicU64::new(0),
             total_cold_start_time_ms: AtomicU64::new(0),
+            total_cold_start_time_us: AtomicU64::new(0),
             total_warm_start_time_ms: AtomicU64::new(0),
+            total_warm_start_time_us: AtomicU64::new(0),
         }
     }
 }
@@ -121,8 +125,10 @@ impl FunctionMetrics {
     pub fn snapshot(&self) -> FunctionMetricsSnapshot {
         let total_requests = self.total_requests.load(Ordering::Relaxed);
         let total_warm_start_time_ms = self.total_warm_start_time_ms.load(Ordering::Relaxed);
+        let total_warm_start_time_us = self.total_warm_start_time_us.load(Ordering::Relaxed);
         let cold_start_count = self.cold_start_count.load(Ordering::Relaxed);
         let total_cold_start_time_ms = self.total_cold_start_time_ms.load(Ordering::Relaxed);
+        let total_cold_start_time_us = self.total_cold_start_time_us.load(Ordering::Relaxed);
 
         let avg_warm_request_ms = if total_requests > 0 {
             total_warm_start_time_ms / total_requests
@@ -130,10 +136,34 @@ impl FunctionMetrics {
             0
         };
 
+        let avg_warm_request_us = if total_requests > 0 {
+            total_warm_start_time_us / total_requests
+        } else {
+            0
+        };
+
+        let avg_warm_request_ms_precise = if total_requests > 0 {
+            total_warm_start_time_us as f64 / total_requests as f64 / 1000.0
+        } else {
+            0.0
+        };
+
         let avg_cold_start_ms = if cold_start_count > 0 {
             total_cold_start_time_ms / cold_start_count
         } else {
             0
+        };
+
+        let avg_cold_start_us = if cold_start_count > 0 {
+            total_cold_start_time_us / cold_start_count
+        } else {
+            0
+        };
+
+        let avg_cold_start_ms_precise = if cold_start_count > 0 {
+            total_cold_start_time_us as f64 / cold_start_count as f64 / 1000.0
+        } else {
+            0.0
         };
 
         FunctionMetricsSnapshot {
@@ -144,8 +174,14 @@ impl FunctionMetrics {
             cold_starts: cold_start_count,
             avg_cold_start_ms,
             total_cold_start_time_ms,
+            total_cold_start_time_us,
+            avg_cold_start_us,
+            avg_cold_start_ms_precise,
             total_warm_start_time_ms,
+            total_warm_start_time_us,
             avg_warm_request_ms,
+            avg_warm_request_us,
+            avg_warm_request_ms_precise,
         }
     }
 }
@@ -160,8 +196,14 @@ pub struct FunctionMetricsSnapshot {
     pub cold_starts: u64,              // Total de cold starts
     pub avg_cold_start_ms: u64,        // Média de cold start (ms)
     pub total_cold_start_time_ms: u64, // Tempo total de cold start (ms)
+    pub total_cold_start_time_us: u64, // Tempo total de cold start (us)
+    pub avg_cold_start_us: u64,        // Média de cold start (us)
+    pub avg_cold_start_ms_precise: f64, // Média de cold start (ms, precisão sub-ms)
     pub total_warm_start_time_ms: u64, // Tempo total de requisições após boot (ms)
+    pub total_warm_start_time_us: u64, // Tempo total de requisições após boot (us)
     pub avg_warm_request_ms: u64,      // Média de requisição warm start (ms)
+    pub avg_warm_request_us: u64,      // Média de requisição warm start (us)
+    pub avg_warm_request_ms_precise: f64, // Média de requisição warm start (ms, precisão sub-ms)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

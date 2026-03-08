@@ -10,6 +10,10 @@ use deno_core::url::Url;
 use deno_core::{
     op2, Extension, ModuleCodeString, ModuleName, OpState, RuntimeOptions, SourceMapData,
 };
+use deno_core::{
+    error::CoreError,
+    snapshot::{create_snapshot, CreateSnapshotOptions, CreateSnapshotOutput},
+};
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::write::{DeflateEncoder, GzEncoder, ZlibEncoder};
 use flate2::Compression;
@@ -574,6 +578,29 @@ pub fn get_extensions_with_edge_assert(include_edge_assert: bool) -> Vec<Extensi
 
 pub fn get_extensions() -> Vec<Extension> {
     get_extensions_with_edge_assert(false)
+}
+
+/// Create a build-time base snapshot containing the runtime extension stack.
+///
+/// The resulting blob can be passed to `RuntimeOptions::startup_snapshot` to
+/// reduce cold-start initialization work when creating new isolates.
+pub fn create_runtime_base_snapshot(
+    cargo_manifest_dir: &'static str,
+) -> Result<CreateSnapshotOutput, CoreError> {
+    let mut runtime_opts = RuntimeOptions::default();
+    set_extension_transpiler(&mut runtime_opts);
+
+    create_snapshot(
+        CreateSnapshotOptions {
+            cargo_manifest_dir,
+            startup_snapshot: None,
+            skip_op_registration: false,
+            extensions: get_extensions(),
+            extension_transpiler: runtime_opts.extension_transpiler,
+            with_runtime_cb: None,
+        },
+        None,
+    )
 }
 
 /// Set the extension transpiler on `RuntimeOptions`.
