@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub enum BundleFormat {
     /// Traditional eszip bundle (modules loaded at startup).
     Eszip,
-    /// V8 snapshot bundle (pre-initialized isolate state).
+    /// Snapshot-flavor bundle (bytecode cache envelope + ESZIP fallback).
     Snapshot,
 }
 
@@ -39,7 +39,7 @@ pub struct BundlePackage {
     pub format: BundleFormat,
     /// V8 version that the snapshot was created with (for compatibility checking).
     pub v8_version: String,
-    /// Primary bundle data (snapshot or eszip bytes).
+    /// Primary bundle data (snapshot-flavor payload or eszip bytes).
     pub bundle: Vec<u8>,
     /// Fallback eszip bytes (used if snapshot fails to load).
     pub fallback_eszip: Option<Vec<u8>>,
@@ -103,6 +103,8 @@ pub struct FunctionMetrics {
     pub total_cold_start_time_us: AtomicU64, // Tempo acumulado de cold start (us)
     pub total_warm_start_time_ms: AtomicU64, // Tempo acumulado de requisições após boot (ms)
     pub total_warm_start_time_us: AtomicU64, // Tempo acumulado de requisições após boot (us)
+    pub current_heap_used_bytes: AtomicU64,
+    pub peak_heap_used_bytes: AtomicU64,
 }
 
 impl Default for FunctionMetrics {
@@ -117,6 +119,8 @@ impl Default for FunctionMetrics {
             total_cold_start_time_us: AtomicU64::new(0),
             total_warm_start_time_ms: AtomicU64::new(0),
             total_warm_start_time_us: AtomicU64::new(0),
+            current_heap_used_bytes: AtomicU64::new(0),
+            peak_heap_used_bytes: AtomicU64::new(0),
         }
     }
 }
@@ -129,6 +133,8 @@ impl FunctionMetrics {
         let cold_start_count = self.cold_start_count.load(Ordering::Relaxed);
         let total_cold_start_time_ms = self.total_cold_start_time_ms.load(Ordering::Relaxed);
         let total_cold_start_time_us = self.total_cold_start_time_us.load(Ordering::Relaxed);
+        let current_heap_used_bytes = self.current_heap_used_bytes.load(Ordering::Relaxed);
+        let peak_heap_used_bytes = self.peak_heap_used_bytes.load(Ordering::Relaxed);
 
         let avg_warm_request_ms = if total_requests > 0 {
             total_warm_start_time_ms / total_requests
@@ -182,6 +188,10 @@ impl FunctionMetrics {
             avg_warm_request_ms,
             avg_warm_request_us,
             avg_warm_request_ms_precise,
+            current_heap_used_bytes,
+            peak_heap_used_bytes,
+            current_heap_used_mb: current_heap_used_bytes as f64 / (1024.0 * 1024.0),
+            peak_heap_used_mb: peak_heap_used_bytes as f64 / (1024.0 * 1024.0),
         }
     }
 }
@@ -204,6 +214,10 @@ pub struct FunctionMetricsSnapshot {
     pub avg_warm_request_ms: u64,      // Média de requisição warm start (ms)
     pub avg_warm_request_us: u64,      // Média de requisição warm start (us)
     pub avg_warm_request_ms_precise: f64, // Média de requisição warm start (ms, precisão sub-ms)
+    pub current_heap_used_bytes: u64,
+    pub peak_heap_used_bytes: u64,
+    pub current_heap_used_mb: f64,
+    pub peak_heap_used_mb: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -233,6 +247,8 @@ pub struct FunctionEntry {
     pub eszip_bytes: Bytes,
     /// The original bundle format used.
     pub bundle_format: BundleFormat,
+    /// V8 version embedded in the deploy package metadata.
+    pub package_v8_version: String,
     /// Handle to the running isolate (None if loading/error).
     pub isolate_handle: Option<IsolateHandle>,
     /// Additional isolate handles for the same function (pool replicas).
@@ -262,10 +278,22 @@ pub struct FunctionEntry {
 impl FunctionEntry {
     /// Create a serializable info response from this entry.
     pub fn to_info(&self) -> FunctionInfo {
+        let runtime_v8_version = get_v8_version().to_string();
+        let snapshot_compatible_with_runtime = self.package_v8_version == runtime_v8_version;
+        let requires_snapshot_regeneration =
+            self.bundle_format == BundleFormat::Snapshot && !snapshot_compatible_with_runtime;
+
         FunctionInfo {
             name: self.name.clone(),
             status: self.status,
             metrics: self.metrics.snapshot(),
+            bundle_format: self.bundle_format,
+            package_v8_version: self.package_v8_version.clone(),
+            runtime_v8_version,
+            snapshot_compatible_with_runtime,
+            requires_snapshot_regeneration,
+            stored_eszip_size_bytes: self.eszip_bytes.len() as u64,
+            can_regenerate_snapshot_from_stored_eszip: !self.eszip_bytes.is_empty(),
             pool: FunctionPoolSnapshot {
                 min: self.pool_limits.min,
                 max: self.pool_limits.max,
@@ -289,6 +317,13 @@ pub struct FunctionInfo {
     pub name: String,
     pub status: FunctionStatus,
     pub metrics: FunctionMetricsSnapshot,
+    pub bundle_format: BundleFormat,
+    pub package_v8_version: String,
+    pub runtime_v8_version: String,
+    pub snapshot_compatible_with_runtime: bool,
+    pub requires_snapshot_regeneration: bool,
+    pub stored_eszip_size_bytes: u64,
+    pub can_regenerate_snapshot_from_stored_eszip: bool,
     pub pool: FunctionPoolSnapshot,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -388,6 +423,7 @@ mod tests {
             name: "test-fn".to_string(),
             eszip_bytes: Bytes::new(),
             bundle_format: BundleFormat::Eszip,
+            package_v8_version: get_v8_version().to_string(),
             isolate_handle: None,
             extra_isolate_handles: Vec::new(),
             pool_limits: PoolLimits::default(),
@@ -405,6 +441,13 @@ mod tests {
         assert_eq!(info.name, "test-fn");
         assert_eq!(info.status, FunctionStatus::Running);
         assert_eq!(info.metrics.total_requests, 3);
+        assert_eq!(info.bundle_format, BundleFormat::Eszip);
+        assert_eq!(info.package_v8_version, get_v8_version());
+        assert_eq!(info.runtime_v8_version, get_v8_version());
+        assert!(info.snapshot_compatible_with_runtime);
+        assert!(!info.requires_snapshot_regeneration);
+        assert_eq!(info.stored_eszip_size_bytes, 0);
+        assert!(!info.can_regenerate_snapshot_from_stored_eszip);
         assert!(info.last_error.is_none());
     }
 

@@ -14,7 +14,7 @@ check-watch-disk:
 	fi
 
 watch: check-watch-disk
-	cargo run watch --path ./examples/hello/hello.ts --inspect 9229
+	cargo run watch --path ./examples/hello/hello.ts --format snapshot --inspect 9229
 
 test-js:
 	cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**" 2>&1

@@ -68,12 +68,18 @@ const generalLimiter = new RateLimiter(10, 60000); // 10 requests per minute
 const apiLimiter = new RateLimiter(5, 60000); // 5 requests per minute
 const loginLimiter = new RateLimiter(3, 300000); // 3 requests per 5 minutes
 
-// Periodic cleanup
-setInterval(() => {
+// Lazy cleanup avoids keeping a global timer alive during module bootstrap.
+let lastCleanupAt = 0;
+function maybeCleanupRateLimiters() {
+  const now = Date.now();
+  if (now - lastCleanupAt < 60000) {
+    return;
+  }
   generalLimiter.cleanup();
   apiLimiter.cleanup();
   loginLimiter.cleanup();
-}, 60000);
+  lastCleanupAt = now;
+}
 
 // Helper to get client IP
 function getClientIP(req: Request): string {
@@ -81,6 +87,8 @@ function getClientIP(req: Request): string {
 }
 
 Deno.serve((req) => {
+  maybeCleanupRateLimiters();
+
   const url = new URL(req.url);
   const clientIP = getClientIP(req);
 

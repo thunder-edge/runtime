@@ -46,7 +46,7 @@ struct Cli {
 enum Commands {
     /// Start the edge runtime server
     Start(commands::start::StartArgs),
-    /// Bundle a TypeScript/JavaScript file into an eszip
+    /// Bundle a TypeScript/JavaScript file into an ESZIP or snapshot envelope
     Bundle(commands::bundle::BundleArgs),
     /// Watch directory for TypeScript/JavaScript functions
     Watch(commands::watch::WatchArgs),

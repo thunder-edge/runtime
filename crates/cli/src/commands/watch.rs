@@ -9,6 +9,7 @@ use deno_ast::{EmitOptions, TranspileOptions};
 use deno_graph::ast::CapturingModuleAnalyzer;
 use deno_graph::source::{LoadError, LoadOptions, LoadResponse, Loader};
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph};
+use functions::types::BundlePackage;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -17,6 +18,14 @@ use url::Url;
 use runtime_core::isolate::{IsolateConfig, OutgoingProxyConfig};
 
 use super::embedded_assert;
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum WatchBundleFormat {
+    /// Standard ESZIP package.
+    Eszip,
+    /// Snapshot-flavor envelope with ESZIP fallback.
+    Snapshot,
+}
 
 #[derive(Args)]
 pub struct WatchArgs {
@@ -35,6 +44,10 @@ pub struct WatchArgs {
     /// Watch interval in milliseconds (debounce for file changes)
     #[arg(long, default_value_t = 1000)]
     interval: u64,
+
+    /// Bundle format used for hot deployments.
+    #[arg(long, value_enum, default_value = "snapshot")]
+    format: WatchBundleFormat,
 
     /// Default max heap size per isolate in MiB (0 = unlimited)
     #[arg(long, default_value_t = 128, env = "EDGE_RUNTIME_MAX_HEAP_MIB")]
@@ -325,7 +338,8 @@ pub fn run(args: WatchArgs) -> Result<(), anyhow::Error> {
         });
 
         // Initial load of functions
-        load_and_deploy_functions(path, &registry, &default_config, args.inspect).await?;
+        load_and_deploy_functions(path, &registry, &default_config, args.inspect, args.format)
+            .await?;
 
         let mut last_update = tokio::time::Instant::now();
         let debounce_duration = Duration::from_millis(args.interval);
@@ -341,7 +355,15 @@ pub fn run(args: WatchArgs) -> Result<(), anyhow::Error> {
                         if now.duration_since(last_update) >= debounce_duration {
                             println!("\n{}", "─".repeat(80));
                             println!("🔄 Changes detected, reloading...");
-                            if let Err(e) = load_and_deploy_functions(path, &registry, &default_config, args.inspect).await {
+                            if let Err(e) = load_and_deploy_functions(
+                                path,
+                                &registry,
+                                &default_config,
+                                args.inspect,
+                                args.format,
+                            )
+                            .await
+                            {
                                 eprintln!("❌ Error loading functions: {}", e);
                             }
                             last_update = now;
@@ -370,6 +392,7 @@ async fn load_and_deploy_functions(
     registry: &Arc<functions::registry::FunctionRegistry>,
     default_config: &IsolateConfig,
     inspect_base_port: Option<u16>,
+    format: WatchBundleFormat,
 ) -> anyhow::Result<()> {
     info!("scanning {}", path.display());
 
@@ -450,9 +473,9 @@ async fn load_and_deploy_functions(
             max_active_requests_per_context: default_config.max_active_requests_per_context,
         };
 
-        match bundle_file(file_path).await {
-            Ok(eszip_bytes) => {
-                let bytes = Bytes::from(eszip_bytes);
+        match bundle_file(file_path, format, &function_config).await {
+            Ok(bundle_bytes) => {
+                let bytes = Bytes::from(bundle_bytes);
 
                 // Try to deploy (or update if exists)
                 match registry
@@ -522,7 +545,11 @@ async fn load_and_deploy_functions(
     Ok(())
 }
 
-async fn bundle_file(file_path: &Path) -> anyhow::Result<Vec<u8>> {
+async fn bundle_file(
+    file_path: &Path,
+    format: WatchBundleFormat,
+    config: &IsolateConfig,
+) -> anyhow::Result<Vec<u8>> {
     let entrypoint = file_path
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("cannot resolve '{}': {e}", file_path.display()))?;
@@ -566,7 +593,21 @@ async fn bundle_file(file_path: &Path) -> anyhow::Result<Vec<u8>> {
     let eszip_bytes = eszip.into_bytes();
 
     // Package the bundle
-    let pkg = functions::types::BundlePackage::eszip_only(eszip_bytes);
+    let pkg = match format {
+        WatchBundleFormat::Eszip => BundlePackage::eszip_only(eszip_bytes),
+        WatchBundleFormat::Snapshot => {
+            let bytecode_cache = functions::snapshot::create_function_bytecode_cache_from_eszip(
+                eszip_bytes.clone(),
+                config,
+                &OutgoingProxyConfig::default(),
+                None,
+                &file_path.display().to_string(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to create function bytecode cache: {e}"))?;
+            BundlePackage::snapshot_with_fallback(bytecode_cache, eszip_bytes)
+        }
+    };
     let bundle_data = bincode::serialize(&pkg)?;
 
     Ok(bundle_data)
@@ -658,6 +699,7 @@ mod tests {
             host: "0.0.0.0".to_string(),
             port: 9000,
             interval: 1000,
+            format: WatchBundleFormat::Snapshot,
             max_heap_mib: 128,
             cpu_time_limit_ms: 50_000,
             wall_clock_timeout_ms: 60_000,

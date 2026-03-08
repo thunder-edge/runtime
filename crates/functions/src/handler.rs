@@ -164,9 +164,16 @@ pub fn inject_request_bridge_with_proxy_and_config(
         "edge-internal:///runtime_bridge.js",
         deno_core::ascii_str!(
             r#"
+            const __existingEdgeRuntime = globalThis.__edgeRuntime;
+            const __existingPrimaryHandler = __existingEdgeRuntime?.handler ?? null;
+            const __existingHandlers =
+                __existingEdgeRuntime?._handlers instanceof Map
+                    ? __existingEdgeRuntime._handlers
+                    : new Map();
+
             globalThis.__edgeRuntime = {
-                handler: null,
-                _handlers: new Map(),
+                handler: __existingPrimaryHandler,
+                _handlers: __existingHandlers,
                 registerHandler(fn) {
                     this.handler = fn;
                     const bootstrapContextId =

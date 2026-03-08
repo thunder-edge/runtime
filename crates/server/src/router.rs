@@ -817,6 +817,178 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
         0.0
     };
 
+    let mut cold_slowest: Vec<_> = functions
+        .iter()
+        .filter(|f| f.metrics.cold_starts > 0)
+        .collect();
+    cold_slowest.sort_by(|a, b| {
+        b.metrics
+            .avg_cold_start_ms_precise
+            .partial_cmp(&a.metrics.avg_cold_start_ms_precise)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let cold_slowest: Vec<_> = cold_slowest
+        .into_iter()
+        .take(10)
+        .map(|f| {
+            serde_json::json!({
+                "name": f.name,
+                "avg_cold_start_ms": f.metrics.avg_cold_start_ms_precise,
+                "cold_starts": f.metrics.cold_starts,
+            })
+        })
+        .collect();
+
+    let mut cold_fastest: Vec<_> = functions
+        .iter()
+        .filter(|f| f.metrics.cold_starts > 0)
+        .collect();
+    cold_fastest.sort_by(|a, b| {
+        a.metrics
+            .avg_cold_start_ms_precise
+            .partial_cmp(&b.metrics.avg_cold_start_ms_precise)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let cold_fastest: Vec<_> = cold_fastest
+        .into_iter()
+        .take(10)
+        .map(|f| {
+            serde_json::json!({
+                "name": f.name,
+                "avg_cold_start_ms": f.metrics.avg_cold_start_ms_precise,
+                "cold_starts": f.metrics.cold_starts,
+            })
+        })
+        .collect();
+
+    let mut warm_slowest: Vec<_> = functions
+        .iter()
+        .filter(|f| f.metrics.total_requests > 0)
+        .collect();
+    warm_slowest.sort_by(|a, b| {
+        b.metrics
+            .avg_warm_request_ms_precise
+            .partial_cmp(&a.metrics.avg_warm_request_ms_precise)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let warm_slowest: Vec<_> = warm_slowest
+        .into_iter()
+        .take(10)
+        .map(|f| {
+            serde_json::json!({
+                "name": f.name,
+                "avg_warm_request_ms": f.metrics.avg_warm_request_ms_precise,
+                "requests": f.metrics.total_requests,
+            })
+        })
+        .collect();
+
+    let mut warm_fastest: Vec<_> = functions
+        .iter()
+        .filter(|f| f.metrics.total_requests > 0)
+        .collect();
+    warm_fastest.sort_by(|a, b| {
+        a.metrics
+            .avg_warm_request_ms_precise
+            .partial_cmp(&b.metrics.avg_warm_request_ms_precise)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let warm_fastest: Vec<_> = warm_fastest
+        .into_iter()
+        .take(10)
+        .map(|f| {
+            serde_json::json!({
+                "name": f.name,
+                "avg_warm_request_ms": f.metrics.avg_warm_request_ms_precise,
+                "requests": f.metrics.total_requests,
+            })
+        })
+        .collect();
+
+    let mut cpu_bound: Vec<_> = functions
+        .iter()
+        .filter_map(|f| {
+            if f.metrics.total_requests == 0 || f.metrics.avg_warm_request_ms_precise <= 0.0 {
+                return None;
+            }
+            let avg_cpu_ms = f.metrics.total_cpu_time_ms as f64 / f.metrics.total_requests as f64;
+            let ratio = avg_cpu_ms / f.metrics.avg_warm_request_ms_precise;
+            Some((f, avg_cpu_ms, ratio))
+        })
+        .collect();
+    cpu_bound.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    let cpu_bound: Vec<_> = cpu_bound
+        .into_iter()
+        .take(10)
+        .map(|(f, avg_cpu_ms, ratio)| {
+            serde_json::json!({
+                "name": f.name,
+                "cpu_bound_ratio": ratio,
+                "avg_cpu_time_ms_per_request": avg_cpu_ms,
+                "avg_warm_request_ms": f.metrics.avg_warm_request_ms_precise,
+            })
+        })
+        .collect();
+
+    // "blocking_cpu" is interpreted as heavy synchronous CPU occupancy per request.
+    let mut blocking_cpu: Vec<_> = functions
+        .iter()
+        .filter(|f| f.metrics.total_requests > 0)
+        .map(|f| {
+            let avg_cpu_ms = f.metrics.total_cpu_time_ms as f64 / f.metrics.total_requests as f64;
+            (f, avg_cpu_ms)
+        })
+        .collect();
+    blocking_cpu.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let blocking_cpu: Vec<_> = blocking_cpu
+        .into_iter()
+        .take(10)
+        .map(|(f, avg_cpu_ms)| {
+            serde_json::json!({
+                "name": f.name,
+                "avg_cpu_time_ms_per_request": avg_cpu_ms,
+                "requests": f.metrics.total_requests,
+            })
+        })
+        .collect();
+
+    let mut memory_usage: Vec<_> = functions
+        .iter()
+        .filter(|f| f.metrics.peak_heap_used_bytes > 0)
+        .collect();
+    memory_usage.sort_by(|a, b| {
+        b.metrics
+            .peak_heap_used_mb
+            .partial_cmp(&a.metrics.peak_heap_used_mb)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let memory_usage: Vec<_> = memory_usage
+        .into_iter()
+        .take(10)
+        .map(|f| {
+            serde_json::json!({
+                "name": f.name,
+                "peak_heap_used_mb": f.metrics.peak_heap_used_mb,
+                "current_heap_used_mb": f.metrics.current_heap_used_mb,
+                "peak_heap_used_bytes": f.metrics.peak_heap_used_bytes,
+            })
+        })
+        .collect();
+
+    let mut cpu_time_total: Vec<_> = functions.iter().collect();
+    cpu_time_total.sort_by(|a, b| b.metrics.total_cpu_time_ms.cmp(&a.metrics.total_cpu_time_ms));
+    let cpu_time_total: Vec<_> = cpu_time_total
+        .into_iter()
+        .take(10)
+        .map(|f| {
+            serde_json::json!({
+                "name": f.name,
+                "total_cpu_time_ms": f.metrics.total_cpu_time_ms,
+                "requests": f.metrics.total_requests,
+            })
+        })
+        .collect();
+
     let body = serde_json::json!({
         "function_count": function_count,
         "total_requests": total_requests,
@@ -841,6 +1013,16 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
             "saturated_rejections": routing.saturated_rejections,
             "saturated_contexts": routing.saturated_contexts,
             "saturated_isolates": routing.saturated_isolates,
+        },
+        "top10": {
+            "cold_slowest": cold_slowest,
+            "cold_fastest": cold_fastest,
+            "warm_slowest": warm_slowest,
+            "warm_fastest": warm_fastest,
+            "cpu_bound": cpu_bound,
+            "blocking_cpu": blocking_cpu,
+            "memory_usage": memory_usage,
+            "cpu_time_total": cpu_time_total,
         },
         "functions": functions,
     });

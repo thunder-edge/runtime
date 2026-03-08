@@ -29,7 +29,7 @@ use runtime_core::isolate::{
 use runtime_core::isolate_logs::IsolateLogConfig;
 use runtime_core::manifest::ResolvedFunctionManifest;
 use runtime_core::mem_check::{near_heap_limit_callback, HeapLimitState};
-use runtime_core::module_loader::EszipModuleLoader;
+use runtime_core::module_loader::{EszipModuleLoader, ModuleCodeCacheMap};
 use runtime_core::permissions::create_permissions_with_policy;
 
 use crate::handler;
@@ -198,8 +198,10 @@ pub async fn create_function(
     let isolate_metrics = metrics.clone();
     let isolate_outgoing_proxy = outgoing_proxy.clone();
     let bundle_format = bundle_package.format;
+    let package_v8_version = bundle_package.v8_version.clone();
+    let package_v8_version_for_thread = package_v8_version.clone();
     let snapshot_bytes = if bundle_package.format == BundleFormat::Snapshot {
-        Some(bundle_package.bundle.clone())
+        Some(Box::leak(bundle_package.bundle.clone().into_boxed_slice()) as &'static [u8])
     } else {
         None
     };
@@ -240,8 +242,8 @@ pub async fn create_function(
                                 shutdown.clone(),
                                 isolate_metrics.clone(),
                                 bundle_format,
-                                snapshot_bytes.clone(),
-                                bundle_package.v8_version.clone(),
+                                snapshot_bytes,
+                                package_v8_version_for_thread.clone(),
                                 inspector_stop_for_thread.clone(),
                                 supervisor_handle.clone(),
                             )
@@ -321,6 +323,7 @@ pub async fn create_function(
         name,
         eszip_bytes: Bytes::from(eszip_bytes_vec),
         bundle_format,
+        package_v8_version,
         isolate_handle: Some(handle),
         extra_isolate_handles: Vec::new(),
         pool_limits: PoolLimits::default(),
@@ -348,21 +351,23 @@ async fn run_isolate(
     shutdown: CancellationToken,
     metrics: Arc<FunctionMetrics>,
     bundle_format: BundleFormat,
-    snapshot_bytes: Option<Vec<u8>>,
+    snapshot_bytes: Option<&'static [u8]>,
     v8_version: String,
     inspector_stop: Option<Arc<AtomicBool>>,
     liveness_handle: IsolateHandle,
 ) -> Result<(), Error> {
     // Track cold start timing
     let cold_start_timer = std::time::Instant::now();
+    let snapshot_code_cache = snapshot_bytes
+        .and_then(|payload| crate::snapshot::decode_function_bytecode_cache(payload));
 
     // Try to load from snapshot first, fall back to eszip if needed
     let (mut js_runtime, heap_limit_state_ptr) = match bundle_format {
         BundleFormat::Snapshot => {
             if v8_version == deno_core::v8::VERSION_STRING {
                 if let Some(snapshot_data) = snapshot_bytes {
-                    info!("loading '{}' from V8 snapshot", name);
-                    match load_from_snapshot(&snapshot_data, &config).await {
+                    info!("loading '{}' from snapshot-flavor payload", name);
+                    match load_from_snapshot(snapshot_data, &config).await {
                         Ok(rt) => (rt, None),
                         Err(e) => {
                             warn!("failed to load snapshot: {}, trying fallback eszip", e);
@@ -373,6 +378,7 @@ async fn run_isolate(
                                 &outgoing_proxy,
                                 manifest.as_ref(),
                                 &name,
+                                snapshot_code_cache.clone(),
                             )
                             .await?
                         }
@@ -386,12 +392,14 @@ async fn run_isolate(
                         &outgoing_proxy,
                         manifest.as_ref(),
                         &name,
+                        snapshot_code_cache.clone(),
                     )
                     .await?
                 }
             } else {
                 warn!(
-                    "snapshot V8 version mismatch (snapshot: {}, current: {}), using eszip fallback",
+                    "snapshot V8 version mismatch for function '{}' (snapshot: {}, current: {}): using eszip fallback; regenerate snapshot with current runtime V8",
+                    name,
                     v8_version,
                     deno_core::v8::VERSION_STRING
                 );
@@ -402,6 +410,7 @@ async fn run_isolate(
                     &outgoing_proxy,
                     manifest.as_ref(),
                     &name,
+                    snapshot_code_cache.clone(),
                 )
                 .await?
             }
@@ -414,6 +423,7 @@ async fn run_isolate(
                 &outgoing_proxy,
                 manifest.as_ref(),
                 &name,
+                None,
             )
             .await?
         }
@@ -684,6 +694,26 @@ async fn run_isolate(
                     })
                     .await;
 
+                // Capture current/peak heap usage after request processing.
+                let heap_stats = js_runtime.v8_isolate().get_heap_statistics();
+                let used_heap_bytes = (heap_stats.used_heap_size() + heap_stats.external_memory())
+                    as u64;
+                metrics
+                    .current_heap_used_bytes
+                    .store(used_heap_bytes, Ordering::Relaxed);
+                let mut prev_peak = metrics.peak_heap_used_bytes.load(Ordering::Relaxed);
+                while used_heap_bytes > prev_peak {
+                    match metrics.peak_heap_used_bytes.compare_exchange_weak(
+                        prev_peak,
+                        used_heap_bytes,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(actual) => prev_peak = actual,
+                    }
+                }
+
                 // Check if heap limit was exceeded (via near-heap-limit callback)
                 if let Some(state_ptr) = heap_limit_state_ptr {
                     // Safety: we created this pointer and it's valid until we drop it
@@ -740,17 +770,11 @@ async fn run_isolate(
 /// For now, this falls back to eszip loading. In the future, we can optimize
 /// this by pre-compiling snapshots and embedding them as static data.
 async fn load_from_snapshot(
-    _snapshot_data: &[u8],
+    _snapshot_data: &'static [u8],
     _config: &IsolateConfig,
 ) -> Result<JsRuntime, Error> {
-    // TODO: Implement snapshot loading once deno_core supports dynamic snapshot loading
-    // Currently, snapshots need 'static lifetime data which is incompatible with
-    // runtime-created snapshots. Options:
-    // 1. Pre-compile snapshots at build time
-    // 2. Wait for deno_core to support owned snapshot data
-    // 3. Store snapshots in mmap'd files
     Err(anyhow::anyhow!(
-        "snapshot loading not yet supported - using eszip fallback"
+        "snapshot execution path temporarily disabled for runtime stability - using eszip fallback"
     ))
 }
 
@@ -763,6 +787,7 @@ async fn load_from_eszip_with_init(
     outgoing_proxy: &OutgoingProxyConfig,
     manifest: Option<&ResolvedFunctionManifest>,
     function_name: &str,
+    code_cache: Option<ModuleCodeCacheMap>,
 ) -> Result<(JsRuntime, Option<*mut HeapLimitState>), Error> {
     let init_total_start = std::time::Instant::now();
     apply_outgoing_proxy_env(outgoing_proxy);
@@ -775,9 +800,12 @@ async fn load_from_eszip_with_init(
     };
 
     // Create JsRuntime with the eszip module loader
-    let module_loader = std::rc::Rc::new(EszipModuleLoader::new_with_source_maps(
+    let preloaded_code_cache_count = code_cache.as_ref().map(|c| c.len()).unwrap_or(0);
+
+    let module_loader = std::rc::Rc::new(EszipModuleLoader::new_with_source_maps_and_code_cache(
         eszip.clone(),
         config.enable_source_maps,
+        code_cache,
     ));
 
     let mut runtime_extensions = extensions::get_extensions();
@@ -892,7 +920,7 @@ async fn load_from_eszip_with_init(
     let init_total_duration = init_total_start.elapsed();
 
     info!(
-        "function '{}' eszip init stages: runtime={:.3}ms({}us) response_registry={:.3}ms({}us) heap_limit={:.3}ms({}us) permissions={:.3}ms({}us) bridge={:.3}ms({}us) inspector={:.3}ms({}us) load_module={:.3}ms({}us) evaluate={:.3}ms({}us) total={:.3}ms({}us)",
+        "function '{}' eszip init stages: runtime={:.3}ms({}us) response_registry={:.3}ms({}us) heap_limit={:.3}ms({}us) permissions={:.3}ms({}us) bridge={:.3}ms({}us) inspector={:.3}ms({}us) load_module={:.3}ms({}us) evaluate={:.3}ms({}us) total={:.3}ms({}us) preloaded_code_cache_modules={}",
         function_name,
         runtime_create_duration.as_secs_f64() * 1000.0,
         runtime_create_duration.as_micros(),
@@ -911,7 +939,8 @@ async fn load_from_eszip_with_init(
         module_eval_duration.as_secs_f64() * 1000.0,
         module_eval_duration.as_micros(),
         init_total_duration.as_secs_f64() * 1000.0,
-        init_total_duration.as_micros()
+        init_total_duration.as_micros(),
+        preloaded_code_cache_count
     );
 
     Ok((js_runtime, heap_limit_state_ptr))

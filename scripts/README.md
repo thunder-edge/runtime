@@ -6,6 +6,7 @@ This directory contains scripts for bundling, deploying, and load-testing the De
 
 ### Bundle Scripts
 - **`bundle-eszip.sh`** - Bundle all examples in ESZIP format
+- **`bundle-snapshot.sh`** - Bundle all examples in snapshot format (with ESZIP fallback) as a smoke test of `examples/`
 
 ### Deployment & Test Scripts
 - **`deploy-and-test-eszip.sh`** - Deploy ESZIP bundles and run k6 load tests

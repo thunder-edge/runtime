@@ -7,12 +7,25 @@ use deno_graph::ast::CapturingModuleAnalyzer;
 use deno_graph::source::{LoadError, LoadOptions, LoadResponse, Loader};
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph};
 use functions::types::BundlePackage;
+use runtime_core::isolate::{IsolateConfig, OutgoingProxyConfig};
 use url::Url;
 
 use super::check::{
     deno_binary_exists, run_deno_check_for_files, run_syntax_check_for_files_async,
 };
 use super::embedded_assert;
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum BundleOutputFormat {
+    /// Standard ESZIP package.
+    Eszip,
+    /// Snapshot-flavor envelope with ESZIP fallback.
+    ///
+    /// NOTE: currently packages per-module bytecode cache metadata that is
+    /// consumed during ESZIP startup; static runtime startup snapshot remains
+    /// in use.
+    Snapshot,
+}
 
 #[derive(Args)]
 pub struct BundleArgs {
@@ -23,6 +36,10 @@ pub struct BundleArgs {
     /// Output bundle file path
     #[arg(short, long)]
     output: String,
+
+    /// Bundle output format.
+    #[arg(long, value_enum, default_value = "eszip")]
+    format: BundleOutputFormat,
 }
 
 /// A simple file-system loader for deno_graph.
@@ -160,16 +177,31 @@ async fn run_async(args: BundleArgs) -> Result<(), anyhow::Error> {
     let eszip_bytes = eszip.into_bytes();
 
     // 3. Package and write bundle
-    let pkg = BundlePackage::eszip_only(eszip_bytes);
+    let pkg = match args.format {
+        BundleOutputFormat::Eszip => BundlePackage::eszip_only(eszip_bytes),
+        BundleOutputFormat::Snapshot => {
+            let bytecode_cache = functions::snapshot::create_function_bytecode_cache_from_eszip(
+                eszip_bytes.clone(),
+                &IsolateConfig::default(),
+                &OutgoingProxyConfig::default(),
+                None,
+                &args.entrypoint,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to create function bytecode cache: {e}"))?;
+            BundlePackage::snapshot_with_fallback(bytecode_cache, eszip_bytes)
+        }
+    };
     let bundle_data = bincode::serialize(&pkg)?;
 
     std::fs::write(&args.output, &bundle_data)
         .map_err(|e| anyhow::anyhow!("failed to write bundle: {e}"))?;
 
     tracing::info!(
-        "wrote {} bytes to '{}' (eszip format)",
+        "wrote {} bytes to '{}' ({:?} format)",
         bundle_data.len(),
-        args.output
+        args.output,
+        args.format
     );
 
     Ok(())

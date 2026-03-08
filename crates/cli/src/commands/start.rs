@@ -142,7 +142,7 @@ pub struct StartArgs {
     /// Global max isolates across all functions in this process.
     #[arg(
         long,
-        default_value_t = 256,
+        default_value_t = 64,
         env = "EDGE_RUNTIME_POOL_GLOBAL_MAX_ISOLATES"
     )]
     pool_global_max_isolates: usize,
@@ -166,7 +166,7 @@ pub struct StartArgs {
     /// Max logical contexts tracked per isolate.
     #[arg(
         long,
-        default_value_t = 8,
+        default_value_t = 64,
         env = "EDGE_RUNTIME_MAX_CONTEXTS_PER_ISOLATE"
     )]
     max_contexts_per_isolate: usize,

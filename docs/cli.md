@@ -1,4 +1,4 @@
-# Deno Edge Runtime CLI
+# Thunder Edge Runtime CLI
 
 This document describes the `edge-cli` crate command-line interface exposed by the `thunder` binary.
 
@@ -43,6 +43,15 @@ Bundle one entrypoint into ESZIP package:
 
 ```bash
 cargo run -- bundle --entrypoint ./examples/hello/hello.ts --output ./hello.eszip
+```
+
+Bundle with explicit format (`eszip` or `snapshot` envelope):
+
+```bash
+cargo run -- bundle \
+  --entrypoint ./examples/hello/hello.ts \
+  --output ./hello.snapshot.bundle \
+  --format snapshot
 ```
 
 ## Global CLI Syntax
@@ -178,6 +187,33 @@ These are consumed mainly by `start` and `watch`:
 - `EDGE_RUNTIME_OTEL_ISOLATE_LOG_BATCH_SIZE`
 
 ## Command Reference
+
+## `bundle`
+
+Bundles a JS/TS entrypoint into a deployable package.
+
+### Usage
+
+```bash
+thunder bundle --entrypoint <FILE> --output <FILE> [--format <eszip|snapshot>]
+```
+
+### Options
+
+- `-e, --entrypoint <FILE>`
+  - Entrypoint JS/TS file.
+- `-o, --output <FILE>`
+  - Output bundle file path.
+- `--format <eszip|snapshot>`
+  - Default: `eszip`
+  - `eszip`: writes a standard ESZIP package.
+  - `snapshot`: writes a snapshot envelope with embedded ESZIP fallback.
+
+Snapshot note:
+
+- Snapshot output is packaged with ESZIP fallback for availability.
+- If snapshot execution is unavailable or incompatible at runtime, startup falls back to ESZIP automatically.
+- In V8 version mismatch cases, regenerate snapshot bundles with the current runtime V8.
 
 ## `start`
 
@@ -463,6 +499,22 @@ All endpoints below are served on the **admin listener** (default port 9000):
 | `/_internal/functions/{name}/pool` | GET | Get per-function pool limits |
 | `/_internal/functions/{name}/pool` | PUT | Update per-function pool limits (`min`, `max`) |
 
+#### Snapshot/V8 Compatibility
+
+`GET /_internal/functions` and `GET /_internal/functions/{name}` include snapshot compatibility metadata per function:
+
+- `bundle_format`: `eszip` or `snapshot`
+- `package_v8_version`: V8 version recorded in the deploy package metadata
+- `runtime_v8_version`: V8 version currently running in this runtime process
+- `snapshot_compatible_with_runtime`: `true` when package and runtime V8 versions match
+- `requires_snapshot_regeneration`: `true` when function format is `snapshot` and V8 versions mismatch
+- `can_regenerate_snapshot_from_stored_eszip`: indicates whether runtime still has stored ESZIP assets to rebuild from
+
+Operational requirement:
+
+- If `requires_snapshot_regeneration = true`, regenerate the function snapshot using the current runtime/toolchain V8 and redeploy.
+- During mismatch, runtime falls back to ESZIP startup for availability, but cold start may regress until snapshot is regenerated.
+
 When bundle signature verification is enabled, deploy/update must include:
 
 - Header: `x-bundle-signature-ed25519: <base64-signature>`
@@ -665,6 +717,11 @@ thunder watch [OPTIONS]
 - `--interval <INTERVAL>`
   - Debounce in milliseconds for reload after file changes.
   - Default: `1000`
+- `--format <eszip|snapshot>`
+  - Bundle format used by watch auto-deploy pipeline.
+  - Default: `snapshot`
+  - `snapshot` packages a snapshot envelope with ESZIP fallback.
+  - Snapshot execution may still fallback to ESZIP depending on runtime snapshot support.
 - `--max-heap-mib <MAX_HEAP_MIB>`
   - Default: `128`
   - `0` means unlimited.
@@ -722,6 +779,7 @@ thunder watch [OPTIONS]
   - `node_modules`, `dist`, `build`, `.next`, `.deno`, `target`
 - Converts file paths to function names by joining path segments with `-` and removing extension.
 - First deployment uses `deploy`; existing function names are updated with `update`.
+- Watch bundling defaults to `snapshot` package format (with ESZIP fallback at runtime).
 - Server in watch mode uses immediate shutdown behavior (`graceful_exit_deadline_secs = 0`).
 - **Network behavior in watch mode**:
   - SSRF protection is disabled.

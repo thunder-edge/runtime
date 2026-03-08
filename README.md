@@ -110,6 +110,15 @@ cargo run -- bundle \
   --output ./hello.eszip
 ```
 
+Or generate a snapshot envelope bundle (with ESZIP fallback):
+
+```bash
+cargo run -- bundle \
+  --entrypoint ./examples/hello/hello.ts \
+  --output ./hello.snapshot.bundle \
+  --format snapshot
+```
+
 3. Deploy the function:
 
 ```bash
@@ -135,6 +144,7 @@ curl http://localhost:9000/_internal/metrics
 ```bash
 cargo run -- start
 cargo run -- bundle --entrypoint ./examples/hello/hello.ts --output ./hello.eszip
+cargo run -- bundle --entrypoint ./examples/hello/hello.ts --output ./hello.snapshot.bundle --format snapshot
 cargo run -- watch --path ./examples --port 9000
 cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**"
 cargo run -- check --path "./**/*.{ts,js,mts,mjs,tsx,jsx,cjs,cts}"
@@ -171,6 +181,20 @@ Main endpoints under `/_internal`:
 Function execution route:
 
 - `/{function_name}/...`
+
+## Snapshot Compatibility Note
+
+If you deploy snapshot-formatted bundles, snapshots are tied to the V8 version that produced them.
+
+- On V8/runtime upgrades, existing snapshots may become incompatible.
+- Runtime automatically falls back to ESZIP startup when mismatch is detected.
+- Regenerate and redeploy snapshots after V8 changes to restore optimal cold-start performance.
+
+Use `GET /_internal/functions` or `GET /_internal/functions/{name}` to inspect:
+
+- `package_v8_version`
+- `runtime_v8_version`
+- `requires_snapshot_regeneration`
 
 ## Development Mode with Watch
 
