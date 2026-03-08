@@ -255,6 +255,14 @@ pub struct StartArgs {
     )]
     zlib_operation_timeout_ms: u64,
 
+    /// Maximum outbound network requests per execution (0 = unlimited).
+    #[arg(
+        long,
+        default_value_t = 0,
+        env = "EDGE_RUNTIME_EGRESS_MAX_REQUESTS_PER_EXECUTION"
+    )]
+    egress_max_requests_per_execution: usize,
+
     /// Source map handling for modules loaded from eszip
     #[arg(
         long,
@@ -324,6 +332,7 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             zlib_max_output_length: args.zlib_max_output_length,
             zlib_max_input_length: args.zlib_max_input_length,
             zlib_operation_timeout_ms: args.zlib_operation_timeout_ms,
+            egress_max_requests_per_execution: args.egress_max_requests_per_execution,
         };
 
         let pool_config = PoolRuntimeConfig {

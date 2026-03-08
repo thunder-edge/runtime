@@ -83,6 +83,10 @@
         "vfsMaxFileBytes": {
           "type": "integer",
           "minimum": 0
+        },
+        "egressMaxRequestsPerExecution": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -172,6 +176,10 @@
                 "minimum": 0
               },
               "vfsMaxFileBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "egressMaxRequestsPerExecution": {
                 "type": "integer",
                 "minimum": 0
               }

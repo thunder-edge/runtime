@@ -67,6 +67,13 @@ impl FunctionRegistry {
         if let Some(vfs_max_file_bytes) = manifest.resources.vfs_max_file_bytes {
             config.vfs_max_file_bytes = vfs_max_file_bytes as usize;
         }
+
+        if let Some(egress_max_requests_per_execution) =
+            manifest.resources.egress_max_requests_per_execution
+        {
+            config.egress_max_requests_per_execution =
+                egress_max_requests_per_execution as usize;
+        }
     }
 
     fn all_request_channels_closed(&self) -> bool {

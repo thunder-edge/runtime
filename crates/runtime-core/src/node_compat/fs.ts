@@ -65,6 +65,62 @@ function getVfsState(): VfsState {
   return g.__edgeVfsState;
 }
 
+function ensureVfsIntegrity(state: VfsState, syscall: string): void {
+  if (!(state.files instanceof Map) || !(state.dirs instanceof Set)) {
+    fsError("EIO", 5, syscall, undefined, "[edge-runtime] VFS integrity check failed: invalid container state");
+  }
+
+  for (const required of ["/", "/bundle", "/tmp", "/dev"]) {
+    if (!state.dirs.has(required)) {
+      fsError("EIO", 5, syscall, required, `[edge-runtime] VFS integrity check failed: missing required dir '${required}'`);
+    }
+  }
+
+  if (!Number.isFinite(state.usedBytes) || state.usedBytes < 0) {
+    fsError("EIO", 5, syscall, undefined, "[edge-runtime] VFS integrity check failed: invalid usedBytes counter");
+  }
+
+  if (!Number.isFinite(state.config.totalQuotaBytes) || !Number.isFinite(state.config.maxFileBytes)) {
+    fsError("EIO", 5, syscall, undefined, "[edge-runtime] VFS integrity check failed: invalid VFS config");
+  }
+
+  if (state.config.totalQuotaBytes < 0 || state.config.maxFileBytes < 0) {
+    fsError("EIO", 5, syscall, undefined, "[edge-runtime] VFS integrity check failed: negative quotas");
+  }
+
+  if (state.config.maxFileBytes > state.config.totalQuotaBytes && state.config.totalQuotaBytes > 0) {
+    fsError("EIO", 5, syscall, undefined, "[edge-runtime] VFS integrity check failed: maxFileBytes exceeds totalQuotaBytes");
+  }
+
+  let computedUsedBytes = 0;
+  for (const [path, data] of state.files) {
+    if (typeof path !== "string" || !path.startsWith("/")) {
+      fsError("EIO", 5, syscall, String(path), "[edge-runtime] VFS integrity check failed: invalid file path");
+    }
+    if (!(data instanceof Uint8Array)) {
+      fsError("EIO", 5, syscall, path, `[edge-runtime] VFS integrity check failed: invalid file bytes for '${path}'`);
+    }
+    if (path !== "/dev/null" && !state.dirs.has(parentDir(path))) {
+      fsError("EIO", 5, syscall, path, `[edge-runtime] VFS integrity check failed: missing parent directory for '${path}'`);
+    }
+    computedUsedBytes += data.byteLength;
+  }
+
+  if (computedUsedBytes !== state.usedBytes) {
+    fsError(
+      "EIO",
+      5,
+      syscall,
+      undefined,
+      `[edge-runtime] VFS integrity check failed: usedBytes mismatch (state=${state.usedBytes}, computed=${computedUsedBytes})`,
+    );
+  }
+
+  if (state.usedBytes > state.config.totalQuotaBytes) {
+    fsError("EIO", 5, syscall, undefined, "[edge-runtime] VFS integrity check failed: usedBytes exceeds totalQuotaBytes");
+  }
+}
+
 function fsError(code: string, errno: number, syscall: string, path?: string, message?: string): never {
   const err = new Error(
     message ?? `[edge-runtime] ${syscall} failed for '${path ?? ""}' (${code})`,
@@ -158,6 +214,7 @@ function statFrom(path: string, isDir: boolean, size: number): NodeStats {
 
 function assertPathExists(path: string, syscall: string): void {
   const state = getVfsState();
+  ensureVfsIntegrity(state, syscall);
   if (state.files.has(path) || state.dirs.has(path)) return;
   fsError("ENOENT", 2, syscall, path, `[edge-runtime] ${syscall} '${path}': no such file or directory`);
 }
@@ -165,6 +222,7 @@ function assertPathExists(path: string, syscall: string): void {
 function existsSync(path: unknown): boolean {
   const p = normalizePath(path);
   const state = getVfsState();
+  ensureVfsIntegrity(state, "exists");
   return state.files.has(p) || state.dirs.has(p);
 }
 
@@ -175,6 +233,7 @@ function accessSync(path: unknown): void {
 function readFileBytes(path: unknown, syscall: string): Bytes {
   const p = normalizePath(path);
   const state = getVfsState();
+  ensureVfsIntegrity(state, syscall);
   if (state.dirs.has(p)) {
     fsError("EISDIR", 21, syscall, p, `[edge-runtime] ${syscall} '${p}': illegal operation on a directory`);
   }
@@ -200,6 +259,7 @@ function writeFileBytes(path: unknown, data: Bytes, syscall: string): void {
   if (isDevNull(p)) return;
 
   const state = getVfsState();
+  ensureVfsIntegrity(state, syscall);
   const parent = parentDir(p);
   if (!state.dirs.has(parent)) {
     fsError("ENOENT", 2, syscall, p, `[edge-runtime] ${syscall} '${p}': parent directory does not exist`);
@@ -257,6 +317,7 @@ function mkdirSync(path: unknown, options?: unknown): void {
   }
 
   const state = getVfsState();
+  ensureVfsIntegrity(state, "mkdir");
   const recursive = Boolean((options as { recursive?: boolean } | undefined)?.recursive);
 
   if (state.dirs.has(p)) return;
@@ -281,6 +342,7 @@ function mkdirSync(path: unknown, options?: unknown): void {
 function statSync(path: unknown): NodeStats {
   const p = normalizePath(path);
   const state = getVfsState();
+  ensureVfsIntegrity(state, "stat");
   if (state.dirs.has(p)) return statFrom(p, true, 0);
   const value = state.files.get(p);
   if (value) return statFrom(p, false, value.byteLength);
@@ -294,6 +356,7 @@ function lstatSync(path: unknown): NodeStats {
 function readdirSync(path: unknown): string[] {
   const p = normalizePath(path);
   const state = getVfsState();
+  ensureVfsIntegrity(state, "readdir");
   if (!state.dirs.has(p)) {
     fsError("ENOTDIR", 20, "readdir", p, `[edge-runtime] readdir '${p}': not a directory`);
   }
@@ -392,7 +455,7 @@ function createWriteStream(path: unknown, options?: Record<string, unknown>) {
   const flags = String(options?.flags ?? "w");
   const highWaterMark = parseHighWaterMark(options?.highWaterMark, "createWriteStream");
 
-  let content = new Uint8Array();
+  let content: Bytes = new Uint8Array();
   let ready = false;
 
   const init = () => {

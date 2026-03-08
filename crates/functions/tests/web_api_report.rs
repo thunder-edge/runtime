@@ -1675,12 +1675,82 @@ fn verify_node_report_coverage(node_checks: &[NodeCompatCheck]) {
     );
 }
 
+fn verify_node_compat_docs_sync(node_checks: &[NodeCompatCheck]) {
+    let docs_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("missing crates dir")
+        .parent()
+        .expect("missing workspace dir")
+        .join("docs")
+        .join("NODE-COMPAT.md");
+
+    let docs = std::fs::read_to_string(&docs_path).unwrap_or_else(|e| {
+        panic!(
+            "failed to read NODE-COMPAT matrix at {}: {e}",
+            docs_path.display()
+        )
+    });
+
+    let mut parsed_levels: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+
+    for line in docs.lines() {
+        if !line.trim_start().starts_with("| `node:") {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('|').collect();
+        if cols.len() < 4 {
+            continue;
+        }
+        let module = cols[1].trim().trim_matches('`').to_string();
+        let level = cols[2].trim().to_string();
+
+        assert!(
+            ["Full", "Partial", "Stub"].contains(&level.as_str()),
+            "invalid level '{}' for module '{}' in docs/NODE-COMPAT.md",
+            level,
+            module
+        );
+
+        parsed_levels.insert(module, level);
+    }
+
+    let expected_modules: std::collections::BTreeSet<String> =
+        node_checks.iter().map(|check| check.api.to_string()).collect();
+    let documented_modules: std::collections::BTreeSet<String> =
+        parsed_levels.keys().cloned().collect();
+
+    let missing_in_docs: Vec<String> = expected_modules
+        .difference(&documented_modules)
+        .cloned()
+        .collect();
+    assert!(
+        missing_in_docs.is_empty(),
+        "modules missing in docs/NODE-COMPAT.md: {}",
+        missing_in_docs.join(", ")
+    );
+
+    for check in node_checks {
+        let documented_level = parsed_levels
+            .get(check.api)
+            .unwrap_or_else(|| panic!("missing '{}' in docs/NODE-COMPAT.md", check.api));
+        assert_eq!(
+            documented_level,
+            check.profile,
+            "docs/NODE-COMPAT.md level mismatch for '{}': expected '{}'",
+            check.api,
+            check.profile
+        );
+    }
+}
+
 #[test]
 fn generate_web_standards_report() {
     let mut runtime = make_runtime();
     let mut checks = define_checks();
     let mut node_checks = define_node_compat_checks();
     verify_node_report_coverage(&node_checks);
+    verify_node_compat_docs_sync(&node_checks);
 
     // Run all checks
     for check in checks.iter_mut() {

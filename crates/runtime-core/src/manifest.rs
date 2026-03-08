@@ -56,6 +56,7 @@ pub struct ManifestResources {
     pub wall_clock_timeout_ms: Option<u64>,
     pub vfs_total_quota_bytes: Option<u64>,
     pub vfs_max_file_bytes: Option<u64>,
+    pub egress_max_requests_per_execution: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -261,6 +262,12 @@ pub fn resolve_manifest_for_profile(
             }
             if let Some(vfs_max_file_bytes) = profile_resources.vfs_max_file_bytes {
                 resources.vfs_max_file_bytes = Some(vfs_max_file_bytes);
+            }
+            if let Some(egress_max_requests_per_execution) =
+                profile_resources.egress_max_requests_per_execution
+            {
+                resources.egress_max_requests_per_execution =
+                    Some(egress_max_requests_per_execution);
             }
         }
 
@@ -539,6 +546,7 @@ mod tests {
         assert_eq!(resolved.resources.cpu_time_ms, Some(100));
         assert_eq!(resolved.resources.vfs_total_quota_bytes, None);
         assert_eq!(resolved.resources.vfs_max_file_bytes, None);
+        assert_eq!(resolved.resources.egress_max_requests_per_execution, None);
     }
 
     #[test]

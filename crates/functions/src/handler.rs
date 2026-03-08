@@ -148,6 +148,15 @@ pub fn inject_request_bridge_with_proxy_and_config(
         isolate_config.zlib_operation_timeout_ms,
     );
     js_runtime.execute_script("edge-internal:///runtime_zlib_config.js", set_zlib_config)?;
+    
+    let set_egress_config = format!(
+        "globalThis.__edgeRuntimeEgressConfig = {{ maxRequestsPerExecution: {} }};",
+        isolate_config.egress_max_requests_per_execution,
+    );
+    js_runtime.execute_script(
+        "edge-internal:///runtime_egress_config.js",
+        set_egress_config,
+    )?;
 
     js_runtime.execute_script(
         "edge-internal:///runtime_bridge.js",
@@ -166,9 +175,13 @@ pub fn inject_request_bridge_with_proxy_and_config(
                 _abortRegistry: new Map(),       // executionId -> Set<AbortController>
                 _promiseRegistry: new Map(),     // executionId -> Set<{promise, reject}>
                 _wsRegistry: new Map(),          // executionId -> Set<WebSocket>
+                _egressRegistry: new Map(),      // executionId -> number
                 _executionState: new Map(),      // executionId -> { active: boolean, token: number }
                 _nextExecutionToken: 1,
                 _lastBlockedNetworkLog: null,
+                _egressConfig: globalThis.__edgeRuntimeEgressConfig || {
+                    maxRequestsPerExecution: 0,
+                },
                 _proxyConfig: globalThis.__edgeRuntimeProxyConfig || {
                     httpProxy: null,
                     httpsProxy: null,
@@ -193,11 +206,36 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     this._abortRegistry.set(executionId, new Set());
                     this._promiseRegistry.set(executionId, new Set());
                     this._wsRegistry.set(executionId, new Set());
+                    this._egressRegistry.set(executionId, 0);
                     this._executionState.set(executionId, {
                         active: true,
                         token: this._nextExecutionToken++,
                     });
                     this._clearAsyncHooksExecutionContext(executionId);
+                },
+                
+                consumeEgressToken(kind, target) {
+                    const executionId = this._currentExecutionId;
+                    if (!executionId) {
+                        return;
+                    }
+
+                    const maxRequests = Number(this._egressConfig?.maxRequestsPerExecution || 0);
+                    if (!Number.isFinite(maxRequests) || maxRequests <= 0) {
+                        return;
+                    }
+
+                    const current = Number(this._egressRegistry.get(executionId) || 0);
+                    const next = current + 1;
+                    this._egressRegistry.set(executionId, next);
+
+                    if (next > maxRequests) {
+                        const apiKind = kind || 'network';
+                        const apiTarget = target || '<unknown>';
+                        throw new Error(
+                            `[thunder] egress rate limit exceeded for execution '${executionId}' (${next}/${maxRequests}) kind='${apiKind}' target='${apiTarget}'`,
+                        );
+                    }
                 },
 
                 _captureExecutionSnapshot(executionId) {
@@ -269,6 +307,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     this._abortRegistry.delete(executionId);
                     this._promiseRegistry.delete(executionId);
                     this._wsRegistry.delete(executionId);
+                    this._egressRegistry.delete(executionId);
                     if (this._currentExecutionId === executionId) {
                         this._currentExecutionId = null;
                     }
@@ -330,6 +369,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     this._abortRegistry.delete(executionId);
                     this._promiseRegistry.delete(executionId);
                     this._wsRegistry.delete(executionId);
+                    this._egressRegistry.delete(executionId);
                     if (this._currentExecutionId === executionId) {
                         this._currentExecutionId = null;
                     }
@@ -546,6 +586,8 @@ pub fn inject_request_bridge_with_proxy_and_config(
                 const execId = globalThis.__edgeRuntime._currentExecutionId;
 
                 const invokeFetch = (requestInput, requestInit) => {
+                    globalThis.__edgeRuntime.consumeEgressToken('fetch', globalThis.__edgeRuntime._requestTarget(requestInput));
+
                     let proxySelection = null;
                     let selectedUrl = null;
                     try {
@@ -1277,6 +1319,98 @@ mod tests {
                 .collect();
             // Non Set-Cookie list headers are merged by Fetch Headers semantics.
             assert_eq!(x_custom_values, vec!["one, two".to_string()]);
+        });
+    }
+
+    #[test]
+    fn dispatch_enforces_egress_rate_limit_per_execution() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let mut runtime = make_runtime();
+            let isolate_config = IsolateConfig {
+                egress_max_requests_per_execution: 1,
+                ..IsolateConfig::default()
+            };
+            inject_request_bridge_with_proxy_and_config(
+                &mut runtime,
+                &OutgoingProxyConfig::default(),
+                &isolate_config,
+            )
+            .expect("inject_request_bridge_with_proxy_and_config failed");
+
+            runtime
+                .execute_script(
+                    "<test>",
+                    deno_core::ascii_str!(
+                        r#"
+                        globalThis.__edgeMockFetchHandler = async () => new Response('ok', { status: 200 });
+
+                        Deno.serve(async (_req) => {
+                          try {
+                            await fetch('https://example.com/one');
+                            await fetch('https://example.com/two');
+                            return new Response('unexpected-success', { status: 200 });
+                          } catch (err) {
+                            return new Response(String(err?.message || err), { status: 500 });
+                          }
+                        });
+
+                                                globalThis.__edgeRuntime.startExecution('test-exec');
+                        "#
+                    ),
+                )
+                .unwrap();
+
+            let request = http::Request::builder()
+                .method("GET")
+                .uri("/egress")
+                .header("host", "localhost:9000")
+                .body(bytes::Bytes::new())
+                .unwrap();
+
+            let response = dispatch_request(&mut runtime, request)
+                .await
+                .expect("dispatch_request should succeed");
+
+            assert_eq!(response.parts.status, 500);
+
+            let body = match response.body {
+                IsolateResponseBody::Full(body) => body,
+                IsolateResponseBody::Stream(mut body_rx) => {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        runtime.run_event_loop(deno_core::PollEventLoopOptions {
+                            wait_for_inspector: false,
+                            pump_v8_message_loop: true,
+                        }),
+                    )
+                    .await;
+
+                    let mut out = Vec::new();
+                    while let Some(chunk) = tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        body_rx.recv(),
+                    )
+                    .await
+                    .expect("timed out receiving egress error body")
+                    {
+                        let chunk = chunk.expect("chunk error");
+                        out.extend_from_slice(&chunk);
+                    }
+                    bytes::Bytes::from(out)
+                }
+            };
+
+            let body_text = String::from_utf8(body.to_vec()).expect("response body should be utf8");
+            assert!(
+                body_text.contains("[thunder] egress rate limit exceeded"),
+                "unexpected body: {body_text}"
+            );
         });
     }
 }

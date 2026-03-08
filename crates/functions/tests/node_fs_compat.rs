@@ -357,3 +357,34 @@ fn node_fs_write_stream_rejects_non_writable_mount() {
                 "node:fs createWriteStream should fail on read-only mount",
         );
 }
+
+#[test]
+fn node_fs_detects_vfs_integrity_corruption() {
+        let source = r#"
+            import fs from "node:fs";
+
+            fs.writeFileSync("/tmp/integrity.txt", "ok");
+
+            // Simulate memory corruption/tampering in the VFS accounting.
+            globalThis.__edgeVfsState.usedBytes = 0;
+
+            let integrityError = false;
+            try {
+                fs.readFileSync("/tmp/integrity.txt", "utf8");
+            } catch (err) {
+                integrityError =
+                    err?.code === "EIO" &&
+                    err?.errno === 5 &&
+                    err?.syscall === "readFile" &&
+                    String(err?.message || "").includes("VFS integrity check failed");
+            }
+
+            globalThis.__nodeFsIntegrityCheckOk = integrityError;
+        "#;
+
+        run_module_and_check(
+                source,
+                "globalThis.__nodeFsIntegrityCheckOk === true",
+                "node:fs should detect corrupted VFS state",
+        );
+}

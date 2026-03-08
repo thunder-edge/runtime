@@ -183,6 +183,14 @@ function createServer(): Server {
 }
 
 function connect(...args: unknown[]): Socket {
+  const maybeBridge = globalThis as unknown as {
+    __edgeRuntime?: { consumeEgressToken?: (kind: string, target: string) => void };
+  };
+  const parsed = parseConnectArgs([...args]);
+  const host = parsed.options.host ?? "127.0.0.1";
+  const port = Number(parsed.options.port);
+  maybeBridge.__edgeRuntime?.consumeEgressToken?.("tcp", `${host}:${port}`);
+
   return new Socket().connect(...args);
 }
 

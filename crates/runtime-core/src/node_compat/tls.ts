@@ -153,6 +153,11 @@ function connect(...args: unknown[]): TLSSocket {
   const host = options.host ?? "127.0.0.1";
   const port = Number(options.port);
 
+  const maybeBridge = globalThis as unknown as {
+    __edgeRuntime?: { consumeEgressToken?: (kind: string, target: string) => void };
+  };
+  maybeBridge.__edgeRuntime?.consumeEgressToken?.("tls", `${host}:${port}`);
+
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     const err = new Error("[edge-runtime] tls.connect failed: invalid port") as NodeLikeError;
     err.code = "ECONNREFUSED";

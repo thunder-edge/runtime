@@ -272,6 +272,11 @@ function edgeWsTrackConnection(socket) {
 
 class EdgeWebSocket extends NativeWebSocket {
   constructor(url, initOrProtocols) {
+    const runtimeBridge = globalThis.__edgeRuntime;
+    if (runtimeBridge && typeof runtimeBridge.consumeEgressToken === "function") {
+      runtimeBridge.consumeEgressToken("websocket", String(url));
+    }
+
     if (edgeWsActiveConnections >= EDGE_WS_MAX_CONNECTIONS) {
       throw new DOMException(
         `WebSocket connection limit exceeded (${EDGE_WS_MAX_CONNECTIONS})`,
@@ -282,7 +287,6 @@ class EdgeWebSocket extends NativeWebSocket {
     super(url, initOrProtocols);
     edgeWsTrackConnection(this);
 
-    const runtimeBridge = globalThis.__edgeRuntime;
     const executionId = runtimeBridge &&
       typeof runtimeBridge.registerWebSocketForCurrentExecution === "function"
       ? runtimeBridge.registerWebSocketForCurrentExecution(this)
@@ -481,6 +485,21 @@ if (typeof __edgeOriginalFetch === "function") {
   }
 
   globalThis.fetch = function edgeFetchWithMockSupport(input, init) {
+    const runtimeBridge = globalThis.__edgeRuntime;
+    if (runtimeBridge && typeof runtimeBridge.consumeEgressToken === "function") {
+      const target = (() => {
+        try {
+          if (typeof input === "string") return input;
+          if (input instanceof URL) return input.toString();
+          if (input && typeof input.url === "string") return input.url;
+          return String(input);
+        } catch {
+          return "<unknown>";
+        }
+      })();
+      runtimeBridge.consumeEgressToken("fetch", target);
+    }
+
     const hook = globalThis.__edgeMockFetchHandler;
     if (typeof hook === "function") {
       return hook(input, init);

@@ -100,6 +100,10 @@ pub struct IsolateConfig {
     /// Default operation timeout in milliseconds for node:zlib one-shot operations.
     #[serde(default = "default_zlib_operation_timeout_ms")]
     pub zlib_operation_timeout_ms: u64,
+
+    /// Maximum outbound network requests per execution (0 = unlimited).
+    #[serde(default = "default_egress_max_requests_per_execution")]
+    pub egress_max_requests_per_execution: usize,
 }
 
 fn default_max_heap() -> usize {
@@ -154,6 +158,10 @@ fn default_zlib_operation_timeout_ms() -> u64 {
     250
 }
 
+fn default_egress_max_requests_per_execution() -> usize {
+    0
+}
+
 impl Default for IsolateConfig {
     fn default() -> Self {
         Self {
@@ -174,6 +182,7 @@ impl Default for IsolateConfig {
             zlib_max_output_length: default_zlib_max_output_length(),
             zlib_max_input_length: default_zlib_max_input_length(),
             zlib_operation_timeout_ms: default_zlib_operation_timeout_ms(),
+            egress_max_requests_per_execution: default_egress_max_requests_per_execution(),
         }
     }
 }
@@ -339,6 +348,7 @@ mod tests {
         assert_eq!(config.dns_doh_endpoint, "https://1.1.1.1/dns-query");
         assert_eq!(config.dns_max_answers, 16);
         assert_eq!(config.dns_timeout_ms, 2000);
+        assert_eq!(config.egress_max_requests_per_execution, 0);
     }
 
     #[test]
@@ -357,6 +367,7 @@ mod tests {
         assert_eq!(config.dns_doh_endpoint, "https://1.1.1.1/dns-query");
         assert_eq!(config.dns_max_answers, 16);
         assert_eq!(config.dns_timeout_ms, 2000);
+        assert_eq!(config.egress_max_requests_per_execution, 0);
     }
 
     #[test]
@@ -388,6 +399,7 @@ mod tests {
         assert!(json.contains("\"dns_doh_endpoint\""));
         assert!(json.contains("\"dns_max_answers\""));
         assert!(json.contains("\"dns_timeout_ms\""));
+        assert!(json.contains("\"egress_max_requests_per_execution\""));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 > Baseado na auditoria de segurança e arquitetura realizada em 05/03/2026.
 > Cada item referencia o finding correspondente no `AUDIT.md`.
 >
-> Última atualização: 07/03/2026 (P1 de VFS seguro em `node:fs` concluído com quotas configuráveis por manifest/flag/env, `http/https` client-side compat, P2 de `node:dns` via DoH controlado, expansão de `node:util`/`node:diagnostics_channel`, `async_hooks`/ALS com propagação real, P3 de `node:zlib` funcional parcial com backend nativo, P1 inicial de `node:crypto`, avanço de `node:stream` com cancelamento por `AbortSignal` em `pipeline` e teste E2E de resposta chunked progressiva; backlog do `ROADMAP-NODE-COMPAT.md` consolidado neste documento).
+> Última atualização: 08/03/2026 (P1 de VFS seguro em `node:fs` concluído com quotas configuráveis por manifest/flag/env, `http/https` client-side compat, P2 de `node:dns` via DoH controlado, expansão de `node:util`/`node:diagnostics_channel`, `async_hooks`/ALS com propagação real, P3 de `node:zlib` funcional parcial com backend nativo, P1 inicial de `node:crypto`, avanço de `node:stream` com cancelamento por `AbortSignal` em `pipeline` e teste E2E de resposta chunked progressiva, e P3 de hardening/governança com rate limiting de egress por execução, verificação de integridade de VFS e gate de matriz Node em relatório/CI; backlog do `ROADMAP-NODE-COMPAT.md` consolidado neste documento).
 > Commits de referência: `92aa473`, `6607a2b`, `4933dda`.
 > Inclui também mudanças locais ainda não commitadas em `functions/runtime-core`.
 
@@ -475,17 +475,26 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
     - Status aplicado: `Server.listen()` permanece não funcional por sandbox e falha com erro determinístico `[thunder] http.Server.listen is not implemented in this runtime profile`.
     - Status aplicado: cobertura de regressão adicionada em `crates/functions/tests/node_module_imports.rs` e no relatório automático (`crates/functions/tests/web_api_report.rs`).
     - Referência: `ROADMAP-NODE-COMPAT.md §7.2.1`, `§9 Issue #6`, `§10 Phase 4`.
-- [ ] Opcional de segurança criptográfica (após P1):
+- [ ] Opcional de segurança criptográfica (após P1) — **Baixa prioridade / postergado**:
     - `createCipheriv`/`createDecipheriv` e KDFs (`pbkdf2`/`scrypt`) conforme perfil de risco.
+    - Status de priorização: item explicitamente removido da trilha imediata de entrega; executar apenas após fechamento dos itens de hardening/governança mais críticos.
     - Referência: `ROADMAP-NODE-COMPAT.md §7.3`, `§9 Issue #7`, `§10 Phase 3`.
 
 #### P3 — Hardening e Governança de Compat
 
-- [ ] Implementar rate limiting de saída (egress) por função/perfil para reduzir abuso de rede.
+- [x] Implementar rate limiting de saída (egress) por função/perfil para reduzir abuso de rede.
+    - Status aplicado: novo limite `egress_max_requests_per_execution` em `IsolateConfig`, com configuração via manifest (`resources.egressMaxRequestsPerExecution`) e flags/env da CLI (`--egress-max-requests-per-execution` / `EDGE_RUNTIME_EGRESS_MAX_REQUESTS_PER_EXECUTION`).
+    - Status aplicado: enforcement por execução no bridge/runtime para `fetch`, `WebSocket`, `node:net.connect` e `node:tls.connect`, com erro determinístico quando o limite é excedido.
+    - Status aplicado: regressão adicionada em `crates/functions/src/handler.rs` (`dispatch_enforces_egress_rate_limit_per_execution`).
     - Referência: `ROADMAP-NODE-COMPAT.md §4.4` (Security checklist TODO: outbound rate limiting).
-- [ ] Implementar verificação de integridade do VFS (detecção de corrupção/estado inválido).
+- [x] Implementar verificação de integridade do VFS (detecção de corrupção/estado inválido).
+    - Status aplicado: `node:fs` passou a validar invariantes estruturais e contábeis do VFS (diretórios obrigatórios, parents, quotas e `usedBytes`) antes de operações críticas.
+    - Status aplicado: corrupção/estado inválido resulta em falha determinística `EIO` sem panic.
+    - Status aplicado: regressão adicionada em `crates/functions/tests/node_fs_compat.rs` (`node_fs_detects_vfs_integrity_corruption`).
     - Referência: `ROADMAP-NODE-COMPAT.md §4.4` (Security checklist TODO: VFS integrity checking).
-- [ ] Publicar matriz de compatibilidade Node em formato consultável por humanos e CI:
+- [x] Publicar matriz de compatibilidade Node em formato consultável por humanos e CI:
+    - Status aplicado: validação automática da matriz em `docs/NODE-COMPAT.md` no teste `crates/functions/tests/web_api_report.rs`, com verificação de níveis oficiais e cobertura de módulos esperados.
+    - Status aplicado: CI atualizado para executar geração do relatório e falhar quando `docs/web_standards_api_report.md` estiver desatualizado.
     - Documento `docs/NODE-COMPAT.md` + gate de regressão no CI para níveis `Full/Partial/Stub/None`.
     - Referência: `ROADMAP-NODE-COMPAT.md §8`, `§9 Issue #8`, `§10 Phase 5`.
 - [ ] Adicionar stub explícito para `node:worker_threads` com erro determinístico orientando limitações de sandbox.

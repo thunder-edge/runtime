@@ -125,6 +125,14 @@ pub struct WatchArgs {
     )]
     zlib_operation_timeout_ms: u64,
 
+    /// Maximum outbound network requests per execution (0 = unlimited).
+    #[arg(
+        long,
+        default_value_t = 0,
+        env = "EDGE_RUNTIME_EGRESS_MAX_REQUESTS_PER_EXECUTION"
+    )]
+    egress_max_requests_per_execution: usize,
+
     /// Outgoing HTTP proxy URL (eg. http://proxy.local:8080, socks5://proxy.local:1080)
     #[arg(long, env = "EDGE_RUNTIME_HTTP_OUTGOING_PROXY")]
     http_outgoing_proxy: Option<String>,
@@ -434,6 +442,7 @@ async fn load_and_deploy_functions(
             max_heap_size_bytes: default_config.max_heap_size_bytes,
             cpu_time_limit_ms: default_config.cpu_time_limit_ms,
             wall_clock_timeout_ms: default_config.wall_clock_timeout_ms,
+            egress_max_requests_per_execution: default_config.egress_max_requests_per_execution,
             inspect_port,
             inspect_brk: default_config.inspect_brk,
             inspect_allow_remote: default_config.inspect_allow_remote,
@@ -624,6 +633,7 @@ fn build_watch_default_config(args: &WatchArgs) -> IsolateConfig {
         zlib_max_output_length: args.zlib_max_output_length,
         zlib_max_input_length: args.zlib_max_input_length,
         zlib_operation_timeout_ms: args.zlib_operation_timeout_ms,
+        egress_max_requests_per_execution: args.egress_max_requests_per_execution,
     }
 }
 
@@ -669,6 +679,7 @@ mod tests {
             zlib_max_output_length: 16 * 1024 * 1024,
             zlib_max_input_length: 8 * 1024 * 1024,
             zlib_operation_timeout_ms: 250,
+            egress_max_requests_per_execution: 0,
             http_outgoing_proxy: None,
             https_outgoing_proxy: None,
             tcp_outgoing_proxy: None,
