@@ -67,6 +67,8 @@ import { Request } from "ext:deno_fetch/23_request.js";
 import { Response } from "ext:deno_fetch/23_response.js";
 import { fetch } from "ext:deno_fetch/26_fetch.js";
 import { EventSource } from "ext:deno_fetch/27_eventsource.js";
+import { WebSocket as NativeWebSocket } from "ext:deno_websocket/01_websocket.js";
+import "ext:deno_websocket/02_websocketstream.js";
 
 // deno_net (required by fetch)
 import "ext:deno_net/01_net.js";
@@ -238,6 +240,93 @@ Object.assign(globalThis, {
   Response,
   fetch,
   EventSource,
+});
+
+// WebSocket
+const EDGE_WS_MAX_CONNECTIONS = 128;
+const EDGE_WS_CONNECT_TIMEOUT_MS = 30_000;
+let edgeWsActiveConnections = 0;
+const edgeWsTracked = new WeakSet();
+
+function edgeWsReleaseConnection() {
+  edgeWsActiveConnections = Math.max(0, edgeWsActiveConnections - 1);
+}
+
+function edgeWsTrackConnection(socket) {
+  if (edgeWsTracked.has(socket)) {
+    return;
+  }
+
+  edgeWsTracked.add(socket);
+  edgeWsActiveConnections += 1;
+
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    edgeWsReleaseConnection();
+  };
+
+  socket.addEventListener("close", release, { once: true });
+}
+
+class EdgeWebSocket extends NativeWebSocket {
+  constructor(url, initOrProtocols) {
+    if (edgeWsActiveConnections >= EDGE_WS_MAX_CONNECTIONS) {
+      throw new DOMException(
+        `WebSocket connection limit exceeded (${EDGE_WS_MAX_CONNECTIONS})`,
+        "QuotaExceededError",
+      );
+    }
+
+    super(url, initOrProtocols);
+    edgeWsTrackConnection(this);
+
+    const runtimeBridge = globalThis.__edgeRuntime;
+    const executionId = runtimeBridge &&
+      typeof runtimeBridge.registerWebSocketForCurrentExecution === "function"
+      ? runtimeBridge.registerWebSocketForCurrentExecution(this)
+      : null;
+
+    const connectTimeout = setTimeout(() => {
+      if (this.readyState === NativeWebSocket.CONNECTING) {
+        try {
+          this.close(1013, "WebSocket connect timeout");
+        } catch {
+          // ignore close races
+        }
+      }
+    }, EDGE_WS_CONNECT_TIMEOUT_MS);
+
+    const clearConnectTimeout = () => clearTimeout(connectTimeout);
+    this.addEventListener("open", clearConnectTimeout, { once: true });
+    this.addEventListener("close", clearConnectTimeout, { once: true });
+    this.addEventListener("close", () => {
+      if (
+        executionId &&
+        runtimeBridge &&
+        typeof runtimeBridge.unregisterWebSocket === "function"
+      ) {
+        runtimeBridge.unregisterWebSocket(executionId, this);
+      }
+    }, { once: true });
+  }
+
+  static get activeConnections() {
+    return edgeWsActiveConnections;
+  }
+
+  static get maxConnections() {
+    return EDGE_WS_MAX_CONNECTIONS;
+  }
+
+  static get connectTimeoutMs() {
+    return EDGE_WS_CONNECT_TIMEOUT_MS;
+  }
+}
+
+Object.assign(globalThis, {
+  WebSocket: EdgeWebSocket,
 });
 
 // Minimal Buffer compatibility for common SSR/tooling paths.

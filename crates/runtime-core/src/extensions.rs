@@ -510,11 +510,13 @@ pub fn get_extensions_with_edge_assert(include_edge_assert: bool) -> Vec<Extensi
         deno_telemetry::deno_telemetry::init(),
         // 8. Fetch (depends on web, net, tls) - fetch API
         deno_fetch::deno_fetch::init(deno_fetch::Options::default()),
-        // 9. Minimal Node compatibility modules with native crypto ops
+        // 9. WebSocket client API (depends on web, webidl)
+        deno_websocket::deno_websocket::init(),
+        // 10. Minimal Node compatibility modules with native crypto ops
         edge_node_compat::init(),
-        // 9. Node shim - provides minimal constants for deno_crypto
+        // 10. Node shim - provides minimal constants for deno_crypto
         deno_node::init(),
-        // 10. Crypto (depends on webidl, web, node shim) - Web Crypto API
+        // 11. Crypto (depends on webidl, web, node shim) - Web Crypto API
         deno_crypto::deno_crypto::init(None), // maybe_seed
     ];
 
@@ -618,8 +620,8 @@ mod tests {
     #[test]
     fn get_extensions_returns_expected_count() {
         let exts = get_extensions();
-        // 13 extensions by default (no edge_assert in production profile)
-        assert_eq!(exts.len(), 13, "expected 13 extensions, got {}", exts.len());
+        // 15 extensions by default (no edge_assert in production profile)
+        assert_eq!(exts.len(), 15, "expected 15 extensions, got {}", exts.len());
     }
 
     #[test]

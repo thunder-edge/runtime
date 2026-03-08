@@ -165,6 +165,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                 _intervalRegistry: new Map(),    // executionId -> Set<intervalId>
                 _abortRegistry: new Map(),       // executionId -> Set<AbortController>
                 _promiseRegistry: new Map(),     // executionId -> Set<{promise, reject}>
+                _wsRegistry: new Map(),          // executionId -> Set<WebSocket>
                 _lastBlockedNetworkLog: null,
                 _proxyConfig: globalThis.__edgeRuntimeProxyConfig || {
                     httpProxy: null,
@@ -189,14 +190,57 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     this._intervalRegistry.set(executionId, new Set());
                     this._abortRegistry.set(executionId, new Set());
                     this._promiseRegistry.set(executionId, new Set());
+                    this._wsRegistry.set(executionId, new Set());
                     this._clearAsyncHooksExecutionContext(executionId);
                 },
 
+                registerWebSocketForCurrentExecution(socket) {
+                    const executionId = this._currentExecutionId;
+                    if (!executionId || !socket) return null;
+
+                    let sockets = this._wsRegistry.get(executionId);
+                    if (!sockets) {
+                        sockets = new Set();
+                        this._wsRegistry.set(executionId, sockets);
+                    }
+                    sockets.add(socket);
+                    return executionId;
+                },
+
+                unregisterWebSocket(executionId, socket) {
+                    if (!executionId || !socket) return;
+                    const sockets = this._wsRegistry.get(executionId);
+                    if (!sockets) return;
+                    sockets.delete(socket);
+                    if (sockets.size === 0) {
+                        this._wsRegistry.delete(executionId);
+                    }
+                },
+
+                _closeExecutionWebSockets(executionId, closeCode, closeReason) {
+                    const sockets = this._wsRegistry.get(executionId);
+                    if (!sockets) return;
+
+                    for (const socket of Array.from(sockets)) {
+                        try {
+                            if (socket && (socket.readyState === 0 || socket.readyState === 1)) {
+                                socket.close(closeCode, closeReason);
+                            }
+                        } catch (_) {
+                            // Ignore close races.
+                        }
+                    }
+
+                    this._wsRegistry.delete(executionId);
+                },
+
                 endExecution(executionId) {
+                    this._closeExecutionWebSockets(executionId, 1001, 'Execution ended');
                     this._timerRegistry.delete(executionId);
                     this._intervalRegistry.delete(executionId);
                     this._abortRegistry.delete(executionId);
                     this._promiseRegistry.delete(executionId);
+                    this._wsRegistry.delete(executionId);
                     if (this._currentExecutionId === executionId) {
                         this._currentExecutionId = null;
                     }
@@ -247,11 +291,15 @@ pub fn inject_request_bridge_with_proxy_and_config(
                         }
                     }
 
+                    // Close tracked WebSocket connections for this execution
+                    this._closeExecutionWebSockets(executionId, 1013, 'Request cancelled due to execution timeout');
+
                     // Cleanup registries
                     this._timerRegistry.delete(executionId);
                     this._intervalRegistry.delete(executionId);
                     this._abortRegistry.delete(executionId);
                     this._promiseRegistry.delete(executionId);
+                    this._wsRegistry.delete(executionId);
                     if (this._currentExecutionId === executionId) {
                         this._currentExecutionId = null;
                     }

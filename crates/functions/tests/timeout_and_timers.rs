@@ -17,6 +17,7 @@ use functions::types::{BundlePackage, FunctionStatus};
 use runtime_core::extensions;
 use runtime_core::isolate::IsolateConfig;
 use runtime_core::module_loader::EszipModuleLoader;
+use runtime_core::permissions::create_permissions_container;
 use tokio_util::sync::CancellationToken;
 
 static PANIC_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -36,6 +37,10 @@ fn make_runtime_with_eszip(eszip: Arc<eszip::EszipV2>) -> JsRuntime {
 
     let mut runtime = JsRuntime::new(opts);
     functions::handler::ensure_response_stream_registry(&mut runtime);
+    {
+        let op_state = runtime.op_state();
+        op_state.borrow_mut().put(create_permissions_container());
+    }
     runtime
 }
 
@@ -1051,7 +1056,314 @@ fn test_timer_isolation_between_executions() {
     assert!(result.is_ok(), "test failed: {:?}", result.err());
 }
 
-/// Test 5: Isolate remains functional after timeout + cleanup.
+/// Test 5: WebSocket is tracked and closed when clearExecutionTimers is triggered.
+#[test]
+fn test_websocket_closed_on_clear_execution_timers() {
+    deno_core::JsRuntime::init_platform(None);
+
+    let eszip_bytes = build_eszip("file:///test_ws_cleanup_clear.js", "globalThis.__test = true;");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let local = tokio::task::LocalSet::new();
+    let result: Result<(), String> = local.block_on(&rt, async {
+        let eszip = Arc::new(parse_eszip(&eszip_bytes).await);
+        let mut js_runtime = make_runtime_with_eszip(eszip);
+
+        functions::handler::inject_request_bridge(&mut js_runtime)
+            .map_err(|e| format!("inject_request_bridge: {e}"))?;
+
+        js_runtime
+            .execute_script(
+                "<ws_setup_clear>",
+                deno_core::ascii_str!(
+                    r#"
+            globalThis.__edgeRuntime.startExecution("ws-clear-exec");
+            globalThis.__wsCloseCalls = [];
+            globalThis.__fakeWs = {
+              readyState: 1,
+              close(code, reason) {
+                globalThis.__wsCloseCalls.push({ code, reason });
+                this.readyState = 3;
+              }
+            };
+            globalThis.__edgeRuntime.registerWebSocketForCurrentExecution(globalThis.__fakeWs);
+            "#
+                ),
+            )
+            .map_err(|e| format!("ws setup: {e}"))?;
+
+        js_runtime
+            .execute_script(
+                "<ws_clear_exec>",
+                deno_core::ascii_str!(
+                    r#"globalThis.__edgeRuntime.clearExecutionTimers("ws-clear-exec");"#
+                ),
+            )
+            .map_err(|e| format!("clearExecutionTimers: {e}"))?;
+
+        let close_called = js_runtime
+            .execute_script(
+                "<ws_close_called_check>",
+                deno_core::ascii_str!(
+                    r#"
+                    globalThis.__wsCloseCalls.length === 1 &&
+                    globalThis.__wsCloseCalls[0].code === 1013;
+                    "#
+                ),
+            )
+            .map_err(|e| format!("ws close called check: {e}"))?;
+
+        {
+            deno_core::scope!(scope, js_runtime);
+            assert!(
+                close_called.open(scope).is_true(),
+                "tracked websocket should be closed with timeout code on clearExecutionTimers"
+            );
+        }
+
+        let ws_registry_cleared = js_runtime
+            .execute_script(
+                "<ws_registry_check>",
+                deno_core::ascii_str!(
+                    r#"globalThis.__edgeRuntime._wsRegistry.get("ws-clear-exec") === undefined;"#
+                ),
+            )
+            .map_err(|e| format!("ws registry check: {e}"))?;
+
+        {
+            deno_core::scope!(scope, js_runtime);
+            assert!(
+                ws_registry_cleared.open(scope).is_true(),
+                "websocket registry should be cleared after clearExecutionTimers"
+            );
+        }
+
+        Ok(())
+    });
+
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
+/// Test 6: WebSocket is tracked and closed on endExecution.
+#[test]
+fn test_websocket_closed_on_end_execution() {
+    deno_core::JsRuntime::init_platform(None);
+
+    let eszip_bytes = build_eszip("file:///test_ws_cleanup_end.js", "globalThis.__test = true;");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let local = tokio::task::LocalSet::new();
+    let result: Result<(), String> = local.block_on(&rt, async {
+        let eszip = Arc::new(parse_eszip(&eszip_bytes).await);
+        let mut js_runtime = make_runtime_with_eszip(eszip);
+
+        functions::handler::inject_request_bridge(&mut js_runtime)
+            .map_err(|e| format!("inject_request_bridge: {e}"))?;
+
+        js_runtime
+            .execute_script(
+                "<ws_setup_end>",
+                deno_core::ascii_str!(
+                    r#"
+            globalThis.__edgeRuntime.startExecution("ws-end-exec");
+            globalThis.__wsCloseCalls = [];
+            globalThis.__fakeWs = {
+              readyState: 1,
+              close(code, reason) {
+                globalThis.__wsCloseCalls.push({ code, reason });
+                this.readyState = 3;
+              }
+            };
+            globalThis.__edgeRuntime.registerWebSocketForCurrentExecution(globalThis.__fakeWs);
+            "#
+                ),
+            )
+            .map_err(|e| format!("ws setup: {e}"))?;
+
+        js_runtime
+            .execute_script(
+                "<ws_end_exec>",
+                deno_core::ascii_str!(r#"globalThis.__edgeRuntime.endExecution("ws-end-exec");"#),
+            )
+            .map_err(|e| format!("endExecution: {e}"))?;
+
+        let close_called = js_runtime
+            .execute_script(
+                "<ws_close_called_check>",
+                deno_core::ascii_str!(
+                    r#"
+                    globalThis.__wsCloseCalls.length === 1 &&
+                    globalThis.__wsCloseCalls[0].code === 1001;
+                    "#
+                ),
+            )
+            .map_err(|e| format!("ws close called check: {e}"))?;
+
+        {
+            deno_core::scope!(scope, js_runtime);
+            assert!(
+                close_called.open(scope).is_true(),
+                "tracked websocket should be closed with end code on endExecution"
+            );
+        }
+
+        let ws_registry_cleared = js_runtime
+            .execute_script(
+                "<ws_registry_check>",
+                deno_core::ascii_str!(
+                    r#"globalThis.__edgeRuntime._wsRegistry.get("ws-end-exec") === undefined;"#
+                ),
+            )
+            .map_err(|e| format!("ws registry check: {e}"))?;
+
+        {
+            deno_core::scope!(scope, js_runtime);
+            assert!(
+                ws_registry_cleared.open(scope).is_true(),
+                "websocket registry should be cleared after endExecution"
+            );
+        }
+
+        Ok(())
+    });
+
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
+/// Test 7: WebSocket unregisters from execution registry on close event
+/// without relying on clearExecutionTimers/endExecution cleanup.
+#[test]
+fn test_websocket_unregisters_on_close_event() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    deno_core::JsRuntime::init_platform(None);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind websocket server");
+    let addr = listener.local_addr().expect("read local address");
+
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept websocket client");
+        let mut socket = tungstenite::accept(stream).expect("upgrade websocket handshake");
+        let _ = socket.read();
+    });
+
+    let eszip_bytes = build_eszip("file:///test_ws_unregister_close.js", "globalThis.__test = true;");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let local = tokio::task::LocalSet::new();
+    let result: Result<(), String> = local.block_on(&rt, async {
+        let eszip = Arc::new(parse_eszip(&eszip_bytes).await);
+        let mut js_runtime = make_runtime_with_eszip(eszip);
+
+        functions::handler::inject_request_bridge(&mut js_runtime)
+            .map_err(|e| format!("inject_request_bridge: {e}"))?;
+
+        let setup = format!(
+            r#"
+            globalThis.__edgeRuntime.startExecution("ws-unregister-close");
+            globalThis.__wsClosed = false;
+            globalThis.__ws = new WebSocket("ws://127.0.0.1:{port}");
+            globalThis.__ws.onopen = () => {{ globalThis.__ws.close(1000, "done"); }};
+            globalThis.__ws.onclose = () => {{ globalThis.__wsClosed = true; }};
+            "#,
+            port = addr.port(),
+        );
+
+        js_runtime
+            .execute_script("<ws_unregister_setup>", setup)
+            .map_err(|e| format!("execute ws setup: {e}"))?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            js_runtime
+                .run_event_loop(PollEventLoopOptions {
+                    wait_for_inspector: false,
+                    pump_v8_message_loop: true,
+                })
+                .await
+                .map_err(|e| format!("run_event_loop: {e}"))?;
+
+            let closed = js_runtime
+                .execute_script("<ws_closed_check>", "globalThis.__wsClosed === true")
+                .map_err(|e| format!("check ws closed: {e}"))?;
+
+            let is_closed = {
+                deno_core::scope!(scope, js_runtime);
+                closed.open(scope).is_true()
+            };
+
+            if is_closed {
+                break;
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return Err("timed out waiting websocket close event".to_string());
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Explicitly validate registry removal happened via close event listener,
+        // before any explicit lifecycle cleanup call.
+        let ws_registry_removed = js_runtime
+            .execute_script(
+                "<ws_registry_removed_check>",
+                deno_core::ascii_str!(
+                    r#"globalThis.__edgeRuntime._wsRegistry.get("ws-unregister-close") === undefined;"#
+                ),
+            )
+            .map_err(|e| format!("check ws registry removed: {e}"))?;
+
+        let active_connections_zero = js_runtime
+            .execute_script(
+                "<ws_active_zero_check>",
+                deno_core::ascii_str!("globalThis.WebSocket.activeConnections === 0;"),
+            )
+            .map_err(|e| format!("check ws active count: {e}"))?;
+
+        {
+            deno_core::scope!(scope, js_runtime);
+            assert!(
+                ws_registry_removed.open(scope).is_true(),
+                "ws registry should be removed by unregisterWebSocket on close",
+            );
+        }
+
+        {
+            deno_core::scope!(scope, js_runtime);
+            assert!(
+                active_connections_zero.open(scope).is_true(),
+                "active websocket counter should be zero after close",
+            );
+        }
+
+        // Final lifecycle cleanup for test hygiene.
+        js_runtime
+            .execute_script(
+                "<ws_end_exec>",
+                deno_core::ascii_str!(r#"globalThis.__edgeRuntime.endExecution("ws-unregister-close");"#),
+            )
+            .map_err(|e| format!("endExecution: {e}"))?;
+
+        Ok(())
+    });
+
+    server.join().expect("join websocket server");
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
+/// Test 8: Isolate remains functional after timeout + cleanup.
 #[test]
 fn test_isolate_reusable_after_timeout() {
     deno_core::JsRuntime::init_platform(None);

@@ -445,8 +445,18 @@ fn messaging_image_data() {
 // Skipped: Not implemented in deno extensions
 
 // ── WebSocket API ────────────────────────────────────────
-// Note: WebSocket support varies by runtime extension
-// Skipped: Testing for presence only, not full functionality
+#[test]
+fn websocket_constructor_available() {
+    assert_js_true("typeof WebSocket === 'function'", "WebSocket");
+}
+
+#[test]
+fn websocket_constants_available() {
+    assert_js_true(
+        "WebSocket.CONNECTING === 0 && WebSocket.OPEN === 1 && WebSocket.CLOSING === 2 && WebSocket.CLOSED === 3",
+        "WebSocket constants",
+    );
+}
 
 // ── Cache API ────────────────────────────────────────────
 // Note: Cache API not available in basic deno extensions

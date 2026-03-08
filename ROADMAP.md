@@ -151,8 +151,13 @@ Status aplicado (07/03/2026):
 
 - [x] Implementar camada compatível com `AsyncLocalStorage` (ou equivalente funcional)
 - [x] Garantir propagação de contexto por awaits/promises/timers
-- [ ] Isolar contexto entre requests concorrentes
-- [ ] Adicionar testes de concorrência validando não-vazamento de contexto
+- [x] Isolar contexto entre requests concorrentes
+- [x] Adicionar testes de concorrência validando não-vazamento de contexto
+
+Status aplicado (07/03/2026):
+- `node:async_hooks` agora expõe bridge interno (`__edgeRuntimeAsyncHooks`) para executar cada request em contexto isolado (`runWithExecutionContext`) e limpar stores em `startExecution/endExecution/clearExecutionTimers`.
+- `AsyncLocalStorage.run` passou a preservar contexto corretamente quando o callback retorna `Promise` (restauração adiada para `finally`).
+- Teste E2E `e2e_async_local_storage_isolated_between_overlapping_requests` em `crates/server/src/lib.rs` valida requests sobrepostos com IDs distintos sem vazamento de contexto.
 
 **Critério de aceite:** dois requests simultâneos não compartilham estado contextual.
 
@@ -168,6 +173,25 @@ Status aplicado (07/03/2026):
 - [ ] Revisar comportamento de compressão/encoding em proxy e rewrite
 - [ ] Adicionar suíte de regressão para casos reportados em ecossistemas SSR
 
+Status aplicado (07/03/2026):
+- Bridge HTTP Rust<->JS em `crates/functions/src/handler.rs` migrou de serialização por `HashMap` para lista ordenada de pares de header (`Vec<(String, String)>`), preservando semântica de headers repetidos.
+- `Set-Cookie` múltiplo preservado explicitamente no retorno de `handleRequest` usando entries de headers e `response.headers.getSetCookie()` quando disponível.
+- Merge de headers não-`Set-Cookie` mantido conforme semântica Fetch (`Headers`), sem perda de valores lógicos.
+- Regressões de body semantics adicionadas em `crates/functions/tests/node_module_imports.rs`:
+    - `web_request_clone_preserves_body_and_locks_original_after_read`
+    - `web_response_clone_preserves_body_and_locks_original_after_read`
+    - `web_stream_tee_splits_stream_without_data_loss`
+- Regressão E2E de protocolo adicionada em `crates/server/src/lib.rs`:
+    - `e2e_ingress_preserves_http_header_semantics_on_rewrite` valida preservação de `content-encoding`, forwarding de `accept-encoding` no rewrite e múltiplos `Set-Cookie` sem flatten.
+- Regressão unitária do bridge adicionada em `crates/functions/src/handler.rs`:
+    - `dispatch_preserves_multiple_set_cookie_headers`.
+
+- [x] Preservar múltiplos `Set-Cookie` sem flatten indevido
+- [x] Garantir merge de headers sem perda de semântica
+- [x] Validar clone/tee/locking de body em `Request`/`Response`
+- [x] Revisar comportamento de compressão/encoding em proxy e rewrite
+- [x] Adicionar suíte de regressão para casos reportados em ecossistemas SSR
+
 **Critério de aceite:** testes de cookie/header/body passam em dev e prod profile.
 
 ---
@@ -176,10 +200,20 @@ Status aplicado (07/03/2026):
 
 **Objetivo:** habilitar cenários que dependem de upgrade e canais persistentes.
 
-- [ ] Carregar extensão de WebSocket (`deno_websocket`) no runtime
-- [ ] Expor `WebSocket` em `globalThis` no bootstrap
-- [ ] Implementar testes de handshake + troca de mensagens
-- [ ] Garantir limites de recurso e timeout para conexões WS
+- [x] Carregar extensão de WebSocket (`deno_websocket`) no runtime
+- [x] Expor `WebSocket` em `globalThis` no bootstrap
+- [x] Implementar testes de handshake + troca de mensagens
+- [x] Garantir limites de recurso e timeout para conexões WS
+
+Status aplicado (08/03/2026):
+- Runtime carrega `deno_websocket` em `crates/runtime-core/src/extensions.rs` e habilita WebSocket no isolate padrão.
+- Bootstrap expõe `globalThis.WebSocket` via wrapper `EdgeWebSocket` em `crates/runtime-core/src/bootstrap.js`, mantendo API padrão e adicionando guardrails:
+    - limite de conexões simultâneas por isolate (`128`),
+    - timeout de conexão em estado `CONNECTING` (`30s`).
+- Regressões de disponibilidade/semântica adicionadas:
+    - `crates/functions/tests/cloudflare_networking.rs` valida construtor, constantes e metadados de guardrails;
+    - `crates/functions/tests/web_api_compat.rs` valida presença e constantes da API WebSocket.
+- Documentação operacional de proxy externo adicionada em `docs/cli.md` com requisitos de forwarding `Upgrade` HTTP/1.1, headers obrigatórios e timeouts de conexão longa.
 
 **Critério de aceite:** cliente `WebSocket` conecta e troca mensagens com estabilidade.
 
@@ -424,7 +458,7 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 
 - [ ] Implementar `fs.createReadStream` e `fs.createWriteStream` no VFS (sem acesso ao host).
     - Referência: `ROADMAP-NODE-COMPAT.md §5.1.4`, `§7.2.2`, `§9 Issue #4`, `§10 Phase 2`.
-- [ ] Avaliar suporte limitado de `http.createServer` para modo dev/test (não multi-tenant prod por padrão).
+- [ ] Suporte limitado de `http.createServer` stub
     - Referência: `ROADMAP-NODE-COMPAT.md §7.2.1`, `§9 Issue #6`, `§10 Phase 4`.
 - [ ] Opcional de segurança criptográfica (após P1):
     - `createCipheriv`/`createDecipheriv` e KDFs (`pbkdf2`/`scrypt`) conforme perfil de risco.

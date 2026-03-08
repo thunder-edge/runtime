@@ -1,6 +1,8 @@
-use deno_core::{JsRuntime, RuntimeOptions};
+use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use runtime_core::extensions;
 use runtime_core::permissions::create_permissions_container;
+use std::time::{Duration, Instant};
+use tungstenite::Message;
 
 // This module tests Cloudflare Workers Networking APIs
 // Reference: https://developers.cloudflare.com/workers/runtime-apis/web-crypto/
@@ -9,6 +11,7 @@ static INIT: std::sync::Once = std::sync::Once::new();
 
 fn init_v8() {
     INIT.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         deno_core::JsRuntime::init_platform(None);
     });
 }
@@ -140,68 +143,127 @@ fn tcp_tls_socket_alternative() {
 
 // ── WebSockets ────────────────────────────────────────────────────
 
-// NOTE: WebSocket API is NOT available in current thunder
-// Reason: No WebSocket extension loaded in extensions.rs
-//
-// Available alternatives:
-// - Use fetch() with Server-Sent Events (EventSource - one way)
-// - Implement polling pattern with fetch
-// - Use TCP sockets directly for custom protocols
-//
-// WebSocket support would require:
-// 1. Loading deno_websocket extension (if available)
-// 2. Exporting WebSocket to bootstrap.js
-// 3. Adding tests to verify availability
+// WebSocket API is available through deno_websocket extension.
+// Runtime guardrails enforce per-isolate connection limits and handshake timeout.
 
 #[test]
-fn websocket_not_available() {
+fn websocket_available() {
     assert_js_true(
-        "typeof WebSocket === 'undefined'",
-        "WebSocket correctly not available (no extension loaded)",
+        "typeof WebSocket === 'function'",
+        "WebSocket constructor is available",
     );
 }
 
 #[test]
-fn websocket_alternative_event_source() {
-    // One-way server-sent events as WebSocket alternative
+fn websocket_runtime_guardrails_exposed() {
     assert_js_true(
         "(() => {
-            // EventSource provides server-to-client updates
-            const eventSource = {
-                addEventListener: (event, handler) => {
-                    // Listen for server events
-                },
-                close: () => {}
-            };
-
-            return typeof eventSource.addEventListener === 'function';
+            return Number.isInteger(WebSocket.maxConnections) &&
+                   WebSocket.maxConnections > 0 &&
+                   Number.isInteger(WebSocket.connectTimeoutMs) &&
+                   WebSocket.connectTimeoutMs > 0;
         })()",
-        "WebSocket alternative via EventSource",
+        "WebSocket guardrails metadata",
     );
 }
 
 #[test]
-fn websocket_alternative_polling() {
-    // Request-response polling as WebSocket alternative
+fn websocket_state_constants_available() {
     assert_js_true(
         "(() => {
-            const pollPattern = async () => {
-                while(true) {
-                    const response = await fetch('/api/update');
-                    const data = await response.json();
-                    if(data) {
-                        // Process update
-                        break;
-                    }
-                    // Wait before next poll
-                    await new Promise(r => setTimeout(r, 1000));
-                }
-            };
-
-            return typeof pollPattern === 'function';
+            return WebSocket.CONNECTING === 0 &&
+                   WebSocket.OPEN === 1 &&
+                   WebSocket.CLOSING === 2 &&
+                   WebSocket.CLOSED === 3;
         })()",
-        "WebSocket alternative via polling",
+        "WebSocket state constants",
     );
+}
+
+#[test]
+fn websocket_handshake_and_message_echo() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind websocket echo listener");
+    let addr = listener.local_addr().expect("read local address");
+
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept websocket client");
+        let mut socket = tungstenite::accept(stream).expect("upgrade websocket handshake");
+
+        let msg = socket.read().expect("read websocket message");
+        socket
+            .send(Message::Text(msg.into_text().expect("text frame")))
+            .expect("echo websocket message");
+        let _ = socket.close(None);
+    });
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("create tokio runtime");
+
+    rt.block_on(async move {
+        let mut runtime = make_runtime();
+        let script = format!(
+            r#"
+            globalThis.__wsTest = {{ done: false, ok: false, error: null }};
+            const ws = new WebSocket("ws://127.0.0.1:{port}");
+            ws.onopen = () => ws.send("ping");
+            ws.onmessage = (event) => {{
+              globalThis.__wsTest.ok = event.data === "ping";
+              ws.close(1000, "done");
+            }};
+            ws.onerror = () => {{
+              globalThis.__wsTest.error = "websocket error";
+              globalThis.__wsTest.done = true;
+            }};
+            ws.onclose = () => {{
+              globalThis.__wsTest.done = true;
+            }};
+            "#,
+            port = addr.port()
+        );
+
+        runtime
+            .execute_script("<ws_test>", script)
+            .expect("execute websocket test script");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            runtime
+                .run_event_loop(PollEventLoopOptions {
+                    wait_for_inspector: false,
+                    pump_v8_message_loop: true,
+                })
+                .await
+                .expect("run event loop for websocket test");
+
+            let done = runtime
+                .execute_script("<ws_done>", "globalThis.__wsTest?.done === true")
+                .expect("read websocket done flag");
+            let is_done = {
+                deno_core::scope!(scope, runtime);
+                done.open(scope).is_true()
+            };
+            if is_done {
+                break;
+            }
+
+            assert!(Instant::now() < deadline, "websocket test timed out");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let success = runtime
+            .execute_script(
+                "<ws_result>",
+                "globalThis.__wsTest?.ok === true && globalThis.__wsTest?.error === null",
+            )
+            .expect("read websocket test result");
+
+        deno_core::scope!(scope, runtime);
+        assert!(success.open(scope).is_true(), "expected websocket echo success");
+    });
+
+    server.join().expect("join websocket echo server");
 }
 
 // ── DNS Resolution ────────────────────────────────────────────────
@@ -310,8 +372,8 @@ fn network_request_validation() {
 }
 
 // NOTE: Additional networking APIs not available:
-// - socket.io support (would need WebSocket first)
-// - gRPC (requires WebSockets or HTTP/2)
+// - socket.io protocol support is not built-in (higher-level library concern)
+// - gRPC over HTTP/2 is not implemented in this runtime
 // - QUIC protocol (Deno doesn't expose this)
 //
 // Recommendation: Use HTTP/HTTPS Fetch API for most cases

@@ -1910,6 +1910,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "deno_websocket"
+version = "0.242.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "127a6431e521de7306207d530deb714b4307bf34d9c2c430045c98856f003564"
+dependencies = [
+ "bytes",
+ "deno_core",
+ "deno_error",
+ "deno_fetch",
+ "deno_net",
+ "deno_permissions",
+ "deno_tls",
+ "fastwebsockets",
+ "h2",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "once_cell",
+ "rustls-tokio-stream",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "deno_whoami"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5022,6 +5048,7 @@ dependencies = [
  "deno_tls",
  "deno_web",
  "deno_webidl",
+ "deno_websocket",
  "eszip",
  "flate2",
  "futures-util",

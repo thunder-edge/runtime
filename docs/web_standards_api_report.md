@@ -89,7 +89,7 @@
 | Built-in Objects | Math object | Full |
 | Built-in Objects | Date object | Full |
 | Built-in Objects | RegExp support | Full |
-| WebSocket API | WebSocket | None |
+| WebSocket API | WebSocket | Full |
 | Web Workers | Worker | None |
 | Cache API | CacheStorage / Cache | None |
 | WebGPU | GPU / GPUDevice | None |
@@ -127,7 +127,7 @@
 | String & Array Methods | 3 | 0 | 0 | 3 |
 | Intl API | 1 | 0 | 0 | 1 |
 | Built-in Objects | 3 | 0 | 0 | 3 |
-| WebSocket API | 0 | 0 | 1 | 1 |
+| WebSocket API | 1 | 0 | 0 | 1 |
 | Web Workers | 0 | 0 | 1 | 1 |
 | Cache API | 0 | 0 | 1 | 1 |
 | WebGPU | 0 | 0 | 1 | 1 |
@@ -146,6 +146,7 @@ The following Deno extensions are loaded:
 - `deno_crypto` - Web Crypto API
 - `deno_telemetry` - OpenTelemetry support
 - `deno_fetch` - Fetch API (Headers, Request, Response, fetch)
+- `deno_websocket` - WebSocket client API
 - `deno_net` - TCP/TLS networking
 - `deno_tls` - TLS support
 - `edge_node_compat` - Node.js compatibility layer (partial/stub node:*)

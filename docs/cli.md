@@ -839,6 +839,35 @@ thunder check \
   - test failures,
   - failed `deno check`.
 
+## WebSocket in Production
+
+The runtime now exposes the standard `WebSocket` client API in user functions.
+
+### Protocol and Transport
+
+- Client WebSocket sessions use standard HTTP `Upgrade` semantics (`ws://` or `wss://`).
+- For proxy hops that terminate/re-originate connections, keep upstream traffic on HTTP/1.1 for WebSocket upgrade routes.
+- HTTP/2 can still be used for regular HTTP traffic in front of the proxy, but WebSocket upgrade forwarding should use HTTP/1.1 to the runtime.
+
+### External Proxy Requirements
+
+- Preserve upgrade headers end-to-end:
+  - `Connection: Upgrade`
+  - `Upgrade: websocket`
+  - `Sec-WebSocket-Key`
+  - `Sec-WebSocket-Version`
+  - `Sec-WebSocket-Protocol` (when used)
+- Disable response buffering/caching on WebSocket routes.
+- Configure long-lived upstream read/write timeouts for idle-but-open sockets.
+- Do not rewrite `101 Switching Protocols` responses.
+
+### Runtime Guardrails
+
+- Per-isolate concurrent WebSocket connection cap: `128`
+- Connect timeout for sockets stuck in `CONNECTING`: `30s`
+
+If those limits are exceeded, `WebSocket` construction fails fast with a quota-style error or the pending socket is closed on timeout.
+
 ## Troubleshooting
 
 ### `deno` is not installed
