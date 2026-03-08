@@ -45,7 +45,7 @@ fn assert_js_true(source_code: &str, desc: &str) {
 // ============ node:crypto tests ============
 
 #[test]
-fn crypto_randomBytes_is_available() {
+fn crypto_random_bytes_is_available() {
     assert_js_true(
         r#"const crypto = await import('node:crypto');
         const buf = crypto.randomBytes(32);
@@ -55,7 +55,7 @@ fn crypto_randomBytes_is_available() {
 }
 
 #[test]
-fn crypto_randomFillSync_works() {
+fn crypto_random_fill_sync_works() {
     assert_js_true(
         r#"const crypto = await import('node:crypto');
         const buf = new Uint8Array(16);
@@ -66,7 +66,7 @@ fn crypto_randomFillSync_works() {
 }
 
 #[test]
-fn crypto_createHash_is_available() {
+fn crypto_create_hash_is_available() {
     assert_js_true(
         r#"const crypto = await import('node:crypto');
         const hash = crypto.createHash('sha256');
@@ -77,7 +77,7 @@ fn crypto_createHash_is_available() {
 }
 
 #[test]
-fn crypto_createHmac_is_available() {
+fn crypto_create_hmac_is_available() {
     assert_js_true(
         r#"const crypto = await import('node:crypto');
         const hmac = crypto.createHmac('sha256', 'secret');
@@ -100,7 +100,7 @@ fn stream_readable_has_pause_resume() {
 }
 
 #[test]
-fn stream_readable_accepts_highWaterMark() {
+fn stream_readable_accepts_high_water_mark() {
     assert_js_true(
         r#"const { Readable } = await import('node:stream');
         const readable = new Readable({ highWaterMark: 8192 });
@@ -178,5 +178,70 @@ fn all_three_modules_loadable_together() {
 
         console.log(hasRandomBytes && hasReadable && hasEventEmitter);"#,
         "All three modules (crypto, stream, events) should be loadable",
+    );
+}
+
+#[test]
+fn crypto_microbenchmark_reports_metrics() {
+    assert_js_true(
+        r#"const crypto = await import('node:crypto');
+        const iterations = 3000;
+        const payload = 'edge-runtime-benchmark-payload';
+
+        function runHashBench() {
+            const started = performance.now();
+            let last = '';
+            for (let i = 0; i < iterations; i++) {
+                last = crypto.createHash('sha256').update(payload).digest('hex');
+            }
+            const elapsed = performance.now() - started;
+            return { elapsed, last };
+        }
+
+        function runHmacBench() {
+            const started = performance.now();
+            let last = '';
+            for (let i = 0; i < iterations; i++) {
+                last = crypto.createHmac('sha256', 'secret-key').update(payload).digest('hex');
+            }
+            const elapsed = performance.now() - started;
+            return { elapsed, last };
+        }
+
+        function runRandomBench() {
+            const started = performance.now();
+            let lastLen = 0;
+            for (let i = 0; i < iterations; i++) {
+                lastLen = crypto.randomBytes(32).length;
+            }
+            const elapsed = performance.now() - started;
+            return { elapsed, lastLen };
+        }
+
+        const hash = runHashBench();
+        const hmac = runHmacBench();
+        const random = runRandomBench();
+
+        const hashOps = Math.floor((iterations * 1000) / Math.max(1, hash.elapsed));
+        const hmacOps = Math.floor((iterations * 1000) / Math.max(1, hmac.elapsed));
+        const randomOps = Math.floor((iterations * 1000) / Math.max(1, random.elapsed));
+
+        console.log('[crypto-benchmark] hash.sha256 ms=' + hash.elapsed.toFixed(2) + ' ops/s=' + hashOps);
+        console.log('[crypto-benchmark] hmac.sha256 ms=' + hmac.elapsed.toFixed(2) + ' ops/s=' + hmacOps);
+        console.log('[crypto-benchmark] randomBytes(32) ms=' + random.elapsed.toFixed(2) + ' ops/s=' + randomOps);
+
+        const deterministic =
+            typeof hash.last === 'string' && hash.last.length === 64 &&
+            typeof hmac.last === 'string' && hmac.last.length === 64 &&
+            random.lastLen === 32;
+
+        const saneLatency = hash.elapsed > 0 && hmac.elapsed > 0 && random.elapsed > 0;
+        const saneThroughput = hashOps > 100 && hmacOps > 100 && randomOps > 100;
+
+        if (!(deterministic && saneLatency && saneThroughput)) {
+            throw new Error('crypto benchmark sanity check failed');
+        }
+        "#,
+        "crypto benchmark should report sane throughput/latency",
     );
 }

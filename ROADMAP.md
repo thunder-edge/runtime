@@ -3,7 +3,7 @@
 > Baseado na auditoria de segurança e arquitetura realizada em 05/03/2026.
 > Cada item referencia o finding correspondente no `AUDIT.md`.
 >
-> Última atualização: 08/03/2026 (P1 de VFS seguro em `node:fs` concluído com quotas configuráveis por manifest/flag/env, `http/https` client-side compat, P2 de `node:dns` via DoH controlado, expansão de `node:util`/`node:diagnostics_channel`, `async_hooks`/ALS com propagação real, P3 de `node:zlib` funcional parcial com backend nativo, P1 inicial de `node:crypto`, avanço de `node:stream` com cancelamento por `AbortSignal` em `pipeline` e teste E2E de resposta chunked progressiva, e P3 de hardening/governança com rate limiting de egress por execução, verificação de integridade de VFS e gate de matriz Node em relatório/CI; backlog do `ROADMAP-NODE-COMPAT.md` consolidado neste documento).
+> Última atualização: 08/03/2026 (P1 de VFS seguro em `node:fs` concluído com quotas configuráveis por manifest/flag/env, `http/https` client-side compat, P2 de `node:dns` via DoH controlado, expansão de `node:util`/`node:diagnostics_channel`, `async_hooks`/ALS com propagação real, P3 de `node:zlib` funcional parcial com backend nativo, P1 inicial de `node:crypto`, avanço de `node:stream` com cancelamento por `AbortSignal` em `pipeline` e teste E2E de resposta chunked progressiva, P3 de hardening/governança com rate limiting de egress por execução, verificação de integridade de VFS e gate de matriz Node em relatório/CI, e P4 inicial com benchmark/otimização de throughput/latência de `node:crypto`; backlog do `ROADMAP-NODE-COMPAT.md` consolidado neste documento).
 > Commits de referência: `92aa473`, `6607a2b`, `4933dda`.
 > Inclui também mudanças locais ainda não commitadas em `functions/runtime-core`.
 
@@ -505,13 +505,16 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 
 #### P4 — Performance e Operação Contínua
 
-- [ ] Benchmark e otimização de throughput/latência das novas APIs de `node:crypto`.
+- [x] Benchmark e otimização de throughput/latência das novas APIs de `node:crypto`.
+    - Status aplicado: micro-otimizações em `crates/runtime-core/src/node_compat/crypto.ts` para reduzir overhead de hot path (cache de ops nativas, eliminação de cópias evitáveis de `Buffer` e fast path para digest com chunk único).
+    - Status aplicado: benchmark dedicado adicionado via `scripts/node-crypto-benchmark.sh` com execução do teste `crypto_microbenchmark_reports_metrics` em `crates/functions/tests/node_crypto_streams_async_hooks.rs`.
+    - Resultado de referência (execução local em 08/03/2026): `createHash('sha256')` ~80.476 ops/s (37,28ms/3k), `createHmac('sha256')` ~36.382 ops/s (82,46ms/3k), `randomBytes(32)` ~237.784 ops/s (12,62ms/3k).
     - Referência: `ROADMAP-NODE-COMPAT.md §9 Issue #9`, `§10 Phase 5`.
 
 #### Critério de Conclusão da Consolidação
 
-- [ ] Todo item pendente de `ROADMAP-NODE-COMPAT.md` deve apontar para esta seção ou estar marcado como concluído/descartado com justificativa.
-- [ ] Não manter backlog duplicado divergente entre `ROADMAP.md` e `ROADMAP-NODE-COMPAT.md`.
+- [X] Todo item pendente de `ROADMAP-NODE-COMPAT.md` deve apontar para esta seção ou estar marcado como concluído/descartado com justificativa.
+- [X] Não manter backlog duplicado divergente entre `ROADMAP.md` e `ROADMAP-NODE-COMPAT.md`.
 
 ---
 
@@ -571,6 +574,182 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 - [ ] Expor introspecção administrativa e documentação operacional por rota
 
 **Referência:** `ROADMAP_ROUTING.md` seções 10, 11, 12, 13 e 14.
+
+---
+
+## Fase 7 — Escalabilidade Context + Isolate (Pool Evolutivo)
+
+> Objetivo: evoluir do pool atual (replicas de isolate por função) para um modelo gradual de `N contexts por isolate`, com escala automática para o próximo isolate ao atingir limite de contexts por isolate, respeitando o teto global de isolates do processo.
+>
+> Documento técnico detalhado: [ROADMAP_CONTEXT_ISOLATE.md](./ROADMAP_CONTEXT_ISOLATE.md)
+
+### 7.1 Macro Passo A — Baseline e Arquitetura-Alvo
+
+- [ ] Validar baseline de comportamento atual do pool por função e registrar gaps para multi-context.
+- [ ] Formalizar arquitetura-alvo (`processo -> pool global de isolates -> contexts -> requests`).
+- [ ] Definir limites operacionais iniciais (`max_contexts_per_isolate`, `global_max_isolates`, `max_active_requests_per_context`).
+
+Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#2-estado-atual-as-is](./ROADMAP_CONTEXT_ISOLATE.md#2-estado-atual-as-is), [ROADMAP_CONTEXT_ISOLATE.md#3-arquitetura-alvo-to-be](./ROADMAP_CONTEXT_ISOLATE.md#3-arquitetura-alvo-to-be)
+
+### 7.2 Macro Passo B — Mudanças Estruturais por Crate
+
+- [ ] Evoluir `IsolateRequest` para roteamento por função/context.
+- [ ] Refatorar lifecycle para separar bootstrap de isolate e bootstrap de context.
+- [ ] Migrar `FunctionRegistry` para pool global de isolates + tabela de roteamento por contexts.
+- [ ] Tornar o bridge JS (`__edgeRuntime`) context-aware (handler por context).
+
+Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#4-mudancas-por-crate-implementacao](./ROADMAP_CONTEXT_ISOLATE.md#4-mudancas-por-crate-implementacao)
+
+### 7.3 Macro Passo C — Scheduler Context-First
+
+- [ ] Implementar scheduler `context-first, isolate-next`.
+- [ ] Criar context novo antes de escalar isolate; ao atingir limite de contexts, abrir novo isolate automaticamente.
+- [ ] Aplicar shedding determinístico quando limite global de isolates for atingido.
+
+Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#5-algoritmo-de-scheduling](./ROADMAP_CONTEXT_ISOLATE.md#5-algoritmo-de-scheduling)
+
+### 7.4 Macro Passo D — Rollout Gradual com Feature Flags
+
+- [ ] Entregar instrumentação primeiro (sem mudança de comportamento).
+- [ ] Habilitar modo context pool via flag, iniciando por canário.
+- [ ] Expandir progressivamente até ativação ampla com fallback para modo legado.
+
+Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#6-rollout-gradual-sem-regressao](./ROADMAP_CONTEXT_ISOLATE.md#6-rollout-gradual-sem-regressao)
+
+### 7.5 Macro Passo E — Deploy/Update/Drain Sem Interrupção
+
+- [ ] Garantir deploy de context com atualização atômica de roteamento.
+- [ ] Implementar update por versão (`v+1`) com draining dos contexts antigos.
+- [ ] Implementar remoção de função em todos os isolates com reciclagem de capacidade.
+
+Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#7-deploy-update-e-drain](./ROADMAP_CONTEXT_ISOLATE.md#7-deploy-update-e-drain)
+
+### 7.6 Macro Passo F — SLOs, Testes e Hardening
+
+- [ ] Adicionar métricas de saturação por context e por isolate.
+- [ ] Cobrir trilha completa com testes unitários, integração, caos e benchmark comparativo.
+- [ ] Fechar riscos de isolamento e roteamento incorreto em multi-context.
+
+Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#8-observabilidade-e-slos](./ROADMAP_CONTEXT_ISOLATE.md#8-observabilidade-e-slos), [ROADMAP_CONTEXT_ISOLATE.md#9-testes-necessarios](./ROADMAP_CONTEXT_ISOLATE.md#9-testes-necessarios), [ROADMAP_CONTEXT_ISOLATE.md#10-compatibilidade-e-riscos](./ROADMAP_CONTEXT_ISOLATE.md#10-compatibilidade-e-riscos)
+
+### 7.7 Macro Passo G — Atualização de Documentação Existente
+
+- [ ] Atualizar documentação de arquitetura, operação e tuning para refletir modo multi-context.
+- [ ] Publicar diferenças de comportamento entre modo legado e novo modo.
+
+Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#11-plano-de-atualizacao-de-documentacao-existente](./ROADMAP_CONTEXT_ISOLATE.md#11-plano-de-atualizacao-de-documentacao-existente)
+
+### 7.8 Backlog Executável por PRs (Plano de Entrega)
+
+> Objetivo: transformar a Fase 7 em entregas incrementais, com merge seguro e rollback simples.
+>
+> Dependência técnica detalhada: [ROADMAP_CONTEXT_ISOLATE.md](./ROADMAP_CONTEXT_ISOLATE.md)
+
+#### PR1 — `IsolateRequest` + Feature Flags + Instrumentação Base
+
+**Objetivo:** preparar o runtime para roteamento por contexto sem alterar comportamento padrão.
+
+**Escopo:**
+- [ ] Evoluir `IsolateRequest` para incluir metadados de destino lógico (`function_name` e `context_id` opcional).
+- [ ] Adicionar flags de runtime:
+    - [ ] `EDGE_RUNTIME_CONTEXT_POOL_ENABLED`
+    - [ ] `EDGE_RUNTIME_MAX_CONTEXTS_PER_ISOLATE`
+    - [ ] `EDGE_RUNTIME_MAX_ACTIVE_REQUESTS_PER_CONTEXT`
+- [ ] Manter default em modo legado (sem multi-context ativo por padrão).
+- [ ] Incluir métricas base de contexto no modo legado (1 context por isolate), sem impacto funcional.
+
+**Arquivos-alvo (mínimo):**
+- `crates/runtime-core/src/isolate.rs`
+- `crates/cli/src/commands/start.rs`
+- `crates/functions/src/types.rs`
+- `crates/functions/src/registry.rs`
+- `docs/cli.md`
+
+**Critério de aceite:**
+- [ ] Nenhuma regressão na rota atual (`/{function_name}/*`).
+- [ ] Novas flags aparecem no CLI/help e envs funcionam.
+- [ ] Build/test atuais passam sem habilitar context pool.
+
+#### PR2 — Dispatch por Context (Bridge + Runtime)
+
+**Objetivo:** habilitar execução orientada a contexto dentro do isolate.
+
+**Escopo:**
+- [ ] Tornar bridge JS context-aware (`handler` por context em vez de singleton global).
+- [ ] Introduzir caminho de dispatch por contexto no runtime (`dispatch_request_for_context(...)`).
+- [ ] Ajustar lifecycle para carregar/atualizar context de função sem quebrar bootstrap atual.
+
+**Arquivos-alvo (mínimo):**
+- `crates/functions/src/handler.rs`
+- `crates/functions/src/lifecycle.rs`
+- `crates/runtime-core/src/isolate.rs`
+
+**Critério de aceite:**
+- [ ] Duas funções no mesmo isolate podem coexistir com handlers distintos.
+- [ ] Sem vazamento de handler/estado entre contexts.
+- [ ] Modo legado continua funcionando quando flag desabilitada.
+
+#### PR3 — Scheduler `context-first, isolate-next` + Pool Global + Métricas
+
+**Objetivo:** ativar estratégia de escala automática context->isolate com limites configuráveis.
+
+**Escopo:**
+- [ ] Migrar `FunctionRegistry` para tabela de roteamento por context + pool global de isolates.
+- [ ] Implementar scheduler:
+    - [ ] reutiliza context existente antes de criar novo
+    - [ ] cria novo isolate quando `max_contexts_per_isolate` for atingido
+    - [ ] respeita `global_max_isolates` e aplica shedding determinístico em saturação
+- [ ] Expor métricas de saturação por context e isolate.
+
+**Arquivos-alvo (mínimo):**
+- `crates/functions/src/registry.rs`
+- `crates/functions/src/types.rs`
+- `crates/functions/src/metrics.rs`
+- `crates/server/src/router.rs`
+- `docs/external-scaling-recommendations.md`
+
+**Critério de aceite:**
+- [ ] Escala automática comprovada em teste (context lotado -> novo isolate).
+- [ ] Erro determinístico (`503`) quando limite global for atingido.
+- [ ] Métricas novas disponíveis no endpoint de métricas.
+
+#### PR4 — E2E, Hardening, Rollout e Atualização de Docs
+
+**Objetivo:** fechar trilha com qualidade de produção e documentação consolidada.
+
+**Escopo:**
+- [ ] Adicionar E2Es de concorrência, drain e hot-reload por versão de context.
+- [ ] Adicionar testes de caos (queda de isolate com múltiplos contexts).
+- [ ] Documentar rollout gradual (canário, fallback legado, playbook operacional).
+- [ ] Atualizar documentos canônicos para refletir modo multi-context.
+
+**Arquivos-alvo (mínimo):**
+- `crates/server/src/lib.rs`
+- `docs/timeout-and-resource-tracking.md`
+- `docs/external-scaling-recommendations.md`
+- `CURRENT_ARCHITECTURE_ANALYSIS.md`
+- `README.md`
+- `docs/cli.md`
+- `docs/NODE-COMPAT.md`
+
+**Critério de aceite:**
+- [ ] Suite E2E cobrindo coexistência multi-funcao no mesmo isolate e isolamento por context.
+- [ ] Documentação operacional atualizada com tuning e troubleshooting.
+- [ ] Procedimento de rollback para modo legado documentado e validado.
+
+#### Ordem Recomendada de Merge
+
+1. PR1
+2. PR2
+3. PR3
+4. PR4
+
+#### Regras de Go/No-Go por PR
+
+- [ ] Todo PR deve manter compatibilidade com modo legado por default.
+- [ ] Todo PR deve incluir regressões automatizadas para o escopo alterado.
+- [ ] Nenhum PR deve alterar contrato externo de deploy/ingress sem seção de migração explícita.
+- [ ] Se houver degradação de latência p95 significativa, bloquear avanço para o próximo PR até mitigação.
 
 ## Métricas de Sucesso
 

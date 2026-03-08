@@ -2,22 +2,36 @@ import { Buffer } from "node:buffer";
 
 type Encoding = 'hex' | 'base64' | 'utf8' | 'utf-8' | 'latin1' | 'ascii';
 
+const ALGORITHM_MAP: Record<string, string> = {
+  'sha1': 'SHA-1',
+  'sha224': 'SHA-224',
+  'sha256': 'SHA-256',
+  'sha384': 'SHA-384',
+  'sha512': 'SHA-512',
+  'md5': 'MD5',
+};
+
+let cachedOps: Record<string, (...args: unknown[]) => unknown> | undefined;
+
 function runtimeCore(): { ops?: Record<string, (...args: unknown[]) => unknown> } {
-  return (globalThis as unknown as {
+  if (cachedOps) {
+    return { ops: cachedOps };
+  }
+
+  const core = (globalThis as unknown as {
     Deno?: { core?: { ops?: Record<string, (...args: unknown[]) => unknown> } };
     __bootstrap?: { core?: { ops?: Record<string, (...args: unknown[]) => unknown> } };
   }).Deno?.core ??
     (globalThis as unknown as {
       __bootstrap?: { core?: { ops?: Record<string, (...args: unknown[]) => unknown> } };
     }).__bootstrap?.core ?? {};
+
+  cachedOps = core.ops;
+  return core;
 }
 
 function mapAlgorithm(name: string): string {
-  const map: Record<string, string> = {
-    'sha1': 'SHA-1', 'sha224': 'SHA-224', 'sha256': 'SHA-256',
-    'sha384': 'SHA-384', 'sha512': 'SHA-512', 'md5': 'MD5',
-  };
-  return map[name.toLowerCase()] || name.toUpperCase();
+  return ALGORITHM_MAP[name.toLowerCase()] || name.toUpperCase();
 }
 
 function encodeData(data: string | Uint8Array | Buffer, encoding?: Encoding): Uint8Array {
@@ -28,7 +42,7 @@ function encodeData(data: string | Uint8Array | Buffer, encoding?: Encoding): Ui
 }
 
 function encodeOutput(data: Uint8Array, encoding?: Encoding): string | Buffer {
-  if (!encoding) return Buffer.from(data);
+  if (!encoding) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   return Buffer.from(data).toString(encoding as any);
 }
 
@@ -50,7 +64,8 @@ export function randomBytes(size: number, cb?: (err: Error | null, buf: Buffer) 
     if (cb) { queueMicrotask(() => cb(err)); return; }
     throw err;
   }
-  const buf = Buffer.from(resolveWebCrypto().getRandomValues(new Uint8Array(size)));
+  const bytes = resolveWebCrypto().getRandomValues(new Uint8Array(size));
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (cb) { queueMicrotask(() => cb(null, buf)); return; }
   return buf;
 }
@@ -70,7 +85,13 @@ export function randomFill(buf: Uint8Array | Buffer, offset?: number | ((err: Er
   else if (typeof size === 'function') { actualCallback = size; actualOffset = (offset as number) || 0; }
   else { actualCallback = cb; actualOffset = (offset as number) || 0; actualSize = (size as number) || (buf.length - actualOffset); }
   queueMicrotask(() => {
-    try { randomFillSync(buf, actualOffset, actualSize); actualCallback?.(null, Buffer.from(buf)); }
+    try {
+      randomFillSync(buf, actualOffset, actualSize);
+      const out = Buffer.isBuffer(buf)
+        ? buf
+        : Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+      actualCallback?.(null, out);
+    }
     catch (err) { actualCallback?.(err as Error); }
   });
 }
@@ -97,12 +118,17 @@ export class Hash {
       throw new Error('crypto native ops not available');
     }
 
-    const combined = new Uint8Array(this.#chunks.reduce((a, c) => a + c.length, 0));
-    let offset = 0;
-    for (const chunk of this.#chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
-    }
+    const combined = this.#chunks.length === 1
+      ? this.#chunks[0]
+      : (() => {
+        const out = new Uint8Array(this.#chunks.reduce((a, c) => a + c.length, 0));
+        let offset = 0;
+        for (const chunk of this.#chunks) {
+          out.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return out;
+      })();
 
     // Call native Rust op - synchronous!
     const hashBytes = op(this.#algo, combined);
@@ -134,12 +160,17 @@ export class Hmac {
       throw new Error('crypto native ops not available');
     }
 
-    const combined = new Uint8Array(this.#chunks.reduce((a, c) => a + c.length, 0));
-    let offset = 0;
-    for (const chunk of this.#chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
-    }
+    const combined = this.#chunks.length === 1
+      ? this.#chunks[0]
+      : (() => {
+        const out = new Uint8Array(this.#chunks.reduce((a, c) => a + c.length, 0));
+        let offset = 0;
+        for (const chunk of this.#chunks) {
+          out.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return out;
+      })();
 
     // Call native Rust op - synchronous!
     const signature = op(this.#algo, this.#key, combined);

@@ -18,6 +18,7 @@ This directory contains scripts for bundling, deploying, and load-testing the De
 ### Automation Scripts
 - **`run-benchmarks.sh`** - Full end-to-end benchmark (build, bundle, deploy, test everything)
 - **`quick-benchmark.sh`** - Fast re-run of benchmarks without rebuilding
+- **`node-crypto-benchmark.sh`** - Focused benchmark/check for `node:crypto` throughput/latency (`createHash`, `createHmac`, `randomBytes`)
 - **`zlib-guardrail-benchmark.sh`** - Focused benchmark/check for `node:zlib` hardening guardrails
 - **`start-observability-runtime.sh`** - Start observability docker stack + run edge runtime with OTEL + open Grafana
 
@@ -59,6 +60,17 @@ This will:
 ```bash
 ./scripts/quick-benchmark.sh
 ```
+
+### Focused Node Crypto Benchmark
+
+```bash
+./scripts/node-crypto-benchmark.sh
+```
+
+This runs a focused microbenchmark test and reports throughput/latency for:
+- `createHash('sha256')`
+- `createHmac('sha256')`
+- `randomBytes(32)`
 
 ### Start Observability + Runtime (OTEL)
 
