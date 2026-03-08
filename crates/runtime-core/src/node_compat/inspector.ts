@@ -15,7 +15,7 @@ class Session {
   disconnect(): void {}
   post(_method: string, _params?: unknown, cb?: (...args: unknown[]) => void): void {
     if (typeof cb === "function") {
-      cb(new Error("[edge-runtime] inspector.Session.post is not implemented in this runtime profile"));
+      cb(new Error("[thunder] inspector.Session.post is not implemented in this runtime profile"));
     }
   }
 }

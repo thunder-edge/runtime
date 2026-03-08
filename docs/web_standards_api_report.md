@@ -6,9 +6,9 @@
 
 | Status | Count | Percentage |
 |--------|------:|------------|
-| Full | 62 | 77% |
+| Full | 63 | 78% |
 | Partial | 3 | 4% |
-| None | 16 | 20% |
+| None | 15 | 19% |
 | **Total** | **81** | **100%** |
 
 ## Detailed Results
@@ -146,10 +146,9 @@ The following Deno extensions are loaded:
 - `deno_crypto` - Web Crypto API
 - `deno_telemetry` - OpenTelemetry support
 - `deno_fetch` - Fetch API (Headers, Request, Response, fetch)
-- `deno_websocket` - WebSocket client API
 - `deno_net` - TCP/TLS networking
 - `deno_tls` - TLS support
-- `edge_node_compat` - Node.js compatibility layer (partial/stub node:*)
+- `edge_node_compat` - Node.js compatibility layer (Full/Partial/Stub node:*)
 - `deno_node` - Minimal node shim required by runtime deps
 - `edge_bootstrap` - Bootstrap module that wires everything to globalThis
 - `edge_assert` - Optional test helpers extension (loaded only in CLI test mode)
@@ -157,51 +156,52 @@ The following Deno extensions are loaded:
 ## Node API Compatibility
 
 This section is validated by runtime checks and is separate from Web Standards scoring.
-Node APIs are grouped by runtime support tier to mirror a Cloudflare-style compatibility message.
-- `🟢 Supported (practical subset)`: non-stub APIs with behavior suitable for common real usage.
-- `🟡 Partial (stub/non-functional)`: import/surface compatibility where core behavior is intentionally stubbed.
-- `⚪ Not supported`: intentionally not exposed in this runtime profile.
+Official compatibility levels for `node:*` APIs:
+- `Full`: implementation considered functionally complete for the tested contract.
+- `Partial`: implementation works for common/runtime-safe paths with documented limitations.
+- `Stub`: module is importable, but unsupported methods fail deterministically when called.
+Stub failures use the standardized format: `[thunder] <api> is not implemented in this runtime profile`.
 Unsupported privileged behavior fails with deterministic errors (for example `EOPNOTSUPP`) instead of panicking or exposing host resources.
 
-| Module | Runtime Support | Profile | Tested Status | Notes |
-|--------|-----------------|---------|---------------|-------|
-| `node:process` | 🟢 Supported (practical subset) | Partial | Partial | Sandboxed process subset with in-memory `env`, virtual cwd (`/bundle`), and stdio compatibility streams. |
-| `node:buffer` | 🟢 Supported (practical subset) | Partial | Partial | Common Buffer operations for SSR/tooling (`from`, `alloc`, `concat`, `byteLength`, `toString`). |
-| `node:crypto` | 🟢 Supported (practical subset) | Partial | Partial | Subset funcional com `randomBytes`/`randomFill` e hashing/HMAC (`createHash`/`createHmac`) sobre WebCrypto + ops nativas. |
-| `node:events` | 🟡 Partial (validation gap) | Partial | None | EventEmitter-compatible surface for common listener/emit flows. |
-| `node:util` | 🟢 Supported (practical subset) | Partial | Partial | Utility subset (`format`, `inspect`, `promisify`, `types`, `MIMEType`) used by dependencies. |
-| `node:path` | 🟢 Supported (practical subset) | Partial | Partial | Deterministic path helpers for module/tooling compatibility. |
-| `node:stream` | 🟢 Supported (practical subset) | Partial | Partial | Basic stream primitives/pipeline for compatibility paths; not full Node stream semantics. |
-| `node:os` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | Contract-stable environment info and deterministic errors for unsupported host-affecting calls. |
-| `node:module` | 🟡 Partial (validation gap) | Partial | None | `createRequire` and built-in-only `require()` with explicit deterministic policy for unsupported modules. |
-| `node:fs` | 🟡 Partial (validation gap) | Partial | None | VFS-backed module: `/bundle` read-only, `/tmp` writable/ephemeral, `/dev/null` sink. Host filesystem stays inaccessible. |
-| `node:fs/promises` | 🟡 Partial (validation gap) | Partial | None | Promise APIs mirror VFS behavior, including writable `/tmp` and deterministic quota/read-only errors. |
-| `node:async_hooks` | 🟢 Supported (practical subset) | Partial | Partial | `AsyncLocalStorage` and hook callbacks propagate context across common async boundaries (Promise/microtask). |
-| `node:child_process` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | Non-functional process-spawn APIs with deterministic not-implemented behavior. |
-| `node:cluster` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | Non-functional cluster orchestration APIs with deterministic failures. |
-| `node:console` | 🟡 Partial (validation gap) | Partial | None | Console module compatibility maps to runtime console implementation. |
-| `node:diagnostics_channel` | 🟡 Partial (validation gap) | Partial | None | Basic publish/subscribe channel plus `TracingChannel` hooks for sync/promise tracing flows. |
-| `node:dns` | 🟡 Partial (validation gap) | Partial | None | DoH-backed subset (`lookup`, `resolve*`, `reverse`) with bounded answers/timeouts; unsupported APIs remain deterministic stubs. |
-| `node:http` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | HTTP client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional. |
-| `node:https` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | HTTPS client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional. |
-| `node:http2` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | HTTP/2 compatibility surface for imports with deterministic non-functional operations. |
-| `node:inspector` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | Inspector bridge compatibility surface with no-op/open stubs in this runtime profile. |
-| `node:net` | 🟡 Partial (validation gap) | Partial | None | Outbound client socket subset (`connect`) is available; `net.Server` APIs remain deterministic stubs. |
-| `node:perf_hooks` | 🟡 Partial (validation gap) | Partial | None | Performance hooks compatibility based on runtime Performance APIs. |
-| `node:punycode` | 🟡 Partial (validation gap) | Partial | None | Punycode compatibility helpers for import-level ecosystem support. |
-| `node:querystring` | 🟡 Partial (validation gap) | Partial | None | Querystring parse/stringify compatibility helpers. |
-| `node:readline` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | Readline import-level compatibility with deterministic non-functional interactive APIs. |
-| `node:repl` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | REPL compatibility entrypoint with deterministic non-functional behavior. |
-| `node:sqlite` | ⚪ Not supported | Not supported | Full | Intentionally not exposed in this runtime profile to match Workers support boundary. |
-| `node:string_decoder` | 🟡 Partial (validation gap) | Partial | None | String decoder compatibility for common buffer decoding flows. |
-| `node:test` | ⚪ Not supported | Not supported | Full | Intentionally not exposed in this runtime profile to match Workers support boundary. |
-| `node:tls` | 🟡 Partial (validation gap) | Partial | None | Outbound TLS client subset (`connect`) is available; server/context APIs remain deterministic stubs. |
-| `node:dgram` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | UDP/datagram import compatibility with deterministic non-functional sockets. |
-| `node:v8` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | V8 compatibility introspection helpers with deterministic static values. |
-| `node:vm` | 🟡 Partial (stub/non-functional) | Stub/Partial | None | VM import compatibility with deterministic non-functional script execution APIs. |
-| `node:zlib` | 🟡 Partial (validation gap) | Partial | None | Functional async+sync one-shot compression subset (`gzip/gunzip/deflate/inflate/deflateRaw/inflateRaw`) backed by native runtime ops with runtime-configurable defaults under immutable hard output/input ceilings and operation-time guardrail; stream constructors remain deterministic stubs. |
-| `node:assert` | 🟡 Partial (validation gap) | Partial | None | Assertion testing helpers compatible with common assert usage patterns. |
-| `node:url` | 🟢 Supported (practical subset) | Partial | Partial | URL module compatibility with URL constructors, file URL helpers, and domain ASCII/Unicode helpers. |
-| `node:timers` | 🟡 Partial (validation gap) | Partial | None | Timer module compatibility backed by runtime timer globals. |
-| `node:timers/promises` | 🟡 Partial (validation gap) | Partial | None | Promise-based timers compatibility (`setTimeout`, `setImmediate`, `setInterval`). |
+| Module | Level | Profile | Tested Status | Notes |
+|--------|-------|---------|---------------|-------|
+| `node:process` | Partial | Partial | Partial | Sandboxed process subset with in-memory `env`, virtual cwd (`/bundle`), and stdio compatibility streams. |
+| `node:buffer` | Partial | Partial | Partial | Common Buffer operations for SSR/tooling (`from`, `alloc`, `concat`, `byteLength`, `toString`). |
+| `node:crypto` | Partial | Partial | Partial | Subset funcional com `randomBytes`/`randomFill` e hashing/HMAC (`createHash`/`createHmac`) sobre WebCrypto + ops nativas. |
+| `node:events` | Partial | Partial | Partial | EventEmitter-compatible surface for common listener/emit flows. |
+| `node:util` | Partial | Partial | Partial | Utility subset (`format`, `inspect`, `promisify`, `types`, `MIMEType`) used by dependencies. |
+| `node:path` | Partial | Partial | Partial | Deterministic path helpers for module/tooling compatibility. |
+| `node:stream` | Partial | Partial | Partial | Basic stream primitives/pipeline for compatibility paths; not full Node stream semantics. |
+| `node:os` | Partial | Partial | Partial | Contract-stable environment info and deterministic errors for unsupported host-affecting calls. |
+| `node:module` | Partial | Partial | Partial | `createRequire` and built-in-only `require()` with explicit deterministic policy for unsupported modules. |
+| `node:fs` | Partial | Partial | Partial | VFS-backed module: `/bundle` read-only, `/tmp` writable/ephemeral, `/dev/null` sink. Host filesystem stays inaccessible. |
+| `node:fs/promises` | Partial | Partial | Partial | Promise APIs mirror VFS behavior, including writable `/tmp` and deterministic quota/read-only errors. |
+| `node:async_hooks` | Partial | Partial | Partial | `AsyncLocalStorage` and hook callbacks propagate context across common async boundaries (Promise/microtask). |
+| `node:child_process` | Stub | Stub | Partial | Non-functional process-spawn APIs with deterministic not-implemented behavior. |
+| `node:cluster` | Stub | Stub | Partial | Non-functional cluster orchestration APIs with deterministic failures. |
+| `node:console` | Partial | Partial | Partial | Console module compatibility maps to runtime console implementation. |
+| `node:diagnostics_channel` | Partial | Partial | Partial | Basic publish/subscribe channel plus `TracingChannel` hooks for sync/promise tracing flows. |
+| `node:dns` | Partial | Partial | Partial | DoH-backed subset (`lookup`, `resolve*`, `reverse`) with bounded answers/timeouts; unsupported APIs remain deterministic stubs. |
+| `node:http` | Partial | Partial | Partial | HTTP client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional. |
+| `node:https` | Partial | Partial | Partial | HTTPS client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional. |
+| `node:http2` | Stub | Stub | Partial | HTTP/2 compatibility surface for imports with deterministic non-functional operations. |
+| `node:inspector` | Stub | Stub | Partial | Inspector bridge compatibility surface with no-op/open stubs in this runtime profile. |
+| `node:net` | Partial | Partial | Partial | Outbound client socket subset (`connect`) is available; `net.Server` APIs remain deterministic stubs. |
+| `node:perf_hooks` | Partial | Partial | Partial | Performance hooks compatibility based on runtime Performance APIs. |
+| `node:punycode` | Partial | Partial | Partial | Punycode compatibility helpers for import-level ecosystem support. |
+| `node:querystring` | Partial | Partial | Partial | Querystring parse/stringify compatibility helpers. |
+| `node:readline` | Stub | Stub | Partial | Readline import-level compatibility with deterministic non-functional interactive APIs. |
+| `node:repl` | Stub | Stub | Partial | REPL compatibility entrypoint with deterministic non-functional behavior. |
+| `node:sqlite` | Stub | Stub | Partial | Import-compatible stub module. Constructors fail deterministically when invoked. |
+| `node:string_decoder` | Partial | Partial | Partial | String decoder compatibility for common buffer decoding flows. |
+| `node:test` | Stub | Stub | Partial | Import-compatible test module stub. Methods throw deterministic not-implemented errors. |
+| `node:tls` | Partial | Partial | Partial | Outbound TLS client subset (`connect`) is available; server/context APIs remain deterministic stubs. |
+| `node:dgram` | Stub | Stub | Partial | UDP/datagram import compatibility with deterministic non-functional sockets. |
+| `node:v8` | Partial | Partial | Partial | V8 compatibility introspection helpers with deterministic static values. |
+| `node:vm` | Stub | Stub | Partial | VM import compatibility with deterministic non-functional script execution APIs. |
+| `node:zlib` | Partial | Partial | Partial | Functional async+sync one-shot compression subset (`gzip/gunzip/deflate/inflate/deflateRaw/inflateRaw`) backed by native runtime ops with runtime-configurable defaults under immutable hard output/input ceilings and operation-time guardrail; stream constructors remain deterministic stubs. |
+| `node:assert` | Partial | Partial | Partial | Assertion testing helpers compatible with common assert usage patterns. |
+| `node:url` | Partial | Partial | Partial | URL module compatibility with URL constructors, file URL helpers, and domain ASCII/Unicode helpers. |
+| `node:timers` | Partial | Partial | Partial | Timer module compatibility backed by runtime timer globals. |
+| `node:timers/promises` | Partial | Partial | Partial | Promise-based timers compatibility (`setTimeout`, `setImmediate`, `setInterval`). |
 

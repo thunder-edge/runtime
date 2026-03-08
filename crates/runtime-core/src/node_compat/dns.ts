@@ -41,13 +41,13 @@ const DEFAULT_MAX_ANSWERS = 16;
 const DEFAULT_TIMEOUT_MS = 2000;
 
 function dnsError(code: string, message: string): never {
-  const err = new Error(`[edge-runtime] ${message}`) as NodeLikeError;
+  const err = new Error(message) as NodeLikeError;
   err.code = code;
   throw err;
 }
 
 function notImplemented(api: string): never {
-  return dnsError("ERR_NOT_IMPLEMENTED", `${api} is not implemented in this runtime profile`);
+  return dnsError("ERR_NOT_IMPLEMENTED", `[thunder] ${api} is not implemented in this runtime profile`);
 }
 
 function runtimeFetch(): typeof fetch {
@@ -85,7 +85,10 @@ function parseLookupOptions(raw?: number | LookupOptions): LookupOptions {
 function normalizeType(rrtype?: string): string {
   const normalized = String(rrtype ?? "A").toUpperCase();
   if (!Object.prototype.hasOwnProperty.call(DNS_TYPE_ID, normalized)) {
-    return dnsError("ERR_NOT_IMPLEMENTED", `dns.resolve type '${normalized}' is not implemented`);
+    return dnsError(
+      "ERR_NOT_IMPLEMENTED",
+      `[thunder] dns.resolve type '${normalized}' is not implemented in this runtime profile`,
+    );
   }
   return normalized;
 }

@@ -32,8 +32,9 @@ deno_core::extension!(
     esm = [dir "src", "bootstrap.js"],
 );
 
-// Minimal Node built-ins for compatibility with SSR/tooling ecosystems.
-// Only register critical modules here to avoid V8 string size limits (2^29 - 24 bytes).
+// Node built-ins for compatibility with SSR/tooling ecosystems.
+// Modules are registered as Full/Partial/Stub, and stubs remain importable
+// (failing deterministically only when unsupported methods are invoked).
 deno_core::extension!(
     edge_node_compat,
     ops = [
@@ -41,16 +42,49 @@ deno_core::extension!(
         op_edge_crypto_hash,
         op_edge_crypto_hmac,
     ],
+    esm_entry_point = "ext:edge_node_compat/mod.ts",
     esm = [
-        "node:process" = "src/node_compat/process.ts",
-        "node:buffer" = "src/node_compat/buffer.ts",
-        "node:crypto" = "src/node_compat/crypto.ts",
-        "node:events" = "src/node_compat/events.ts",
-        "node:stream" = "src/node_compat/stream.ts",
+        "ext:edge_node_compat/mod.ts" = "src/node_compat/mod.ts",
+        "node:assert" = "src/node_compat/assert.ts",
         "node:async_hooks" = "src/node_compat/async_hooks.ts",
+        "node:buffer" = "src/node_compat/buffer.ts",
+        "node:child_process" = "src/node_compat/child_process.ts",
+        "node:cluster" = "src/node_compat/cluster.ts",
+        "node:console" = "src/node_compat/console.ts",
+        "node:process" = "src/node_compat/process.ts",
+        "node:crypto" = "src/node_compat/crypto.ts",
+        "node:dgram" = "src/node_compat/dgram.ts",
+        "node:diagnostics_channel" = "src/node_compat/diagnostics_channel.ts",
+        "node:dns" = "src/node_compat/dns.ts",
+        "node:events" = "src/node_compat/events.ts",
+        "node:fs" = "src/node_compat/fs.ts",
+        "node:fs/promises" = "src/node_compat/fs_promises.ts",
+        "node:http" = "src/node_compat/http.ts",
+        "node:http2" = "src/node_compat/http2.ts",
+        "node:https" = "src/node_compat/https.ts",
+        "node:inspector" = "src/node_compat/inspector.ts",
+        "node:module" = "src/node_compat/module.ts",
+        "node:net" = "src/node_compat/net.ts",
+        "node:os" = "src/node_compat/os.ts",
+        "node:stream" = "src/node_compat/stream.ts",
+        "node:perf_hooks" = "src/node_compat/perf_hooks.ts",
+        "node:punycode" = "src/node_compat/punycode.ts",
+        "node:querystring" = "src/node_compat/querystring.ts",
+        "node:readline" = "src/node_compat/readline.ts",
+        "node:repl" = "src/node_compat/repl.ts",
+        "node:request" = "src/node_compat/request.ts",
+        "node:sqlite" = "src/node_compat/sqlite.ts",
+        "node:string_decoder" = "src/node_compat/string_decoder.ts",
+        "node:test" = "src/node_compat/test.ts",
+        "node:timers" = "src/node_compat/timers.ts",
+        "node:timers/promises" = "src/node_compat/timers_promises.ts",
+        "node:tls" = "src/node_compat/tls.ts",
         "node:util" = "src/node_compat/util.ts",
+        "node:v8" = "src/node_compat/v8.ts",
+        "node:vm" = "src/node_compat/vm.ts",
         "node:path" = "src/node_compat/path.ts",
         "node:url" = "src/node_compat/url.ts",
+        "node:zlib" = "src/node_compat/zlib.ts",
     ],
 );
 

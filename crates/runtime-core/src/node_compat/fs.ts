@@ -289,15 +289,33 @@ function readdirSync(path: unknown): string[] {
 }
 
 function createReadStream(path: unknown): never {
-  fsError("EOPNOTSUPP", 95, "createReadStream", normalizePath(path), "[edge-runtime] createReadStream is not implemented in VFS mode yet");
+  fsError(
+    "EOPNOTSUPP",
+    95,
+    "createReadStream",
+    normalizePath(path),
+    "[thunder] fs.createReadStream is not implemented in this runtime profile",
+  );
 }
 
 function createWriteStream(path: unknown): never {
-  fsError("EOPNOTSUPP", 95, "createWriteStream", normalizePath(path), "[edge-runtime] createWriteStream is not implemented in VFS mode yet");
+  fsError(
+    "EOPNOTSUPP",
+    95,
+    "createWriteStream",
+    normalizePath(path),
+    "[thunder] fs.createWriteStream is not implemented in this runtime profile",
+  );
 }
 
 function watch(path: unknown): never {
-  fsError("EOPNOTSUPP", 95, "watch", normalizePath(path), "[edge-runtime] watch is not implemented in VFS mode");
+  fsError(
+    "EOPNOTSUPP",
+    95,
+    "watch",
+    normalizePath(path),
+    "[thunder] fs.watch is not implemented in this runtime profile",
+  );
 }
 
 function callbackStyle<T>(fn: () => T, cb?: (...args: unknown[]) => void): void {

@@ -259,8 +259,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:os",
-                        profile: "Stub/Partial",
+                    api: "node:os",
+                    profile: "Partial",
                         notes: "Contract-stable environment info and deterministic errors for unsupported host-affecting calls.",
                         js_check: r#"(() => {
                             const key = '__edge_node_os_check';
@@ -403,8 +403,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:child_process",
-                        profile: "Stub/Partial",
+                    api: "node:child_process",
+                    profile: "Stub",
                         notes: "Non-functional process-spawn APIs with deterministic not-implemented behavior.",
                         js_check: r#"(() => {
                             const key = '__edge_node_child_process_check';
@@ -424,8 +424,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:cluster",
-                        profile: "Stub/Partial",
+                    api: "node:cluster",
+                    profile: "Stub",
                         notes: "Non-functional cluster orchestration APIs with deterministic failures.",
                         js_check: r#"(() => {
                             const key = '__edge_node_cluster_check';
@@ -568,8 +568,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:http",
-                        profile: "Stub/Partial",
+                    api: "node:http",
+                    profile: "Partial",
                                                 notes: "HTTP client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional.",
                         js_check: r#"(() => {
                             const key = '__edge_node_http_check';
@@ -603,8 +603,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:https",
-                        profile: "Stub/Partial",
+                    api: "node:https",
+                    profile: "Partial",
                                                 notes: "HTTPS client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional.",
                         js_check: r#"(() => {
                             const key = '__edge_node_https_check';
@@ -638,8 +638,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:http2",
-                        profile: "Stub/Partial",
+                    api: "node:http2",
+                    profile: "Stub",
                         notes: "HTTP/2 compatibility surface for imports with deterministic non-functional operations.",
                         js_check: r#"(() => {
                             const key = '__edge_node_http2_check';
@@ -657,8 +657,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:inspector",
-                        profile: "Stub/Partial",
+                    api: "node:inspector",
+                    profile: "Stub",
                         notes: "Inspector bridge compatibility surface with no-op/open stubs in this runtime profile.",
                         js_check: r#"(() => {
                             const key = '__edge_node_inspector_check';
@@ -756,8 +756,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:readline",
-                        profile: "Stub/Partial",
+                    api: "node:readline",
+                    profile: "Stub",
                         notes: "Readline import-level compatibility with deterministic non-functional interactive APIs.",
                         js_check: r#"(() => {
                             const key = '__edge_node_readline_check';
@@ -778,8 +778,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:repl",
-                        profile: "Stub/Partial",
+                    api: "node:repl",
+                    profile: "Stub",
                         notes: "REPL compatibility entrypoint with deterministic non-functional behavior.",
                         js_check: r#"(() => {
                             const key = '__edge_node_repl_check';
@@ -800,16 +800,18 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                 },
                 NodeCompatCheck {
                         api: "node:sqlite",
-                        profile: "Not supported",
-                        notes: "Intentionally not exposed in this runtime profile to match Workers support boundary.",
+                        profile: "Stub",
+                        notes: "Import-compatible stub module. Constructors fail deterministically when invoked.",
                         js_check: r#"(() => {
                             const key = '__edge_node_sqlite_check';
                             if (globalThis[key] === undefined) {
                                 globalThis[key] = 'pending';
-                                import('node:sqlite').then((_m) => {
-                                    globalThis[key] = 'none';
+                                import('node:sqlite').then((m) => {
+                                    let deterministic = false;
+                                    try { new m.Database(':memory:'); } catch (err) { deterministic = String(err?.message || '').includes('is not implemented'); }
+                                    globalThis[key] = deterministic ? 'partial' : 'none';
                                 }).catch(() => {
-                                    globalThis[key] = 'full';
+                                    globalThis[key] = 'none';
                                 });
                                 return 'pending';
                             }
@@ -839,16 +841,18 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                 },
                 NodeCompatCheck {
                         api: "node:test",
-                        profile: "Not supported",
-                        notes: "Intentionally not exposed in this runtime profile to match Workers support boundary.",
+                        profile: "Stub",
+                        notes: "Import-compatible test module stub. Methods throw deterministic not-implemented errors.",
                         js_check: r#"(() => {
                             const key = '__edge_node_test_check';
                             if (globalThis[key] === undefined) {
                                 globalThis[key] = 'pending';
-                                import('node:test').then((_m) => {
-                                    globalThis[key] = 'none';
+                                import('node:test').then((m) => {
+                                    let deterministic = false;
+                                    try { m.test('x', () => {}); } catch (err) { deterministic = String(err?.message || '').includes('is not implemented'); }
+                                    globalThis[key] = deterministic ? 'partial' : 'none';
                                 }).catch(() => {
-                                    globalThis[key] = 'full';
+                                    globalThis[key] = 'none';
                                 });
                                 return 'pending';
                             }
@@ -878,8 +882,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:dgram",
-                        profile: "Stub/Partial",
+                    api: "node:dgram",
+                    profile: "Stub",
                         notes: "UDP/datagram import compatibility with deterministic non-functional sockets.",
                         js_check: r#"(() => {
                             const key = '__edge_node_dgram_check';
@@ -899,8 +903,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:v8",
-                        profile: "Stub/Partial",
+                    api: "node:v8",
+                    profile: "Partial",
                         notes: "V8 compatibility introspection helpers with deterministic static values.",
                         js_check: r#"(() => {
                             const key = '__edge_node_v8_check';
@@ -918,8 +922,8 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
-                        api: "node:vm",
-                        profile: "Stub/Partial",
+                    api: "node:vm",
+                    profile: "Stub",
                         notes: "VM import compatibility with deterministic non-functional script execution APIs.",
                         js_check: r#"(() => {
                             const key = '__edge_node_vm_check';
@@ -1084,22 +1088,12 @@ fn status_label(status: &str) -> &'static str {
         }
 }
 
-fn node_support_tier(profile: &str, status: &str) -> &'static str {
-    if profile == "Not supported" {
-        return "⚪ Not supported";
+fn node_support_tier(profile: &str, _status: &str) -> &'static str {
+    match profile {
+        "Full" => "Full",
+        "Stub" => "Stub",
+        _ => "Partial",
     }
-
-    // Any explicit stub profile remains partial by policy, even if import checks pass.
-    if profile.contains("Stub") {
-        return "🟡 Partial (stub/non-functional)";
-    }
-
-    // Non-stub partial profiles are treated as practical support for real-world usage.
-    if status == "partial" || status == "full" {
-        return "🟢 Supported (practical subset)";
-    }
-
-    "🟡 Partial (validation gap)"
 }
 
 fn define_checks() -> Vec<ApiCheck> {
@@ -1648,8 +1642,8 @@ fn verify_node_report_coverage(node_checks: &[NodeCompatCheck]) {
             .and_then(|s| s.to_str())
             .expect("invalid node_compat filename");
 
-        // Internal helper shim, not part of official Node built-ins matrix.
-        if stem == "request" {
+        // Internal helper shims/entrypoints, not part of official Node built-ins matrix.
+        if stem == "request" || stem == "mod" {
             continue;
         }
 
@@ -1814,7 +1808,7 @@ fn generate_web_standards_report() {
     .unwrap();
     writeln!(report, "- `deno_net` - TCP/TLS networking").unwrap();
     writeln!(report, "- `deno_tls` - TLS support").unwrap();
-    writeln!(report, "- `edge_node_compat` - Node.js compatibility layer (partial/stub node:*)").unwrap();
+    writeln!(report, "- `edge_node_compat` - Node.js compatibility layer (Full/Partial/Stub node:*)").unwrap();
     writeln!(report, "- `deno_node` - Minimal node shim required by runtime deps").unwrap();
     writeln!(
         report,
@@ -1832,14 +1826,15 @@ fn generate_web_standards_report() {
     writeln!(report, "## Node API Compatibility").unwrap();
     writeln!(report).unwrap();
     writeln!(report, "This section is validated by runtime checks and is separate from Web Standards scoring.").unwrap();
-    writeln!(report, "Node APIs are grouped by runtime support tier to mirror a Cloudflare-style compatibility message.").unwrap();
-    writeln!(report, "- `🟢 Supported (practical subset)`: non-stub APIs with behavior suitable for common real usage.").unwrap();
-    writeln!(report, "- `🟡 Partial (stub/non-functional)`: import/surface compatibility where core behavior is intentionally stubbed.").unwrap();
-    writeln!(report, "- `⚪ Not supported`: intentionally not exposed in this runtime profile.").unwrap();
+    writeln!(report, "Official compatibility levels for `node:*` APIs:").unwrap();
+    writeln!(report, "- `Full`: implementation considered functionally complete for the tested contract.").unwrap();
+    writeln!(report, "- `Partial`: implementation works for common/runtime-safe paths with documented limitations.").unwrap();
+    writeln!(report, "- `Stub`: module is importable, but unsupported methods fail deterministically when called.").unwrap();
+    writeln!(report, "Stub failures use the standardized format: `[thunder] <api> is not implemented in this runtime profile`.").unwrap();
     writeln!(report, "Unsupported privileged behavior fails with deterministic errors (for example `EOPNOTSUPP`) instead of panicking or exposing host resources.").unwrap();
     writeln!(report).unwrap();
-    writeln!(report, "| Module | Runtime Support | Profile | Tested Status | Notes |",).unwrap();
-    writeln!(report, "|--------|-----------------|---------|---------------|-------|",).unwrap();
+    writeln!(report, "| Module | Level | Profile | Tested Status | Notes |",).unwrap();
+    writeln!(report, "|--------|-------|---------|---------------|-------|",).unwrap();
     for check in &node_checks {
         writeln!(
             report,

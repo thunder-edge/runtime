@@ -164,11 +164,11 @@ export function createCipher(): never {
 }
 
 export function createCipheriv(): never {
-  throw new Error('crypto.createCipheriv not implemented');
+  throw new Error('[thunder] crypto.createCipheriv is not implemented in this runtime profile');
 }
 
 export function createDecipheriv(): never {
-  throw new Error('crypto.createDecipheriv not implemented');
+  throw new Error('[thunder] crypto.createDecipheriv is not implemented in this runtime profile');
 }
 
 export function pbkdf2(): never {
@@ -180,11 +180,11 @@ export function pbkdf2Sync(): never {
 }
 
 export function scrypt(): never {
-  throw new Error('crypto.scrypt not implemented');
+  throw new Error('[thunder] crypto.scrypt is not implemented in this runtime profile');
 }
 
 export function scryptSync(): never {
-  throw new Error('crypto.scryptSync not implemented');
+  throw new Error('[thunder] crypto.scryptSync is not implemented in this runtime profile');
 }
 
 // ============ Exports ============

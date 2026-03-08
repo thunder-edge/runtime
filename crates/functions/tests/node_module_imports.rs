@@ -971,7 +971,7 @@ fn node_os_module_can_be_imported() {
       try {
         os.setPriority(0, 0);
       } catch (err) {
-        setPriorityThrows = String(err?.message || "").includes("os.setPriority is not implemented");
+                setPriorityThrows = String(err?.message || "").includes("[thunder] os.setPriority is not implemented in this runtime profile");
       }
 
       globalThis.__nodeOsCompatOk =
@@ -1180,7 +1180,9 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
     import urlMod from "node:url";
       import readline from "node:readline";
       import repl from "node:repl";
+            import sqlite from "node:sqlite";
       import stringDecoder from "node:string_decoder";
+            import nodeTest from "node:test";
     import timers from "node:timers";
     import timersPromises from "node:timers/promises";
       import tls from "node:tls";
@@ -1188,15 +1190,22 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
       import vm from "node:vm";
       import zlib from "node:zlib";
 
+            function isThunderNotImplemented(err, api) {
+                const message = String(err?.message || "");
+                return message.includes(`[thunder] ${api} is not implemented in this runtime profile`);
+            }
+
       let deterministicErrors = 0;
-      try { childProcess.exec('echo hi'); } catch (_) { deterministicErrors++; }
-      try { cluster.fork(); } catch (_) { deterministicErrors++; }
-      try { dns.lookupService('1.1.1.1', 53, () => {}); } catch (_) { deterministicErrors++; }
-      try { dgram.createSocket('udp4'); } catch (_) { deterministicErrors++; }
-    try { net.createServer().listen(80); } catch (_) { deterministicErrors++; }
-    try { tls.createServer(); } catch (_) { deterministicErrors++; }
-      try { repl.start(); } catch (_) { deterministicErrors++; }
-      try { new vm.Script('1+1').runInThisContext(); } catch (_) { deterministicErrors++; }
+            try { childProcess.exec('echo hi'); } catch (err) { if (isThunderNotImplemented(err, 'child_process.exec')) deterministicErrors++; }
+            try { cluster.fork(); } catch (err) { if (isThunderNotImplemented(err, 'cluster.fork')) deterministicErrors++; }
+            try { dns.lookupService('1.1.1.1', 53, () => {}); } catch (err) { if (isThunderNotImplemented(err, 'dns.lookupService')) deterministicErrors++; }
+            try { dgram.createSocket('udp4'); } catch (err) { if (isThunderNotImplemented(err, 'dgram.createSocket')) deterministicErrors++; }
+            try { net.createServer().listen(80); } catch (err) { if (isThunderNotImplemented(err, 'net.Server.listen')) deterministicErrors++; }
+            try { tls.createServer(); } catch (err) { if (isThunderNotImplemented(err, 'tls.createServer')) deterministicErrors++; }
+            try { repl.start(); } catch (err) { if (isThunderNotImplemented(err, 'repl.start')) deterministicErrors++; }
+            try { new vm.Script('1+1').runInThisContext(); } catch (err) { if (isThunderNotImplemented(err, 'vm.Script.runInThisContext')) deterministicErrors++; }
+            try { new sqlite.Database(':memory:'); } catch (err) { if (isThunderNotImplemented(err, 'sqlite.Database')) deterministicErrors++; }
+            try { nodeTest.test('stub', () => {}); } catch (err) { if (isThunderNotImplemented(err, 'node:test')) deterministicErrors++; }
 
             const zlibSyncCompat = (() => {
                 try {
@@ -1409,7 +1418,7 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
                 typeof unicodeDomain === 'string' &&
                 assertWorks &&
                 typeof punycode.toASCII === 'function' &&
-                deterministicErrors >= 5;
+                deterministicErrors >= 10;
     "#;
 
     let eszip_bytes = build_eszip("file:///node_extra_stubs_test.ts", source);

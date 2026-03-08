@@ -91,7 +91,7 @@ fn process_next_tick_works() {
 #[test]
 fn process_sensitive_apis_throw_deterministic_error() {
     assert_js_true(
-        "(() => {\n            try {\n                process.exit(1);\n                return false;\n            } catch (e) {\n                return String(e && e.message).includes('[edge-runtime] process.exit is not implemented in this runtime profile');\n            }\n        })()",
+        "(() => {\n            try {\n                process.exit(1);\n                return false;\n            } catch (e) {\n                return String(e && e.message).includes('[thunder] process.exit is not implemented in this runtime profile');\n            }\n        })()",
         "process.exit should throw deterministic not-implemented error",
     );
 }

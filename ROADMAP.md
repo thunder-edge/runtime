@@ -219,9 +219,11 @@ Status aplicado (08/03/2026):
 
 ---
 
-### 5.7 Matriz de Compatibilidade (Runtime-Only)
+### 5.7 Matriz de Compatibilidade (Runtime-Only) — Baixa Prioridade
 
 **Objetivo:** tornar explícito o nível de suporte para Vinext/Next sem cloud features.
+
+> Status de priorização: item explicitamente rebaixado para baixa prioridade e pode ser postergado.
 
 - [ ] Publicar matriz por feature:
     - [ ] `Full` (funciona sem workaround)
@@ -250,14 +252,20 @@ Status aplicado (08/03/2026):
 
 **Objetivo:** adotar modelo explícito de suporte por módulo/API para evitar ambiguidades no ecossistema npm.
 
-- [ ] Definir 3 níveis oficiais por API Node:
-    - [ ] `Full`: implementação funcional
-    - [ ] `Partial`: implementação parcial com limitações documentadas
-    - [ ] `Stub`: importável, mas métodos `noop` ou erro determinístico
-- [ ] Padronizar erro de stub para métodos não implementados:
-    - [ ] Formato recomendado: `[thunder] <api> is not implemented in this runtime profile`
-- [ ] Garantir que módulos `Stub` não quebrem no import (quebra apenas na chamada do método)
-- [ ] Publicar tabela no docs com status por módulo `node:*`
+- [x] Definir 3 níveis oficiais por API Node:
+    - [x] `Full`: implementação funcional
+    - [x] `Partial`: implementação parcial com limitações documentadas
+    - [x] `Stub`: importável, mas métodos `noop` ou erro determinístico
+- [x] Padronizar erro de stub para métodos não implementados:
+    - [x] Formato recomendado: `[thunder] <api> is not implemented in this runtime profile`
+- [x] Garantir que módulos `Stub` não quebrem no import (quebra apenas na chamada do método)
+- [x] Publicar tabela no docs com status por módulo `node:*`
+
+Status aplicado (07/03/2026):
+- Runtime `edge_node_compat` expandido para registrar matriz completa de módulos `node:*` suportados pelo perfil, incluindo módulos `Stub` importáveis (`node:test`, `node:sqlite` e demais stubs) em `crates/runtime-core/src/extensions.rs`.
+- Erro determinístico de métodos stub padronizado para o formato `[thunder] <api> is not implemented in this runtime profile` nos módulos compat em `crates/runtime-core/src/node_compat/*`.
+- Cobertura de regressão atualizada para validar prefixo `[thunder]` e importabilidade de módulos `Stub` em `crates/functions/tests/node_module_imports.rs` e `crates/functions/tests/node_process_compat.rs`.
+- Matriz publicada em `docs/NODE-COMPAT.md` e refletida no relatório automático (`crates/functions/tests/web_api_report.rs` -> `docs/web_standards_api_report.md`).
 
 **Critério de aceite:** qualquer pacote que apenas importa módulo Node não falha na carga por ausência de módulo.
 

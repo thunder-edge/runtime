@@ -1,15 +1,15 @@
 type NodeLikeError = Error & { code?: string };
 
-function unsupported(): never {
+function notImplemented(api: string): never {
   const err = new Error(
-    "[edge-runtime] node:test is not supported in this runtime profile",
+    `[thunder] ${api} is not implemented in this runtime profile`,
   ) as NodeLikeError;
-  err.code = "ERR_NOT_SUPPORTED";
+  err.code = "ERR_NOT_IMPLEMENTED";
   throw err;
 }
 
 function test(): never {
-  return unsupported();
+  return notImplemented("node:test");
 }
 
 const it = test;

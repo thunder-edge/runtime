@@ -88,7 +88,7 @@ function getPriority(): number {
 }
 
 function setPriority(): void {
-  throw new Error("[edge-runtime] os.setPriority is not implemented in this runtime profile");
+  throw new Error("[thunder] os.setPriority is not implemented in this runtime profile");
 }
 
 function userInfo() {

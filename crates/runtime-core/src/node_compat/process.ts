@@ -1,6 +1,6 @@
 type NodeLikeError = Error & { code?: string };
 
-const PROCESS_NOT_IMPLEMENTED_PREFIX = "[edge-runtime]";
+const PROCESS_NOT_IMPLEMENTED_PREFIX = "[thunder]";
 const processEnvStore = Object.create(null);
 
 function nowMs(): number {
