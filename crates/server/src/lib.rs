@@ -1491,6 +1491,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn e2e_async_local_storage_isolated_between_overlapping_requests() {
+        init_deno_platform();
+
+        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind admin probe listener");
+        let admin_addr = admin_probe
+            .local_addr()
+            .expect("failed to get admin local addr");
+        drop(admin_probe);
+
+        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind ingress probe listener");
+        let ingress_addr = ingress_probe
+            .local_addr()
+            .expect("failed to get ingress local addr");
+        drop(ingress_probe);
+
+        let registry = make_test_registry();
+        let shutdown = CancellationToken::new();
+
+        let als_eszip = build_eszip_async(
+            "file:///als_e2e.ts",
+            r#"
+            import { AsyncLocalStorage } from 'node:async_hooks';
+
+            const als = new AsyncLocalStorage();
+
+            Deno.serve(async (req) => {
+                            const requestId = req.headers.get('x-req-id') ?? 'missing';
+                            const delayMs = Number(req.headers.get('x-delay-ms') ?? '15');
+
+              return await als.run(requestId, async () => {
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+                const afterTimer = als.getStore();
+                await Promise.resolve();
+                const afterPromise = als.getStore();
+
+                if (afterTimer !== requestId || afterPromise !== requestId) {
+                  return new Response(
+                    `leak:${requestId}:${String(afterTimer)}:${String(afterPromise)}`,
+                    { status: 500, headers: { 'content-type': 'text/plain' } },
+                  );
+                }
+
+                return new Response(
+                  `ok:${requestId}:${String(afterTimer)}:${String(afterPromise)}`,
+                  { headers: { 'content-type': 'text/plain' } },
+                );
+              });
+            });
+            "#,
+        )
+        .await;
+        let bundle = BundlePackage::eszip_only(als_eszip);
+        let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+        registry
+            .deploy(
+                "als-e2e".to_string(),
+                bytes::Bytes::from(bundle_data),
+                None,
+                None,
+            )
+            .await
+            .expect("failed to deploy async context test function");
+
+        let server_config = DualServerConfig {
+            admin: AdminListenerConfig {
+                addr: admin_addr,
+                api_key: None,
+                tls: None,
+                body_limits: BodyLimitsConfig::default(),
+                bundle_signature: BundleSignatureConfig {
+                    required: false,
+                    public_key_path: None,
+                },
+            },
+            ingress: IngressListenerConfig {
+                listener_type: IngressListenerType::Tcp(ingress_addr),
+                tls: None,
+                rate_limit_rps: None,
+                body_limits: BodyLimitsConfig::default(),
+            },
+            graceful_exit_deadline_secs: 1,
+            max_connections: 128,
+        };
+
+        let server_shutdown = shutdown.clone();
+        let registry_for_server = registry.clone();
+        let server_handle = tokio::spawn(async move {
+            run_dual_server(server_config, registry_for_server, server_shutdown).await
+        });
+
+        wait_for_tcp_listener(admin_addr).await;
+        wait_for_tcp_listener(ingress_addr).await;
+
+        let warmup_resp = send_plain_http(
+            ingress_addr,
+            "GET /als-e2e HTTP/1.1\r\nHost: localhost\r\nx-req-id: warmup\r\nx-delay-ms: 1\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            warmup_resp.starts_with("HTTP/1.1 200"),
+            "warmup request failed: {warmup_resp}"
+        );
+
+        let req_a = send_plain_http(
+            ingress_addr,
+            "GET /als-e2e HTTP/1.1\r\nHost: localhost\r\nx-req-id: alpha\r\nx-delay-ms: 45\r\nConnection: close\r\n\r\n",
+        );
+        let req_b = send_plain_http(
+            ingress_addr,
+            "GET /als-e2e HTTP/1.1\r\nHost: localhost\r\nx-req-id: beta\r\nx-delay-ms: 5\r\nConnection: close\r\n\r\n",
+        );
+        let (resp_a, resp_b) = tokio::join!(req_a, req_b);
+
+        assert!(resp_a.starts_with("HTTP/1.1 200"), "alpha response failed: {resp_a}");
+        assert!(resp_b.starts_with("HTTP/1.1 200"), "beta response failed: {resp_b}");
+        assert!(
+            resp_a.contains("ok:alpha:alpha:alpha"),
+            "expected alpha ALS context to remain isolated: {resp_a}"
+        );
+        assert!(
+            resp_b.contains("ok:beta:beta:beta"),
+            "expected beta ALS context to remain isolated: {resp_b}"
+        );
+        assert!(
+            !resp_a.contains("ok:alpha:beta:beta") && !resp_b.contains("ok:beta:alpha:alpha"),
+            "unexpected cross-request context contamination detected"
+        );
+
+        let post_resp = send_plain_http(
+            ingress_addr,
+            "GET /als-e2e HTTP/1.1\r\nHost: localhost\r\nx-req-id: gamma\r\nx-delay-ms: 1\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            post_resp.contains("ok:gamma:gamma:gamma"),
+            "expected no stale context leak after overlapping requests: {post_resp}"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
+    }
+
+    #[tokio::test]
     async fn e2e_connection_limit_drops_excess_connections() {
         init_deno_platform();
 

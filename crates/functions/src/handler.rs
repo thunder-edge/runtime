@@ -175,12 +175,21 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     tcpNoProxy: [],
                 },
 
+                _clearAsyncHooksExecutionContext(executionId) {
+                    try {
+                        globalThis.__edgeRuntimeAsyncHooks?.clearExecutionContext?.(executionId);
+                    } catch (_) {
+                        // Keep request lifecycle resilient if async_hooks bridge throws.
+                    }
+                },
+
                 startExecution(executionId) {
                     this._currentExecutionId = executionId;
                     this._timerRegistry.set(executionId, new Set());
                     this._intervalRegistry.set(executionId, new Set());
                     this._abortRegistry.set(executionId, new Set());
                     this._promiseRegistry.set(executionId, new Set());
+                    this._clearAsyncHooksExecutionContext(executionId);
                 },
 
                 endExecution(executionId) {
@@ -191,6 +200,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     if (this._currentExecutionId === executionId) {
                         this._currentExecutionId = null;
                     }
+                    this._clearAsyncHooksExecutionContext(executionId);
                 },
 
                 clearExecutionTimers(executionId) {
@@ -245,6 +255,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     if (this._currentExecutionId === executionId) {
                         this._currentExecutionId = null;
                     }
+                    this._clearAsyncHooksExecutionContext(executionId);
                 },
 
                 // Helper to track an AbortController for the current execution
@@ -586,7 +597,13 @@ pub fn inject_request_bridge_with_proxy_and_config(
                         reqInit.body = body;
                     }
                     const request = new Request(url, reqInit);
-                    const response = await handler(request);
+                    const executeHandler = () => handler(request);
+                    const response = globalThis.__edgeRuntimeAsyncHooks?.runWithExecutionContext
+                        ? await globalThis.__edgeRuntimeAsyncHooks.runWithExecutionContext(
+                            globalThis.__edgeRuntime._currentExecutionId || '',
+                            executeHandler,
+                        )
+                        : await executeHandler();
 
                     const respHeaders = {};
                     response.headers.forEach((value, key) => {

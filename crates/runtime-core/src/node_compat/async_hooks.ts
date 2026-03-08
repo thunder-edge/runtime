@@ -16,6 +16,12 @@ let nextAsyncId = 2;
 let currentAsyncId = 1;
 let currentTriggerAsyncId = 0;
 
+function clearAllAlsStores(): void {
+  for (const als of alsRegistry) {
+    als.__store = undefined;
+  }
+}
+
 function snapshotAlsStores(): Array<[AsyncLocalStorage<unknown>, unknown]> {
   const out: Array<[AsyncLocalStorage<unknown>, unknown]> = [];
   for (const als of alsRegistry) {
@@ -137,10 +143,27 @@ class AsyncLocalStorage<T = unknown> {
     const prev = this.__store;
     this.__store = store;
     this.__enabled = true;
-    try {
-      return callback(...args);
-    } finally {
+
+    const restore = () => {
       this.__store = prev;
+    };
+
+    try {
+      const result = callback(...args);
+      if (
+        result !== null &&
+        typeof result === "object" &&
+        "then" in (result as object) &&
+        typeof (result as { then?: unknown }).then === "function"
+      ) {
+        return (result as Promise<R>).finally(restore) as unknown as R;
+      }
+
+      restore();
+      return result;
+    } catch (error) {
+      restore();
+      throw error;
     }
   }
 
@@ -209,6 +232,60 @@ function executionAsyncId(): number {
 function triggerAsyncId(): number {
   return currentTriggerAsyncId;
 }
+
+type EdgeRuntimeAsyncHooksBridge = {
+  runWithExecutionContext<R>(executionId: string, callback: () => R | Promise<R>): R | Promise<R>;
+  clearExecutionContext(executionId: string): void;
+};
+
+const edgeRuntimeBridgeGlobal = globalThis as typeof globalThis & {
+  __edgeRuntimeAsyncHooks?: EdgeRuntimeAsyncHooksBridge;
+};
+
+edgeRuntimeBridgeGlobal.__edgeRuntimeAsyncHooks = {
+  runWithExecutionContext<R>(_executionId: string, callback: () => R | Promise<R>): R | Promise<R> {
+    const previousAsyncId = currentAsyncId;
+    const previousTriggerAsyncId = currentTriggerAsyncId;
+    const requestAsyncId = nextAsyncId++;
+
+    // Start each request from a clean ALS store set to avoid bleed across requests.
+    clearAllAlsStores();
+    currentAsyncId = requestAsyncId;
+    currentTriggerAsyncId = previousAsyncId;
+    emitHook("init", requestAsyncId, "EDGE_REQUEST", previousAsyncId, callback);
+    emitHook("before", requestAsyncId);
+
+    const finalize = () => {
+      emitHook("after", requestAsyncId);
+      emitHook("destroy", requestAsyncId);
+      clearAllAlsStores();
+      currentAsyncId = previousAsyncId;
+      currentTriggerAsyncId = previousTriggerAsyncId;
+    };
+
+    try {
+      const result = callback();
+      if (
+        result !== null &&
+        typeof result === "object" &&
+        "then" in (result as object) &&
+        typeof (result as { then?: unknown }).then === "function"
+      ) {
+        return (result as Promise<R>).finally(finalize);
+      }
+
+      finalize();
+      return result;
+    } catch (error) {
+      finalize();
+      throw error;
+    }
+  },
+
+  clearExecutionContext(_executionId: string): void {
+    clearAllAlsStores();
+  },
+};
 
 const asyncHooks = {
   AsyncLocalStorage,
