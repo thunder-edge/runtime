@@ -101,7 +101,11 @@ async fn deploy_inline_function(name: &str, source: &str) -> Result<FunctionRegi
     Ok(registry)
 }
 
-async fn invoke_text(registry: &FunctionRegistry, name: &str, path: &str) -> Result<(u16, String), String> {
+async fn invoke_text(
+    registry: &FunctionRegistry,
+    name: &str,
+    path: &str,
+) -> Result<(u16, String), String> {
     let handle = registry
         .get_handle(name)
         .ok_or_else(|| format!("missing handle for {name}"))?;
@@ -159,14 +163,16 @@ fn sandbox_blocks_private_fetch_targets() {
 
         let registry = deploy_inline_function("sandbox-ssrf-block", source).await?;
 
-        let (status_local, body_local) = invoke_text(&registry, "sandbox-ssrf-block", "/local").await?;
+        let (status_local, body_local) =
+            invoke_text(&registry, "sandbox-ssrf-block", "/local").await?;
         if status_local != 500 || !body_local.contains("Requires net access") {
             return Err(format!(
                 "expected localhost fetch to be blocked; status={status_local}, body={body_local}"
             ));
         }
 
-        let (status_meta, body_meta) = invoke_text(&registry, "sandbox-ssrf-block", "/metadata").await?;
+        let (status_meta, body_meta) =
+            invoke_text(&registry, "sandbox-ssrf-block", "/metadata").await?;
         if status_meta != 500 || !body_meta.contains("Requires net access") {
             return Err(format!(
                 "expected metadata fetch to be blocked; status={status_meta}, body={body_meta}"
@@ -217,7 +223,9 @@ fn sandbox_allows_public_fetch_host_policy_for_httpbin() {
         }
 
         if status != 200 && status != 500 {
-            return Err(format!("unexpected status for public fetch check: {status}"));
+            return Err(format!(
+                "unexpected status for public fetch check: {status}"
+            ));
         }
 
         registry
@@ -326,14 +334,18 @@ fn sandbox_blocks_prototype_pollution_via_object_prototype_proto() {
         "#;
 
         let registry = deploy_inline_function("sandbox-proto-pollution", source).await?;
-        let (status, body) = invoke_text(&registry, "sandbox-proto-pollution", "/pollution").await?;
+        let (status, body) =
+            invoke_text(&registry, "sandbox-proto-pollution", "/pollution").await?;
         if status != 200 {
             return Err(format!("unexpected response status: {status}, body={body}"));
         }
 
         let payload: serde_json::Value =
             serde_json::from_str(&body).map_err(|e| format!("parse json: {e}; body={body}"))?;
-        let after = payload.get("after").cloned().unwrap_or(serde_json::Value::Null);
+        let after = payload
+            .get("after")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         if after == serde_json::Value::Bool(true) {
             return Err("prototype pollution leaked to plain objects".to_string());
         }

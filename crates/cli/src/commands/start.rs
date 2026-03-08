@@ -155,6 +155,30 @@ pub struct StartArgs {
     )]
     pool_min_free_memory_mib: u64,
 
+    /// Enable context-aware scheduler (context-first, isolate-next).
+    #[arg(
+        long,
+        default_value_t = false,
+        env = "EDGE_RUNTIME_CONTEXT_POOL_ENABLED"
+    )]
+    context_pool_enabled: bool,
+
+    /// Max logical contexts tracked per isolate.
+    #[arg(
+        long,
+        default_value_t = 8,
+        env = "EDGE_RUNTIME_MAX_CONTEXTS_PER_ISOLATE"
+    )]
+    max_contexts_per_isolate: usize,
+
+    /// Max active requests per logical context.
+    #[arg(
+        long,
+        default_value_t = 1,
+        env = "EDGE_RUNTIME_MAX_ACTIVE_REQUESTS_PER_CONTEXT"
+    )]
+    max_active_requests_per_context: usize,
+
     // ─────────────────────────────────────────────────────────────────────────
     // Common Options
     // ─────────────────────────────────────────────────────────────────────────
@@ -184,11 +208,7 @@ pub struct StartArgs {
 
     /// Print user function `console.*` logs to runtime stdout.
     /// If disabled, logs are captured only by the internal isolate collector.
-    #[arg(
-        long,
-        default_value_t = true,
-        env = "EDGE_RUNTIME_PRINT_ISOLATE_LOGS"
-    )]
+    #[arg(long, default_value_t = true, env = "EDGE_RUNTIME_PRINT_ISOLATE_LOGS")]
     print_isolate_logs: bool,
 
     /// Default VFS total writable quota in bytes per isolate.
@@ -216,19 +236,11 @@ pub struct StartArgs {
     dns_doh_endpoint: String,
 
     /// Maximum DNS answers returned per query by node:dns compatibility layer.
-    #[arg(
-        long,
-        default_value_t = 16,
-        env = "EDGE_RUNTIME_DNS_MAX_ANSWERS"
-    )]
+    #[arg(long, default_value_t = 16, env = "EDGE_RUNTIME_DNS_MAX_ANSWERS")]
     dns_max_answers: usize,
 
     /// DNS resolver timeout in milliseconds for node:dns compatibility layer.
-    #[arg(
-        long,
-        default_value_t = 2000,
-        env = "EDGE_RUNTIME_DNS_TIMEOUT_MS"
-    )]
+    #[arg(long, default_value_t = 2000, env = "EDGE_RUNTIME_DNS_TIMEOUT_MS")]
     dns_timeout_ms: u64,
 
     /// Default node:zlib max output length in bytes (hard-ceiling enforced by runtime).
@@ -333,6 +345,9 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             zlib_max_input_length: args.zlib_max_input_length,
             zlib_operation_timeout_ms: args.zlib_operation_timeout_ms,
             egress_max_requests_per_execution: args.egress_max_requests_per_execution,
+            context_pool_enabled: args.context_pool_enabled,
+            max_contexts_per_isolate: args.max_contexts_per_isolate,
+            max_active_requests_per_context: args.max_active_requests_per_context,
         };
 
         let pool_config = PoolRuntimeConfig {
@@ -356,10 +371,7 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             PoolLimits::default(),
         ));
 
-        crate::telemetry::spawn_isolate_log_exporter(
-            shutdown.clone(),
-            args.print_isolate_logs,
-        );
+        crate::telemetry::spawn_isolate_log_exporter(shutdown.clone(), args.print_isolate_logs);
 
         // Spawn signal handler
         let shutdown_signal = shutdown.clone();
@@ -440,7 +452,17 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             max_connections: args.max_connections,
         };
 
-        info!("starting thunder");
+        let ingress_target = match &config.ingress.listener_type {
+            edge_server::IngressListenerType::Tcp(addr) => format!("tcp://{}", addr),
+            edge_server::IngressListenerType::Unix(path) => {
+                format!("unix:{}", path.display())
+            }
+        };
+
+        info!(
+            "starting thunder (admin=http://{}, ingress={})",
+            config.admin.addr, ingress_target
+        );
 
         // Run the dual-listener server (blocks until shutdown)
         edge_server::run_dual_server(config, registry.clone(), shutdown.clone()).await?;

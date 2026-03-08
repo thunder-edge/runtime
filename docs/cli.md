@@ -362,6 +362,21 @@ This prevents functions from accessing sensitive internal endpoints like cloud m
   - Default: `256`
   - Env: `EDGE_RUNTIME_POOL_MIN_FREE_MEMORY_MIB`
 
+### Context Pool Controls (Phase 7)
+
+- `--context-pool-enabled`
+  - Enable context-first scheduling (`context -> isolate`) for routed requests.
+  - Default: `false` (legacy behavior preserved).
+  - Env: `EDGE_RUNTIME_CONTEXT_POOL_ENABLED`
+- `--max-contexts-per-isolate <COUNT>`
+  - Maximum logical contexts created per isolate before spilling into another isolate.
+  - Default: `8`
+  - Env: `EDGE_RUNTIME_MAX_CONTEXTS_PER_ISOLATE`
+- `--max-active-requests-per-context <COUNT>`
+  - Maximum active requests per logical context before scheduler searches another context.
+  - Default: `1`
+  - Env: `EDGE_RUNTIME_MAX_ACTIVE_REQUESTS_PER_CONTEXT`
+
 ### Common Options
 
 - `--rate-limit <RATE_LIMIT>`

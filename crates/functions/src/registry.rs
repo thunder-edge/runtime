@@ -9,6 +9,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use runtime_core::isolate::IsolateConfig;
+use runtime_core::isolate::IsolateHandle;
 use runtime_core::isolate::OutgoingProxyConfig;
 use runtime_core::manifest::ResolvedFunctionManifest;
 
@@ -34,6 +35,44 @@ impl Default for PoolRuntimeConfig {
     }
 }
 
+#[derive(Clone)]
+pub struct RouteTarget {
+    pub function_name: String,
+    pub context_id: String,
+    pub isolate_id: Uuid,
+    pub handle: IsolateHandle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteTargetError {
+    FunctionUnavailable,
+    CapacityExhausted,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RoutingMetricsSnapshot {
+    pub total_contexts: u64,
+    pub total_isolates: u64,
+    pub total_active_requests: u64,
+    pub saturated_rejections: u64,
+    pub saturated_contexts: u64,
+    pub saturated_isolates: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ContextRouteEntry {
+    context_id: String,
+    isolate_id: Uuid,
+    active_requests: u64,
+    draining: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FunctionRouteState {
+    entries: Vec<ContextRouteEntry>,
+    next_context_seq: u64,
+}
+
 /// Thread-safe registry of all deployed functions.
 pub struct FunctionRegistry {
     functions: DashMap<String, FunctionEntry>,
@@ -43,6 +82,8 @@ pub struct FunctionRegistry {
     default_pool_limits: PoolLimits,
     usage_clock: AtomicU64,
     handle_last_used: DashMap<Uuid, u64>,
+    route_state: DashMap<String, FunctionRouteState>,
+    saturated_rejections: AtomicU64,
 }
 
 impl FunctionRegistry {
@@ -71,8 +112,7 @@ impl FunctionRegistry {
         if let Some(egress_max_requests_per_execution) =
             manifest.resources.egress_max_requests_per_execution
         {
-            config.egress_max_requests_per_execution =
-                egress_max_requests_per_execution as usize;
+            config.egress_max_requests_per_execution = egress_max_requests_per_execution as usize;
         }
     }
 
@@ -243,6 +283,8 @@ impl FunctionRegistry {
             default_pool_limits,
             usage_clock: AtomicU64::new(0),
             handle_last_used: DashMap::new(),
+            route_state: DashMap::new(),
+            saturated_rejections: AtomicU64::new(0),
         }
     }
 
@@ -388,6 +430,7 @@ impl FunctionRegistry {
 
         let info = entry.to_info();
         self.mark_entry_handles_used(&entry);
+        self.route_state.remove(&name);
         self.functions.insert(name, entry);
         Ok(info)
     }
@@ -426,6 +469,308 @@ impl FunctionRegistry {
             self.mark_handle_used(selected.id);
             Some(selected)
         })
+    }
+
+    fn compute_route_target(&self, name: &str) -> Result<RouteTarget, RouteTargetError> {
+        let (handles, config) = {
+            let Some(mut entry) = self.functions.get_mut(name) else {
+                return Err(RouteTargetError::FunctionUnavailable);
+            };
+            let removed_handles = Self::reconcile_entry_status(&mut entry);
+            for handle_id in removed_handles {
+                self.remove_handle_usage(handle_id);
+            }
+            if entry.status != FunctionStatus::Running {
+                return Err(RouteTargetError::FunctionUnavailable);
+            }
+
+            let mut alive_handles: Vec<IsolateHandle> = Vec::new();
+            if let Some(handle) = &entry.isolate_handle {
+                if handle.is_alive() {
+                    alive_handles.push(handle.clone());
+                }
+            }
+            for handle in &entry.extra_isolate_handles {
+                if handle.is_alive() {
+                    alive_handles.push(handle.clone());
+                }
+            }
+
+            (alive_handles, entry.config.clone())
+        };
+
+        if handles.is_empty() {
+            return Err(RouteTargetError::FunctionUnavailable);
+        }
+
+        let handle_by_id: std::collections::HashMap<Uuid, IsolateHandle> =
+            handles.iter().cloned().map(|h| (h.id, h)).collect();
+
+        let mut state = self
+            .route_state
+            .entry(name.to_string())
+            .or_insert_with(FunctionRouteState::default);
+
+        // Remove entries that reference dead or missing isolates.
+        state
+            .entries
+            .retain(|entry| handle_by_id.contains_key(&entry.isolate_id) && !entry.draining);
+
+        // Ensure at least one logical context per isolate exists.
+        for handle in &handles {
+            let has_context = state
+                .entries
+                .iter()
+                .any(|entry| entry.isolate_id == handle.id);
+            if !has_context {
+                let context_id = format!("ctx-{}-{}", name, state.next_context_seq);
+                state.next_context_seq = state.next_context_seq.saturating_add(1);
+                state.entries.push(ContextRouteEntry {
+                    context_id,
+                    isolate_id: handle.id,
+                    active_requests: 0,
+                    draining: false,
+                });
+            }
+        }
+
+        let max_active = if config.max_active_requests_per_context == 0 {
+            u64::MAX
+        } else {
+            config.max_active_requests_per_context as u64
+        };
+
+        // If context pool is enabled and all contexts are saturated, add a new context first.
+        if config.context_pool_enabled
+            && state
+                .entries
+                .iter()
+                .all(|entry| entry.active_requests >= max_active)
+        {
+            let mut contexts_per_isolate: std::collections::HashMap<Uuid, usize> =
+                std::collections::HashMap::new();
+            for entry in &state.entries {
+                *contexts_per_isolate.entry(entry.isolate_id).or_insert(0) += 1;
+            }
+
+            let candidate = handles
+                .iter()
+                .filter(|handle| {
+                    let current = *contexts_per_isolate.get(&handle.id).unwrap_or(&0);
+                    current < config.max_contexts_per_isolate.max(1)
+                })
+                .min_by_key(|handle| {
+                    let current = *contexts_per_isolate.get(&handle.id).unwrap_or(&0);
+                    (current, handle.id)
+                })
+                .cloned();
+
+            if let Some(handle) = candidate {
+                let context_id = format!("ctx-{}-{}", name, state.next_context_seq);
+                state.next_context_seq = state.next_context_seq.saturating_add(1);
+                state.entries.push(ContextRouteEntry {
+                    context_id,
+                    isolate_id: handle.id,
+                    active_requests: 0,
+                    draining: false,
+                });
+            }
+        }
+
+        let chosen_index = state
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.draining)
+            .filter(|(_, entry)| entry.active_requests < max_active)
+            .min_by_key(|(_, entry)| (entry.active_requests, entry.context_id.clone()))
+            .map(|(idx, _)| idx);
+
+        let chosen_index = if config.context_pool_enabled {
+            match chosen_index {
+                Some(idx) => Some(idx),
+                None => {
+                    self.saturated_rejections.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+            }
+        } else {
+            chosen_index.or_else(|| {
+                state
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| !entry.draining)
+                    .min_by_key(|(_, entry)| (entry.active_requests, entry.context_id.clone()))
+                    .map(|(idx, _)| idx)
+            })
+        };
+
+        let Some(chosen_index) = chosen_index else {
+            return Err(RouteTargetError::CapacityExhausted);
+        };
+
+        let chosen = &mut state.entries[chosen_index];
+        chosen.active_requests = chosen.active_requests.saturating_add(1);
+
+        let isolate_id = chosen.isolate_id;
+        let context_id = chosen.context_id.clone();
+        drop(state);
+
+        let Some(handle) = handle_by_id.get(&isolate_id).cloned() else {
+            return Err(RouteTargetError::FunctionUnavailable);
+        };
+        self.mark_handle_used(handle.id);
+
+        Ok(RouteTarget {
+            function_name: name.to_string(),
+            context_id,
+            isolate_id,
+            handle,
+        })
+    }
+
+    /// Resolve a context-aware route target using context-first scheduling.
+    pub fn get_route_target(&self, name: &str) -> Option<RouteTarget> {
+        self.compute_route_target(name).ok()
+    }
+
+    /// Resolve a route target and distinguish between unavailable functions and capacity saturation.
+    pub async fn get_route_target_with_status(
+        &self,
+        name: &str,
+    ) -> Result<RouteTarget, RouteTargetError> {
+        match self.compute_route_target(name) {
+            Ok(target) => Ok(target),
+            Err(RouteTargetError::FunctionUnavailable) => {
+                Err(RouteTargetError::FunctionUnavailable)
+            }
+            Err(RouteTargetError::CapacityExhausted) => {
+                let scale_plan = {
+                    let Some(mut entry) = self.functions.get_mut(name) else {
+                        return Err(RouteTargetError::FunctionUnavailable);
+                    };
+                    let removed_handles = Self::reconcile_entry_status(&mut entry);
+                    for handle_id in removed_handles {
+                        self.remove_handle_usage(handle_id);
+                    }
+                    if entry.status != FunctionStatus::Running
+                        || !self.pool_config.enabled
+                        || !entry.config.context_pool_enabled
+                        || entry.current_pool_size() >= entry.pool_limits.max
+                    {
+                        None
+                    } else {
+                        Some((
+                            entry.eszip_bytes.clone(),
+                            entry.config.clone(),
+                            entry.manifest.clone(),
+                        ))
+                    }
+                };
+
+                if let Some((eszip_bytes, config, manifest)) = scale_plan {
+                    match self
+                        .create_replica_handle(name, eszip_bytes, config, manifest)
+                        .await
+                    {
+                        Ok(Some(handle)) => {
+                            if let Some(mut entry) = self.functions.get_mut(name) {
+                                entry.extra_isolate_handles.push(handle.clone());
+                            }
+                            self.mark_handle_used(handle.id);
+                            self.compute_route_target(name)
+                        }
+                        Ok(None) => Err(RouteTargetError::CapacityExhausted),
+                        Err(err) => {
+                            warn!(
+                                function_name = %name,
+                                request_id = "system",
+                                "failed to scale isolate for route target: {}",
+                                err
+                            );
+                            Err(RouteTargetError::CapacityExhausted)
+                        }
+                    }
+                } else {
+                    Err(RouteTargetError::CapacityExhausted)
+                }
+            }
+        }
+    }
+
+    /// Decrease active request counter for a previously acquired route target.
+    pub fn release_route_target(&self, target: &RouteTarget) {
+        let Some(mut state) = self.route_state.get_mut(&target.function_name) else {
+            return;
+        };
+
+        if let Some(entry) = state.entries.iter_mut().find(|entry| {
+            entry.context_id == target.context_id && entry.isolate_id == target.isolate_id
+        }) {
+            entry.active_requests = entry.active_requests.saturating_sub(1);
+        }
+    }
+
+    pub fn routing_metrics_snapshot(&self) -> RoutingMetricsSnapshot {
+        let mut total_contexts = 0_u64;
+        let mut total_isolates = 0_u64;
+        let mut total_active_requests = 0_u64;
+        let mut saturated_contexts = 0_u64;
+        let mut saturated_isolates = 0_u64;
+
+        for function_state in self.route_state.iter() {
+            let Some(function_entry) = self.functions.get(function_state.key()) else {
+                continue;
+            };
+
+            let max_active = if function_entry.config.max_active_requests_per_context == 0 {
+                u64::MAX
+            } else {
+                function_entry.config.max_active_requests_per_context as u64
+            };
+            let max_contexts_per_isolate = function_entry.config.max_contexts_per_isolate.max(1);
+
+            let mut isolate_rollup: std::collections::HashMap<Uuid, (usize, usize)> =
+                std::collections::HashMap::new();
+
+            for entry in &function_state.entries {
+                total_contexts = total_contexts.saturating_add(1);
+                total_active_requests = total_active_requests.saturating_add(entry.active_requests);
+
+                let is_context_saturated = entry.active_requests >= max_active;
+                if is_context_saturated {
+                    saturated_contexts = saturated_contexts.saturating_add(1);
+                }
+
+                let rollup = isolate_rollup.entry(entry.isolate_id).or_insert((0, 0));
+                rollup.0 = rollup.0.saturating_add(1);
+                if is_context_saturated {
+                    rollup.1 = rollup.1.saturating_add(1);
+                }
+            }
+
+            total_isolates = total_isolates.saturating_add(isolate_rollup.len() as u64);
+
+            if function_entry.config.context_pool_enabled {
+                for (_isolate_id, (contexts, saturated)) in isolate_rollup {
+                    let isolate_at_context_limit = contexts >= max_contexts_per_isolate;
+                    let isolate_fully_saturated = contexts > 0 && contexts == saturated;
+                    if isolate_at_context_limit && isolate_fully_saturated {
+                        saturated_isolates = saturated_isolates.saturating_add(1);
+                    }
+                }
+            }
+        }
+
+        RoutingMetricsSnapshot {
+            total_contexts,
+            total_isolates,
+            total_active_requests,
+            saturated_rejections: self.saturated_rejections.load(Ordering::Relaxed),
+            saturated_contexts,
+            saturated_isolates,
+        }
     }
 
     /// Get the config for a function.
@@ -476,6 +821,7 @@ impl FunctionRegistry {
         if let Some((_, old_entry)) = self.functions.remove(name) {
             info!(function_name = %name, request_id = "system", "shutting down old isolate for function '{}'", name);
             self.remove_entry_handle_usage(&old_entry);
+            self.route_state.remove(name);
             lifecycle::destroy_function(&old_entry).await;
         }
 
@@ -502,6 +848,7 @@ impl FunctionRegistry {
 
         let info = entry.to_info();
         self.mark_entry_handles_used(&entry);
+        self.route_state.remove(name);
         self.functions.insert(name.to_string(), entry);
         Ok(info)
     }
@@ -511,6 +858,7 @@ impl FunctionRegistry {
         if let Some((_, entry)) = self.functions.remove(name) {
             info!(function_name = %name, request_id = "system", "deleting function '{}'", name);
             self.remove_entry_handle_usage(&entry);
+            self.route_state.remove(name);
             for extra in &entry.extra_isolate_handles {
                 extra.shutdown.cancel();
                 extra.close_request_tx();
@@ -545,6 +893,7 @@ impl FunctionRegistry {
         // Destroy old, recreate from same bytes
         if let Some((_, old_entry)) = self.functions.remove(name) {
             self.remove_entry_handle_usage(&old_entry);
+            self.route_state.remove(name);
             for extra in &old_entry.extra_isolate_handles {
                 extra.shutdown.cancel();
                 extra.close_request_tx();
@@ -613,7 +962,12 @@ impl FunctionRegistry {
             if self.all_request_channels_closed() {
                 self.functions.clear();
                 self.handle_last_used.clear();
-                info!(function_name = "runtime", request_id = "system", "all function channels closed before shutdown deadline");
+                self.route_state.clear();
+                info!(
+                    function_name = "runtime",
+                    request_id = "system",
+                    "all function channels closed before shutdown deadline"
+                );
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -646,6 +1000,7 @@ impl FunctionRegistry {
 
         self.functions.clear();
         self.handle_last_used.clear();
+        self.route_state.clear();
     }
 
     /// Number of deployed functions.
@@ -967,6 +1322,241 @@ mod tests {
         assert_eq!(h1.id, primary.id);
         assert_eq!(h2.id, replica.id);
         assert_eq!(h3.id, primary.id);
+    }
+
+    #[test]
+    fn get_route_target_none_for_missing_function() {
+        let reg = make_registry();
+        assert!(reg.get_route_target("missing").is_none());
+    }
+
+    #[test]
+    fn context_first_scheduler_creates_new_context_before_new_isolate() {
+        let reg = make_registry();
+
+        let (request_tx, _request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let primary = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(request_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let entry = FunctionEntry {
+            name: "ctx-fn".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(primary.clone()),
+            extra_isolate_handles: Vec::new(),
+            pool_limits: PoolLimits::default(),
+            next_handle_index: 0,
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig {
+                context_pool_enabled: true,
+                max_contexts_per_isolate: 2,
+                max_active_requests_per_context: 1,
+                ..IsolateConfig::default()
+            },
+            manifest: None,
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+
+        reg.functions.insert("ctx-fn".to_string(), entry);
+
+        let route_a = reg
+            .get_route_target("ctx-fn")
+            .expect("first route target should exist");
+        let route_b = reg
+            .get_route_target("ctx-fn")
+            .expect("second route target should exist");
+
+        assert_eq!(route_a.isolate_id, primary.id);
+        assert_eq!(route_b.isolate_id, primary.id);
+        assert_ne!(route_a.context_id, route_b.context_id);
+
+        reg.release_route_target(&route_a);
+        reg.release_route_target(&route_b);
+
+        let route_c = reg
+            .get_route_target("ctx-fn")
+            .expect("route target after release should exist");
+        assert_eq!(route_c.isolate_id, primary.id);
+    }
+
+    #[test]
+    fn route_target_with_status_returns_unavailable_for_missing_function() {
+        let reg = make_registry();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let result = rt.block_on(reg.get_route_target_with_status("missing"));
+        assert!(matches!(result, Err(RouteTargetError::FunctionUnavailable)));
+    }
+
+    #[test]
+    fn route_target_with_status_returns_capacity_exhausted_when_context_is_saturated() {
+        let reg = make_registry();
+
+        let (request_tx, _request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let primary = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(request_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let entry = FunctionEntry {
+            name: "ctx-saturated".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(primary.clone()),
+            extra_isolate_handles: Vec::new(),
+            pool_limits: PoolLimits::default(),
+            next_handle_index: 0,
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig {
+                context_pool_enabled: true,
+                max_contexts_per_isolate: 1,
+                max_active_requests_per_context: 1,
+                ..IsolateConfig::default()
+            },
+            manifest: None,
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+
+        reg.functions.insert("ctx-saturated".to_string(), entry);
+
+        let route = reg
+            .get_route_target("ctx-saturated")
+            .expect("first route target should exist");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let saturated = rt.block_on(reg.get_route_target_with_status("ctx-saturated"));
+        assert!(matches!(
+            saturated,
+            Err(RouteTargetError::CapacityExhausted)
+        ));
+
+        reg.release_route_target(&route);
+    }
+
+    #[test]
+    fn routing_metrics_snapshot_reports_context_and_isolate_saturation() {
+        let reg = make_registry();
+
+        let (request_tx, _request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let primary = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(request_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let entry = FunctionEntry {
+            name: "ctx-metrics".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(primary.clone()),
+            extra_isolate_handles: Vec::new(),
+            pool_limits: PoolLimits::default(),
+            next_handle_index: 0,
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig {
+                context_pool_enabled: true,
+                max_contexts_per_isolate: 1,
+                max_active_requests_per_context: 1,
+                ..IsolateConfig::default()
+            },
+            manifest: None,
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+
+        reg.functions.insert("ctx-metrics".to_string(), entry);
+
+        let route = reg
+            .get_route_target("ctx-metrics")
+            .expect("first route target should exist");
+
+        let snapshot = reg.routing_metrics_snapshot();
+        assert_eq!(snapshot.total_contexts, 1);
+        assert_eq!(snapshot.total_isolates, 1);
+        assert_eq!(snapshot.total_active_requests, 1);
+        assert_eq!(snapshot.saturated_contexts, 1);
+        assert_eq!(snapshot.saturated_isolates, 1);
+
+        reg.release_route_target(&route);
+
+        let after_release = reg.routing_metrics_snapshot();
+        assert_eq!(after_release.saturated_contexts, 0);
+        assert_eq!(after_release.saturated_isolates, 0);
+    }
+
+    #[test]
+    fn get_route_target_skips_dead_isolate_entries() {
+        let reg = make_registry();
+
+        let (dead_tx, _dead_rx) = tokio::sync::mpsc::unbounded_channel();
+        let dead = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(dead_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(false)),
+        };
+
+        let (alive_tx, _alive_rx) = tokio::sync::mpsc::unbounded_channel();
+        let alive = runtime_core::isolate::IsolateHandle {
+            request_tx: Arc::new(std::sync::Mutex::new(Some(alive_tx))),
+            shutdown: CancellationToken::new(),
+            id: uuid::Uuid::new_v4(),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+
+        let entry = FunctionEntry {
+            name: "ctx-dead".to_string(),
+            eszip_bytes: Bytes::new(),
+            bundle_format: BundleFormat::Eszip,
+            isolate_handle: Some(dead),
+            extra_isolate_handles: vec![alive.clone()],
+            pool_limits: PoolLimits::default(),
+            next_handle_index: 0,
+            inspector_stop: None,
+            status: FunctionStatus::Running,
+            config: IsolateConfig {
+                context_pool_enabled: true,
+                max_contexts_per_isolate: 2,
+                max_active_requests_per_context: 1,
+                ..IsolateConfig::default()
+            },
+            manifest: None,
+            metrics: Arc::new(FunctionMetrics::default()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_error: None,
+        };
+
+        reg.functions.insert("ctx-dead".to_string(), entry);
+
+        let route = reg
+            .get_route_target("ctx-dead")
+            .expect("route target should exist on alive isolate");
+        assert_eq!(route.isolate_id, alive.id);
     }
 
     #[test]

@@ -54,11 +54,7 @@ pub struct WatchArgs {
 
     /// Print user function `console.*` logs to runtime stdout.
     /// If disabled, logs are captured only by the internal isolate collector.
-    #[arg(
-        long,
-        default_value_t = true,
-        env = "EDGE_RUNTIME_PRINT_ISOLATE_LOGS"
-    )]
+    #[arg(long, default_value_t = true, env = "EDGE_RUNTIME_PRINT_ISOLATE_LOGS")]
     print_isolate_logs: bool,
 
     /// Default VFS total writable quota in bytes per isolate.
@@ -86,19 +82,11 @@ pub struct WatchArgs {
     dns_doh_endpoint: String,
 
     /// Maximum DNS answers returned per query by node:dns compatibility layer.
-    #[arg(
-        long,
-        default_value_t = 16,
-        env = "EDGE_RUNTIME_DNS_MAX_ANSWERS"
-    )]
+    #[arg(long, default_value_t = 16, env = "EDGE_RUNTIME_DNS_MAX_ANSWERS")]
     dns_max_answers: usize,
 
     /// DNS resolver timeout in milliseconds for node:dns compatibility layer.
-    #[arg(
-        long,
-        default_value_t = 2000,
-        env = "EDGE_RUNTIME_DNS_TIMEOUT_MS"
-    )]
+    #[arg(long, default_value_t = 2000, env = "EDGE_RUNTIME_DNS_TIMEOUT_MS")]
     dns_timeout_ms: u64,
 
     /// Default node:zlib max output length in bytes (hard-ceiling enforced by runtime).
@@ -457,6 +445,9 @@ async fn load_and_deploy_functions(
             zlib_max_output_length: default_config.zlib_max_output_length,
             zlib_max_input_length: default_config.zlib_max_input_length,
             zlib_operation_timeout_ms: default_config.zlib_operation_timeout_ms,
+            context_pool_enabled: default_config.context_pool_enabled,
+            max_contexts_per_isolate: default_config.max_contexts_per_isolate,
+            max_active_requests_per_context: default_config.max_active_requests_per_context,
         };
 
         match bundle_file(file_path).await {
@@ -634,6 +625,9 @@ fn build_watch_default_config(args: &WatchArgs) -> IsolateConfig {
         zlib_max_input_length: args.zlib_max_input_length,
         zlib_operation_timeout_ms: args.zlib_operation_timeout_ms,
         egress_max_requests_per_execution: args.egress_max_requests_per_execution,
+        context_pool_enabled: false,
+        max_contexts_per_isolate: 8,
+        max_active_requests_per_context: 1,
     }
 }
 

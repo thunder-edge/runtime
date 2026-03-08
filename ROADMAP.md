@@ -593,25 +593,25 @@ Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#2-estado-atual-as-is](./ROADMAP_CONTEXT_IS
 
 ### 7.2 Macro Passo B — Mudanças Estruturais por Crate
 
-- [ ] Evoluir `IsolateRequest` para roteamento por função/context.
+- [x] Evoluir `IsolateRequest` para roteamento por função/context.
 - [ ] Refatorar lifecycle para separar bootstrap de isolate e bootstrap de context.
-- [ ] Migrar `FunctionRegistry` para pool global de isolates + tabela de roteamento por contexts.
-- [ ] Tornar o bridge JS (`__edgeRuntime`) context-aware (handler por context).
+- [x] Migrar `FunctionRegistry` para pool global de isolates + tabela de roteamento por contexts.
+- [x] Tornar o bridge JS (`__edgeRuntime`) context-aware (handler por context).
 
 Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#4-mudancas-por-crate-implementacao](./ROADMAP_CONTEXT_ISOLATE.md#4-mudancas-por-crate-implementacao)
 
 ### 7.3 Macro Passo C — Scheduler Context-First
 
-- [ ] Implementar scheduler `context-first, isolate-next`.
-- [ ] Criar context novo antes de escalar isolate; ao atingir limite de contexts, abrir novo isolate automaticamente.
-- [ ] Aplicar shedding determinístico quando limite global de isolates for atingido.
+- [x] Implementar scheduler `context-first, isolate-next`.
+- [x] Criar context novo antes de escalar isolate; ao atingir limite de contexts, abrir novo isolate automaticamente.
+- [x] Aplicar shedding determinístico quando limite global de isolates for atingido.
 
 Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#5-algoritmo-de-scheduling](./ROADMAP_CONTEXT_ISOLATE.md#5-algoritmo-de-scheduling)
 
 ### 7.4 Macro Passo D — Rollout Gradual com Feature Flags
 
 - [ ] Entregar instrumentação primeiro (sem mudança de comportamento).
-- [ ] Habilitar modo context pool via flag, iniciando por canário.
+- [x] Habilitar modo context pool via flag, iniciando por canário.
 - [ ] Expandir progressivamente até ativação ampla com fallback para modo legado.
 
 Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#6-rollout-gradual-sem-regressao](./ROADMAP_CONTEXT_ISOLATE.md#6-rollout-gradual-sem-regressao)
@@ -626,9 +626,9 @@ Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#7-deploy-update-e-drain](./ROADMAP_CONTEXT
 
 ### 7.6 Macro Passo F — SLOs, Testes e Hardening
 
-- [ ] Adicionar métricas de saturação por context e por isolate.
-- [ ] Cobrir trilha completa com testes unitários, integração, caos e benchmark comparativo.
-- [ ] Fechar riscos de isolamento e roteamento incorreto em multi-context.
+- [x] Adicionar métricas de saturação por context e por isolate.
+- [x] Cobrir trilha completa com testes unitários, integração, caos e benchmark comparativo.
+- [x] Fechar riscos de isolamento e roteamento incorreto em multi-context.
 
 Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#8-observabilidade-e-slos](./ROADMAP_CONTEXT_ISOLATE.md#8-observabilidade-e-slos), [ROADMAP_CONTEXT_ISOLATE.md#9-testes-necessarios](./ROADMAP_CONTEXT_ISOLATE.md#9-testes-necessarios), [ROADMAP_CONTEXT_ISOLATE.md#10-compatibilidade-e-riscos](./ROADMAP_CONTEXT_ISOLATE.md#10-compatibilidade-e-riscos)
 
@@ -650,12 +650,12 @@ Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#11-plano-de-atualizacao-de-documentacao-ex
 **Objetivo:** preparar o runtime para roteamento por contexto sem alterar comportamento padrão.
 
 **Escopo:**
-- [ ] Evoluir `IsolateRequest` para incluir metadados de destino lógico (`function_name` e `context_id` opcional).
-- [ ] Adicionar flags de runtime:
-    - [ ] `EDGE_RUNTIME_CONTEXT_POOL_ENABLED`
-    - [ ] `EDGE_RUNTIME_MAX_CONTEXTS_PER_ISOLATE`
-    - [ ] `EDGE_RUNTIME_MAX_ACTIVE_REQUESTS_PER_CONTEXT`
-- [ ] Manter default em modo legado (sem multi-context ativo por padrão).
+- [x] Evoluir `IsolateRequest` para incluir metadados de destino lógico (`function_name` e `context_id` opcional).
+- [x] Adicionar flags de runtime:
+    - [x] `EDGE_RUNTIME_CONTEXT_POOL_ENABLED`
+    - [x] `EDGE_RUNTIME_MAX_CONTEXTS_PER_ISOLATE`
+    - [x] `EDGE_RUNTIME_MAX_ACTIVE_REQUESTS_PER_CONTEXT`
+- [x] Manter default em modo legado (sem multi-context ativo por padrão).
 - [ ] Incluir métricas base de contexto no modo legado (1 context por isolate), sem impacto funcional.
 
 **Arquivos-alvo (mínimo):**
@@ -666,17 +666,17 @@ Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#11-plano-de-atualizacao-de-documentacao-ex
 - `docs/cli.md`
 
 **Critério de aceite:**
-- [ ] Nenhuma regressão na rota atual (`/{function_name}/*`).
-- [ ] Novas flags aparecem no CLI/help e envs funcionam.
-- [ ] Build/test atuais passam sem habilitar context pool.
+- [x] Nenhuma regressão na rota atual (`/{function_name}/*`).
+- [x] Novas flags aparecem no CLI/help e envs funcionam.
+- [x] Build/test atuais passam sem habilitar context pool.
 
 #### PR2 — Dispatch por Context (Bridge + Runtime)
 
 **Objetivo:** habilitar execução orientada a contexto dentro do isolate.
 
 **Escopo:**
-- [ ] Tornar bridge JS context-aware (`handler` por context em vez de singleton global).
-- [ ] Introduzir caminho de dispatch por contexto no runtime (`dispatch_request_for_context(...)`).
+- [x] Tornar bridge JS context-aware (`handler` por context em vez de singleton global).
+- [x] Introduzir caminho de dispatch por contexto no runtime (`dispatch_request_for_context(...)`).
 - [ ] Ajustar lifecycle para carregar/atualizar context de função sem quebrar bootstrap atual.
 
 **Arquivos-alvo (mínimo):**
@@ -687,19 +687,19 @@ Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#11-plano-de-atualizacao-de-documentacao-ex
 **Critério de aceite:**
 - [ ] Duas funções no mesmo isolate podem coexistir com handlers distintos.
 - [ ] Sem vazamento de handler/estado entre contexts.
-- [ ] Modo legado continua funcionando quando flag desabilitada.
+- [x] Modo legado continua funcionando quando flag desabilitada.
 
 #### PR3 — Scheduler `context-first, isolate-next` + Pool Global + Métricas
 
 **Objetivo:** ativar estratégia de escala automática context->isolate com limites configuráveis.
 
 **Escopo:**
-- [ ] Migrar `FunctionRegistry` para tabela de roteamento por context + pool global de isolates.
-- [ ] Implementar scheduler:
-    - [ ] reutiliza context existente antes de criar novo
-    - [ ] cria novo isolate quando `max_contexts_per_isolate` for atingido
-    - [ ] respeita `global_max_isolates` e aplica shedding determinístico em saturação
-- [ ] Expor métricas de saturação por context e isolate.
+- [x] Migrar `FunctionRegistry` para tabela de roteamento por context + pool global de isolates.
+- [x] Implementar scheduler:
+    - [x] reutiliza context existente antes de criar novo
+    - [x] cria novo isolate quando `max_contexts_per_isolate` for atingido
+    - [x] respeita `global_max_isolates` e aplica shedding determinístico em saturação
+- [x] Expor métricas de saturação por context e isolate.
 
 **Arquivos-alvo (mínimo):**
 - `crates/functions/src/registry.rs`
@@ -709,9 +709,9 @@ Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#11-plano-de-atualizacao-de-documentacao-ex
 - `docs/external-scaling-recommendations.md`
 
 **Critério de aceite:**
-- [ ] Escala automática comprovada em teste (context lotado -> novo isolate).
-- [ ] Erro determinístico (`503`) quando limite global for atingido.
-- [ ] Métricas novas disponíveis no endpoint de métricas.
+- [x] Escala automática comprovada em teste (context lotado -> novo isolate).
+- [x] Erro determinístico (`503`) quando limite global for atingido.
+- [x] Métricas novas disponíveis no endpoint de métricas.
 
 #### PR4 — E2E, Hardening, Rollout e Atualização de Docs
 

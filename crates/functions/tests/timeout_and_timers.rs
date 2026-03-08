@@ -429,9 +429,7 @@ fn test_heap_limit_infinite_allocation_marks_function_error() {
 /// and mark function status as Error in the registry.
 #[test]
 fn test_panic_followed_by_request_marks_error_and_fails_fast() {
-    let _panic_env_lock = PANIC_PATH_ENV_LOCK
-        .lock()
-        .expect("panic env lock poisoned");
+    let _panic_env_lock = PANIC_PATH_ENV_LOCK.lock().expect("panic env lock poisoned");
     deno_core::JsRuntime::init_platform(None);
 
     let eszip_bytes = build_eszip(
@@ -531,9 +529,7 @@ fn test_panic_followed_by_request_marks_error_and_fails_fast() {
 /// returns the function to Running state with successful request handling.
 #[test]
 fn test_panic_auto_restart_recovers_to_running() {
-    let _panic_env_lock = PANIC_PATH_ENV_LOCK
-        .lock()
-        .expect("panic env lock poisoned");
+    let _panic_env_lock = PANIC_PATH_ENV_LOCK.lock().expect("panic env lock poisoned");
     deno_core::JsRuntime::init_platform(None);
 
     let eszip_bytes = build_eszip(
@@ -1061,7 +1057,10 @@ fn test_timer_isolation_between_executions() {
 fn test_websocket_closed_on_clear_execution_timers() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip("file:///test_ws_cleanup_clear.js", "globalThis.__test = true;");
+    let eszip_bytes = build_eszip(
+        "file:///test_ws_cleanup_clear.js",
+        "globalThis.__test = true;",
+    );
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1153,7 +1152,10 @@ fn test_websocket_closed_on_clear_execution_timers() {
 fn test_websocket_closed_on_end_execution() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip("file:///test_ws_cleanup_end.js", "globalThis.__test = true;");
+    let eszip_bytes = build_eszip(
+        "file:///test_ws_cleanup_end.js",
+        "globalThis.__test = true;",
+    );
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1254,7 +1256,10 @@ fn test_websocket_unregisters_on_close_event() {
         let _ = socket.read();
     });
 
-    let eszip_bytes = build_eszip("file:///test_ws_unregister_close.js", "globalThis.__test = true;");
+    let eszip_bytes = build_eszip(
+        "file:///test_ws_unregister_close.js",
+        "globalThis.__test = true;",
+    );
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2635,14 +2640,16 @@ fn test_timer_callback_skipped_after_clear_execution() {
         js_runtime
             .execute_script(
                 "<schedule_and_clear>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     globalThis.__edgeRuntime.startExecution("timer-skip-exec");
                     globalThis.__timerFiredAfterClear = false;
                     setTimeout(() => {
                         globalThis.__timerFiredAfterClear = true;
                     }, 0);
                     globalThis.__edgeRuntime.clearExecutionTimers("timer-skip-exec");
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("schedule_and_clear: {e}"))?;
 
@@ -2682,7 +2689,10 @@ fn test_timer_callback_skipped_after_clear_execution() {
 fn test_microtask_callback_skipped_after_clear_execution() {
     deno_core::JsRuntime::init_platform(None);
 
-    let eszip_bytes = build_eszip("file:///test_microtask_skip.js", "globalThis.__test = true;");
+    let eszip_bytes = build_eszip(
+        "file:///test_microtask_skip.js",
+        "globalThis.__test = true;",
+    );
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2700,14 +2710,16 @@ fn test_microtask_callback_skipped_after_clear_execution() {
         js_runtime
             .execute_script(
                 "<queue_and_clear>",
-                deno_core::ascii_str!(r#"
+                deno_core::ascii_str!(
+                    r#"
                     globalThis.__edgeRuntime.startExecution("microtask-skip-exec");
                     globalThis.__microtaskFiredAfterClear = false;
                     queueMicrotask(() => {
                         globalThis.__microtaskFiredAfterClear = true;
                     });
                     globalThis.__edgeRuntime.clearExecutionTimers("microtask-skip-exec");
-                "#),
+                "#
+                ),
             )
             .map_err(|e| format!("queue_and_clear: {e}"))?;
 

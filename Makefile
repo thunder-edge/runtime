@@ -1,9 +1,19 @@
+MIN_WATCH_FREE_KB ?= 5242880
+
 build:
 	cargo build 2>&1
 run:
 	cargo run start 2>&1
 
-watch:
+check-watch-disk:
+	@free_kb=$$(df -Pk . | awk 'NR==2 {print $$4}'); \
+	if [ "$${free_kb}" -lt "$(MIN_WATCH_FREE_KB)" ]; then \
+		echo "Error: low disk space for watch build ($${free_kb}KB free)."; \
+		echo "Hint: run 'cargo clean' or remove old target artifacts before 'make watch'."; \
+		exit 1; \
+	fi
+
+watch: check-watch-disk
 	cargo run watch --path ./examples/hello/hello.ts --inspect 9229
 
 test-js:

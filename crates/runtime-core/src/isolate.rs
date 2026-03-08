@@ -104,6 +104,18 @@ pub struct IsolateConfig {
     /// Maximum outbound network requests per execution (0 = unlimited).
     #[serde(default = "default_egress_max_requests_per_execution")]
     pub egress_max_requests_per_execution: usize,
+
+    /// Enables context-aware scheduling metadata in request dispatch paths.
+    #[serde(default)]
+    pub context_pool_enabled: bool,
+
+    /// Maximum logical contexts tracked per isolate for scheduler decisions.
+    #[serde(default = "default_max_contexts_per_isolate")]
+    pub max_contexts_per_isolate: usize,
+
+    /// Maximum active requests allowed per logical context.
+    #[serde(default = "default_max_active_requests_per_context")]
+    pub max_active_requests_per_context: usize,
 }
 
 fn default_max_heap() -> usize {
@@ -162,6 +174,14 @@ fn default_egress_max_requests_per_execution() -> usize {
     0
 }
 
+fn default_max_contexts_per_isolate() -> usize {
+    8
+}
+
+fn default_max_active_requests_per_context() -> usize {
+    1
+}
+
 impl Default for IsolateConfig {
     fn default() -> Self {
         Self {
@@ -183,12 +203,19 @@ impl Default for IsolateConfig {
             zlib_max_input_length: default_zlib_max_input_length(),
             zlib_operation_timeout_ms: default_zlib_operation_timeout_ms(),
             egress_max_requests_per_execution: default_egress_max_requests_per_execution(),
+            context_pool_enabled: false,
+            max_contexts_per_isolate: default_max_contexts_per_isolate(),
+            max_active_requests_per_context: default_max_active_requests_per_context(),
         }
     }
 }
 
 /// A request message sent to an isolate for processing.
 pub struct IsolateRequest {
+    /// Logical function name target for routing/scheduling observability.
+    pub function_name: Option<String>,
+    /// Optional context target within the isolate.
+    pub context_id: Option<String>,
     /// The HTTP request to process.
     pub request: http::Request<bytes::Bytes>,
     /// Channel to send the response back on.
@@ -246,6 +273,16 @@ impl IsolateHandle {
         &self,
         request: http::Request<bytes::Bytes>,
     ) -> Result<IsolateResponse, Error> {
+        self.send_routed_request(request, None, None).await
+    }
+
+    /// Send a request with logical routing metadata.
+    pub async fn send_routed_request(
+        &self,
+        request: http::Request<bytes::Bytes>,
+        function_name: Option<String>,
+        context_id: Option<String>,
+    ) -> Result<IsolateResponse, Error> {
         // Check if isolate is alive before attempting to send
         if !self.is_alive() {
             return Err(anyhow::anyhow!(
@@ -264,6 +301,8 @@ impl IsolateHandle {
 
         sender
             .send(IsolateRequest {
+                function_name,
+                context_id,
                 request,
                 response_tx,
             })
@@ -349,6 +388,9 @@ mod tests {
         assert_eq!(config.dns_max_answers, 16);
         assert_eq!(config.dns_timeout_ms, 2000);
         assert_eq!(config.egress_max_requests_per_execution, 0);
+        assert!(!config.context_pool_enabled);
+        assert_eq!(config.max_contexts_per_isolate, 8);
+        assert_eq!(config.max_active_requests_per_context, 1);
     }
 
     #[test]
@@ -368,6 +410,9 @@ mod tests {
         assert_eq!(config.dns_max_answers, 16);
         assert_eq!(config.dns_timeout_ms, 2000);
         assert_eq!(config.egress_max_requests_per_execution, 0);
+        assert!(!config.context_pool_enabled);
+        assert_eq!(config.max_contexts_per_isolate, 8);
+        assert_eq!(config.max_active_requests_per_context, 1);
     }
 
     #[test]
@@ -400,6 +445,9 @@ mod tests {
         assert!(json.contains("\"dns_max_answers\""));
         assert!(json.contains("\"dns_timeout_ms\""));
         assert!(json.contains("\"egress_max_requests_per_execution\""));
+        assert!(json.contains("\"context_pool_enabled\""));
+        assert!(json.contains("\"max_contexts_per_isolate\""));
+        assert!(json.contains("\"max_active_requests_per_context\""));
     }
 
     #[test]

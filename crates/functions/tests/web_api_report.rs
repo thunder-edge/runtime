@@ -86,29 +86,29 @@ fn eval_js_once(runtime: &mut JsRuntime, js: &str) -> String {
 }
 
 fn pump_event_loop(runtime: &mut JsRuntime) -> bool {
-        let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-        {
-                Ok(rt) => rt,
-                Err(_) => return false,
-        };
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(_) => return false,
+    };
 
-        let local = tokio::task::LocalSet::new();
-        local
-                .block_on(&rt, async {
-                        runtime
-                                .run_event_loop(PollEventLoopOptions {
-                                        wait_for_inspector: false,
-                                        pump_v8_message_loop: true,
-                                })
-                                .await
+    let local = tokio::task::LocalSet::new();
+    local
+        .block_on(&rt, async {
+            runtime
+                .run_event_loop(PollEventLoopOptions {
+                    wait_for_inspector: false,
+                    pump_v8_message_loop: true,
                 })
-                .is_ok()
+                .await
+        })
+        .is_ok()
 }
 
 fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
-        vec![
+    vec![
                 NodeCompatCheck {
                         api: "node:process",
                         profile: "Partial",
@@ -1108,11 +1108,11 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
 }
 
 fn status_label(status: &str) -> &'static str {
-        match status {
-                "full" => "Full",
-                "partial" => "Partial",
-                _ => "None",
-        }
+    match status {
+        "full" => "Full",
+        "partial" => "Partial",
+        _ => "None",
+    }
 }
 
 fn node_support_tier(profile: &str, _status: &str) -> &'static str {
@@ -1644,10 +1644,8 @@ fn define_checks() -> Vec<ApiCheck> {
 }
 
 fn verify_node_report_coverage(node_checks: &[NodeCompatCheck]) {
-    let report_modules: std::collections::BTreeSet<String> = node_checks
-        .iter()
-        .map(|c| c.api.to_string())
-        .collect();
+    let report_modules: std::collections::BTreeSet<String> =
+        node_checks.iter().map(|c| c.api.to_string()).collect();
 
     let node_compat_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1736,8 +1734,10 @@ fn verify_node_compat_docs_sync(node_checks: &[NodeCompatCheck]) {
         parsed_levels.insert(module, level);
     }
 
-    let expected_modules: std::collections::BTreeSet<String> =
-        node_checks.iter().map(|check| check.api.to_string()).collect();
+    let expected_modules: std::collections::BTreeSet<String> = node_checks
+        .iter()
+        .map(|check| check.api.to_string())
+        .collect();
     let documented_modules: std::collections::BTreeSet<String> =
         parsed_levels.keys().cloned().collect();
 
@@ -1756,11 +1756,9 @@ fn verify_node_compat_docs_sync(node_checks: &[NodeCompatCheck]) {
             .get(check.api)
             .unwrap_or_else(|| panic!("missing '{}' in docs/NODE-COMPAT.md", check.api));
         assert_eq!(
-            documented_level,
-            check.profile,
+            documented_level, check.profile,
             "docs/NODE-COMPAT.md level mismatch for '{}': expected '{}'",
-            check.api,
-            check.profile
+            check.api, check.profile
         );
     }
 }
@@ -1895,7 +1893,11 @@ fn generate_web_standards_report() {
     )
     .unwrap();
     writeln!(report, "- `deno_io` - IO primitives for runtime internals").unwrap();
-    writeln!(report, "- `deno_fs` - Filesystem extension (sandboxed by permissions)").unwrap();
+    writeln!(
+        report,
+        "- `deno_fs` - Filesystem extension (sandboxed by permissions)"
+    )
+    .unwrap();
     writeln!(report, "- `deno_crypto` - Web Crypto API").unwrap();
     writeln!(report, "- `deno_telemetry` - OpenTelemetry support").unwrap();
     writeln!(
@@ -1905,8 +1907,16 @@ fn generate_web_standards_report() {
     .unwrap();
     writeln!(report, "- `deno_net` - TCP/TLS networking").unwrap();
     writeln!(report, "- `deno_tls` - TLS support").unwrap();
-    writeln!(report, "- `edge_node_compat` - Node.js compatibility layer (Full/Partial/Stub node:*)").unwrap();
-    writeln!(report, "- `deno_node` - Minimal node shim required by runtime deps").unwrap();
+    writeln!(
+        report,
+        "- `edge_node_compat` - Node.js compatibility layer (Full/Partial/Stub node:*)"
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "- `deno_node` - Minimal node shim required by runtime deps"
+    )
+    .unwrap();
     writeln!(
         report,
         "- `edge_bootstrap` - Bootstrap module that wires everything to globalThis"
@@ -1922,16 +1932,32 @@ fn generate_web_standards_report() {
     // Node compatibility section (explicitly separated from Web Standards checks).
     writeln!(report, "## Node API Compatibility").unwrap();
     writeln!(report).unwrap();
-    writeln!(report, "This section is validated by runtime checks and is separate from Web Standards scoring.").unwrap();
+    writeln!(
+        report,
+        "This section is validated by runtime checks and is separate from Web Standards scoring."
+    )
+    .unwrap();
     writeln!(report, "Official compatibility levels for `node:*` APIs:").unwrap();
-    writeln!(report, "- `Full`: implementation considered functionally complete for the tested contract.").unwrap();
+    writeln!(
+        report,
+        "- `Full`: implementation considered functionally complete for the tested contract."
+    )
+    .unwrap();
     writeln!(report, "- `Partial`: implementation works for common/runtime-safe paths with documented limitations.").unwrap();
     writeln!(report, "- `Stub`: module is importable, but unsupported methods fail deterministically when called.").unwrap();
     writeln!(report, "Stub failures use the standardized format: `[thunder] <api> is not implemented in this runtime profile`.").unwrap();
     writeln!(report, "Unsupported privileged behavior fails with deterministic errors (for example `EOPNOTSUPP`) instead of panicking or exposing host resources.").unwrap();
     writeln!(report).unwrap();
-    writeln!(report, "| Module | Level | Profile | Tested Status | Notes |",).unwrap();
-    writeln!(report, "|--------|-------|---------|---------------|-------|",).unwrap();
+    writeln!(
+        report,
+        "| Module | Level | Profile | Tested Status | Notes |",
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "|--------|-------|---------|---------------|-------|",
+    )
+    .unwrap();
     for check in &node_checks {
         writeln!(
             report,
@@ -1966,4 +1992,3 @@ fn generate_web_standards_report() {
     // Remove unused variable warning
     let _ = categories;
 }
-

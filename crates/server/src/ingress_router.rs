@@ -14,7 +14,7 @@ use runtime_core::isolate::IsolateResponseBody;
 use tracing::{info, info_span};
 
 use crate::service::BoxBody;
-use functions::registry::FunctionRegistry;
+use functions::registry::{FunctionRegistry, RouteTargetError};
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
@@ -123,15 +123,28 @@ impl IngressRouter {
         );
         let _request_span_guard = request_span.enter();
 
-        // Get isolate handle
-        let Some(handle) = self.registry.get_handle(function_name) else {
-            return json_response(
-                StatusCode::NOT_FOUND,
-                &format!(
-                    r#"{{"error":"function '{}' not found or not running"}}"#,
-                    function_name
-                ),
-            );
+        // Resolve isolate + logical context target
+        let route_target = match self
+            .registry
+            .get_route_target_with_status(function_name)
+            .await
+        {
+            Ok(target) => target,
+            Err(RouteTargetError::FunctionUnavailable) => {
+                return json_response(
+                    StatusCode::NOT_FOUND,
+                    &format!(
+                        r#"{{"error":"function '{}' not found or not running"}}"#,
+                        function_name
+                    ),
+                )
+            }
+            Err(RouteTargetError::CapacityExhausted) => {
+                return json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    r#"{"error":"capacity exhausted"}"#,
+                )
+            }
         };
 
         // Get function config for timeouts
@@ -190,12 +203,18 @@ impl IngressRouter {
         let req_started = Instant::now();
         apply_trace_headers(forwarded_req.headers_mut(), trace_ctx);
 
-        let response = match tokio::time::timeout(
+        let route_result = tokio::time::timeout(
             timeout_duration,
-            handle.send_request(forwarded_req),
+            route_target.handle.send_routed_request(
+                forwarded_req,
+                Some(function_name.to_string()),
+                Some(route_target.context_id.clone()),
+            ),
         )
-        .await
-        {
+        .await;
+        self.registry.release_route_target(&route_target);
+
+        let response = match route_result {
             Ok(Ok(resp)) => {
                 let (parts, body) = (resp.parts, resp.body);
                 match body {

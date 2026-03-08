@@ -81,7 +81,8 @@ mod tests {
 
     #[test]
     fn provides_embedded_ext_module() {
-        let specifier = deno_graph::ModuleSpecifier::parse("ext:edge_assert/assert.ts").expect("specifier");
+        let specifier =
+            deno_graph::ModuleSpecifier::parse("ext:edge_assert/assert.ts").expect("specifier");
         let maybe = load_module_bytes(&specifier).expect("load");
         let bytes = maybe.expect("module must exist");
         let source = String::from_utf8(bytes).expect("utf8");

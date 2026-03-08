@@ -1,6 +1,6 @@
 use functions::registry::{FunctionRegistry, PoolRuntimeConfig};
-use functions::types::PoolLimits;
 use functions::types::BundlePackage;
+use functions::types::PoolLimits;
 use runtime_core::isolate::{IsolateConfig, IsolateResponseBody, OutgoingProxyConfig};
 use runtime_core::ssrf::SsrfConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -126,7 +126,11 @@ async fn deploy_inline_function(
     Ok(registry)
 }
 
-async fn invoke_text(registry: &FunctionRegistry, name: &str, path: &str) -> Result<(u16, String), String> {
+async fn invoke_text(
+    registry: &FunctionRegistry,
+    name: &str,
+    path: &str,
+) -> Result<(u16, String), String> {
     let handle = registry
         .get_handle(name)
         .ok_or_else(|| format!("missing handle for {name}"))?;
@@ -158,7 +162,9 @@ async fn invoke_text(registry: &FunctionRegistry, name: &str, path: &str) -> Res
     Ok((response.parts.status.as_u16(), text))
 }
 
-async fn start_one_shot_http_server(response_body: &'static str) -> Result<std::net::SocketAddr, String> {
+async fn start_one_shot_http_server(
+    response_body: &'static str,
+) -> Result<std::net::SocketAddr, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| format!("bind server: {e}"))?;

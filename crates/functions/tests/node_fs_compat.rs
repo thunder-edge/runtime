@@ -264,7 +264,7 @@ fn node_fs_promises_honor_vfs_quota_limits() {
 
 #[test]
 fn node_fs_callbacks_preserve_async_local_storage_context() {
-        let source = r#"
+    let source = r#"
             import fs from "node:fs";
             import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -285,16 +285,16 @@ fn node_fs_callbacks_preserve_async_local_storage_context() {
             globalThis.__nodeFsAlsCallbackOk = callbackStore === "request-context";
         "#;
 
-        run_module_and_check(
-                source,
-                "globalThis.__nodeFsAlsCallbackOk === true",
-                "node:fs callback should preserve ALS context",
-        );
+    run_module_and_check(
+        source,
+        "globalThis.__nodeFsAlsCallbackOk === true",
+        "node:fs callback should preserve ALS context",
+    );
 }
 
 #[test]
 fn node_fs_streams_support_vfs_roundtrip() {
-        let source = r#"
+    let source = r#"
             import fs from "node:fs";
 
             let readResult = "";
@@ -324,16 +324,16 @@ fn node_fs_streams_support_vfs_roundtrip() {
                 readResult === "hello-stream";
         "#;
 
-        run_module_and_check(
-                source,
-                "globalThis.__nodeFsStreamsRoundtripOk === true",
-                "node:fs streams should roundtrip data in VFS",
-        );
+    run_module_and_check(
+        source,
+        "globalThis.__nodeFsStreamsRoundtripOk === true",
+        "node:fs streams should roundtrip data in VFS",
+    );
 }
 
 #[test]
 fn node_fs_write_stream_rejects_non_writable_mount() {
-        let source = r#"
+    let source = r#"
             import fs from "node:fs";
 
             let sawExpectedError = false;
@@ -351,16 +351,16 @@ fn node_fs_write_stream_rejects_non_writable_mount() {
             globalThis.__nodeFsWriteStreamErrOk = sawExpectedError;
         "#;
 
-        run_module_and_check(
-                source,
-                "globalThis.__nodeFsWriteStreamErrOk === true",
-                "node:fs createWriteStream should fail on read-only mount",
-        );
+    run_module_and_check(
+        source,
+        "globalThis.__nodeFsWriteStreamErrOk === true",
+        "node:fs createWriteStream should fail on read-only mount",
+    );
 }
 
 #[test]
 fn node_fs_detects_vfs_integrity_corruption() {
-        let source = r#"
+    let source = r#"
             import fs from "node:fs";
 
             fs.writeFileSync("/tmp/integrity.txt", "ok");
@@ -382,9 +382,9 @@ fn node_fs_detects_vfs_integrity_corruption() {
             globalThis.__nodeFsIntegrityCheckOk = integrityError;
         "#;
 
-        run_module_and_check(
-                source,
-                "globalThis.__nodeFsIntegrityCheckOk === true",
-                "node:fs should detect corrupted VFS state",
-        );
+    run_module_and_check(
+        source,
+        "globalThis.__nodeFsIntegrityCheckOk === true",
+        "node:fs should detect corrupted VFS state",
+    );
 }

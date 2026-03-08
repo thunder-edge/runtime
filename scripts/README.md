@@ -18,6 +18,7 @@ This directory contains scripts for bundling, deploying, and load-testing the De
 ### Automation Scripts
 - **`run-benchmarks.sh`** - Full end-to-end benchmark (build, bundle, deploy, test everything)
 - **`quick-benchmark.sh`** - Fast re-run of benchmarks without rebuilding
+- **`benchmark-context-isolate-extreme.sh`** - Extreme comparative benchmark (legacy vs context+isolate) with consolidated stdout report
 - **`node-crypto-benchmark.sh`** - Focused benchmark/check for `node:crypto` throughput/latency (`createHash`, `createHmac`, `randomBytes`)
 - **`zlib-guardrail-benchmark.sh`** - Focused benchmark/check for `node:zlib` hardening guardrails
 - **`start-observability-runtime.sh`** - Start observability docker stack + run edge runtime with OTEL + open Grafana
@@ -71,6 +72,33 @@ This runs a focused microbenchmark test and reports throughput/latency for:
 - `createHash('sha256')`
 - `createHmac('sha256')`
 - `randomBytes(32)`
+
+### Extreme Context+Isolate Comparative Benchmark
+
+```bash
+./scripts/benchmark-context-isolate-extreme.sh
+```
+
+This benchmark runs two scenarios and prints a final comparative report in stdout:
+- `legacy` mode (no context-pool scheduler)
+- `context+isolate` mode (`--pool-enabled --context-pool-enabled`)
+
+Measured outputs include:
+- HTTP totals and latency (`avg`, `p95`)
+- deterministic status distribution (`200`, `503`, unexpected)
+- routing saturation metrics (`total_contexts`, `total_isolates`, `saturated_contexts`, `saturated_isolates`, `saturated_rejections`)
+- percentage delta between context+isolate and legacy
+
+Main tuning knobs (via env vars):
+
+```bash
+VUS_WARMUP=50 \
+VUS_STEADY=150 \
+VUS_EXTREME=400 \
+DUR_EXTREME=45s \
+HOLD_MS=50 \
+./scripts/benchmark-context-isolate-extreme.sh
+```
 
 ### Start Observability + Runtime (OTEL)
 

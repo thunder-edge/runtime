@@ -19,11 +19,7 @@ impl From<LogFormat> for telemetry::RuntimeLogFormat {
 }
 
 #[derive(Parser)]
-#[command(
-    name = "thunder",
-    version,
-    about = "Deno-based edge function runtime"
-)]
+#[command(name = "thunder", version, about = "Deno-based edge function runtime")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

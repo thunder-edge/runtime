@@ -686,8 +686,7 @@ fn start_inspector_server(
                     }
 
                     if path == "/json/version" {
-                        let body =
-                            "{\"Browser\":\"thunder\",\"Protocol-Version\":\"1.3\"}";
+                        let body = "{\"Browser\":\"thunder\",\"Protocol-Version\":\"1.3\"}";
                         let _ = write_http_json_response(&mut stream, body);
                         continue;
                     }

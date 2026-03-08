@@ -115,6 +115,17 @@ else
     exit 1
 fi
 
+if [[ "${RUN_EXTREME_CONTEXT_BENCH:-0}" == "1" ]]; then
+    echo ""
+    print_section "Optional: Running extreme context+isolate comparative benchmark..."
+    if bash "$SCRIPT_DIR/benchmark-context-isolate-extreme.sh"; then
+        print_success "Extreme context+isolate benchmark completed"
+    else
+        print_error "Extreme context+isolate benchmark failed"
+        exit 1
+    fi
+fi
+
 # Calculate elapsed time
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
@@ -125,6 +136,7 @@ echo "📈 Summary:"
 echo "   Total time: ${ELAPSED}s"
 echo "   ESZIP bundles: $PROJECT_ROOT/bundles/eszip"
 echo "   Metrics log: /tmp/thunder.log"
+echo "   Extreme context+isolate bench: RUN_EXTREME_CONTEXT_BENCH=1 ./scripts/run-benchmarks.sh"
 echo ""
 
 print_success "All benchmarks completed!"

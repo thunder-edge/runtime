@@ -155,7 +155,12 @@ pub async fn run_dual_server(
         if let Err(e) =
             run_admin_listener(admin_config, admin_router, admin_shutdown, admin_semaphore).await
         {
-            error!(function_name = "runtime", request_id = "system", "admin listener error: {}", e);
+            error!(
+                function_name = "runtime",
+                request_id = "system",
+                "admin listener error: {}",
+                e
+            );
         }
     });
 
@@ -172,13 +177,22 @@ pub async fn run_dual_server(
         )
         .await
         {
-            error!(function_name = "runtime", request_id = "system", "ingress listener error: {}", e);
+            error!(
+                function_name = "runtime",
+                request_id = "system",
+                "ingress listener error: {}",
+                e
+            );
         }
     });
 
     // Wait for shutdown signal
     shutdown.cancelled().await;
-    info!(function_name = "runtime", request_id = "system", "shutdown signal received, stopping listeners...");
+    info!(
+        function_name = "runtime",
+        request_id = "system",
+        "shutdown signal received, stopping listeners..."
+    );
 
     // Wait for listeners to finish with deadline
     let deadline = Duration::from_secs(config.graceful_exit_deadline_secs);
@@ -235,7 +249,13 @@ async fn run_admin_listener(
     } else {
         "http"
     };
-    info!(function_name = "runtime", request_id = "system", "admin API listening on {}://{}", scheme, config.addr);
+    info!(
+        function_name = "runtime",
+        request_id = "system",
+        "admin API listening on {}://{}",
+        scheme,
+        config.addr
+    );
 
     let svc = EdgeService::new(router);
 
@@ -347,7 +367,13 @@ async fn run_tcp_ingress(
     } else {
         "http"
     };
-    info!(function_name = "runtime", request_id = "system", "ingress listening on {}://{}", scheme, addr);
+    info!(
+        function_name = "runtime",
+        request_id = "system",
+        "ingress listening on {}://{}",
+        scheme,
+        addr
+    );
 
     let svc = EdgeService::new(router);
 
@@ -421,7 +447,12 @@ async fn run_unix_ingress(
     }
 
     let listener = UnixListener::bind(&path)?;
-    info!(function_name = "runtime", request_id = "system", "ingress listening on unix:{}", path.display());
+    info!(
+        function_name = "runtime",
+        request_id = "system",
+        "ingress listening on unix:{}",
+        path.display()
+    );
 
     let svc = EdgeService::new(router);
     let cleanup_path = path.clone();
@@ -534,7 +565,13 @@ pub async fn run_server(
     } else {
         "http"
     };
-    info!(function_name = "runtime", request_id = "system", "thunder listening on {}://{}", scheme, config.addr);
+    info!(
+        function_name = "runtime",
+        request_id = "system",
+        "thunder listening on {}://{}",
+        scheme,
+        config.addr
+    );
 
     loop {
         tokio::select! {
@@ -624,6 +661,7 @@ mod tests {
     use runtime_core::isolate::IsolateConfig;
     use rustls::pki_types::ServerName;
     use rustls::{ClientConfig, RootCertStore};
+    use serde_json::Value;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio_rustls::TlsConnector;
@@ -775,6 +813,16 @@ mod tests {
             .expect("failed to read response");
 
         String::from_utf8_lossy(&response).to_string()
+    }
+
+    fn parse_http_json_body(response: &str) -> Value {
+        let body = response
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .unwrap_or("");
+        serde_json::from_str(body).unwrap_or_else(|err| {
+            panic!("failed to parse response body as json: {err}; body={body}")
+        })
     }
 
     async fn wait_for_tcp_listener(addr: SocketAddr) {
@@ -1073,7 +1121,8 @@ mod tests {
             "expected 400 for corrupted bundle deploy, got: {bad_resp}"
         );
 
-        let list_req = "GET /_internal/functions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let list_req =
+            "GET /_internal/functions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         let list_resp = send_plain_http(admin_addr, list_req).await;
         assert!(
             list_resp.starts_with("HTTP/1.1 200"),
@@ -1187,6 +1236,18 @@ mod tests {
         assert!(
             ingress_resp.starts_with("HTTP/1.1 200"),
             "expected public ingress request without API key to work: {ingress_resp}"
+        );
+
+        let admin_ingress_req =
+            "GET /auth-e2e HTTP/1.1\r\nHost: localhost\r\nX-API-Key: secret-key\r\nConnection: close\r\n\r\n";
+        let admin_ingress_resp = send_plain_http(admin_addr, admin_ingress_req).await;
+        assert!(
+            admin_ingress_resp.starts_with("HTTP/1.1 404"),
+            "expected admin listener to reject function ingress route: {admin_ingress_resp}"
+        );
+        assert!(
+            admin_ingress_resp.contains("admin listener serves only /_internal/* routes"),
+            "expected admin 404 response to include ingress hint: {admin_ingress_resp}"
         );
 
         shutdown.cancel();
@@ -1439,7 +1500,9 @@ mod tests {
             .await
             .expect("failed to connect to ingress");
         stream
-            .write_all(b"GET /stream-long-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .write_all(
+                b"GET /stream-long-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
             .await
             .expect("failed to write ingress request");
 
@@ -1725,8 +1788,14 @@ mod tests {
         );
         let (resp_a, resp_b) = tokio::join!(req_a, req_b);
 
-        assert!(resp_a.starts_with("HTTP/1.1 200"), "alpha response failed: {resp_a}");
-        assert!(resp_b.starts_with("HTTP/1.1 200"), "beta response failed: {resp_b}");
+        assert!(
+            resp_a.starts_with("HTTP/1.1 200"),
+            "alpha response failed: {resp_a}"
+        );
+        assert!(
+            resp_b.starts_with("HTTP/1.1 200"),
+            "beta response failed: {resp_b}"
+        );
         assert!(
             resp_a.contains("ok:alpha:alpha:alpha"),
             "expected alpha ALS context to remain isolated: {resp_a}"
@@ -1748,6 +1817,256 @@ mod tests {
         assert!(
             post_resp.contains("ok:gamma:gamma:gamma"),
             "expected no stale context leak after overlapping requests: {post_resp}"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
+    }
+
+    #[tokio::test]
+    async fn e2e_context_saturation_returns_503_and_reports_routing_metrics() {
+        init_deno_platform();
+
+        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind probe listener");
+        let addr = probe_listener
+            .local_addr()
+            .expect("failed to get local addr");
+        drop(probe_listener);
+
+        let registry = make_test_registry();
+        let shutdown = CancellationToken::new();
+
+        let eszip_bytes = build_eszip_async(
+            "file:///context_saturation.ts",
+            r#"
+            Deno.serve(async (_req) => {
+              await new Promise((resolve) => setTimeout(resolve, 120));
+              return new Response('ok', { headers: { 'content-type': 'text/plain' } });
+            });
+            "#,
+        )
+        .await;
+        let bundle = BundlePackage::eszip_only(eszip_bytes);
+        let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+        registry
+            .deploy(
+                "ctx-slo".to_string(),
+                bytes::Bytes::from(bundle_data),
+                Some(IsolateConfig {
+                    context_pool_enabled: true,
+                    max_contexts_per_isolate: 1,
+                    max_active_requests_per_context: 1,
+                    ..IsolateConfig::default()
+                }),
+                None,
+            )
+            .await
+            .expect("failed to deploy ctx-slo function");
+
+        let server_config = ServerConfig {
+            addr,
+            tls: None,
+            rate_limit_rps: None,
+            graceful_exit_deadline_secs: 1,
+            body_limits: BodyLimitsConfig::default(),
+            max_connections: 128,
+        };
+
+        let server_shutdown = shutdown.clone();
+        let server_handle =
+            tokio::spawn(async move { run_server(server_config, registry, server_shutdown).await });
+
+        wait_for_tcp_listener(addr).await;
+
+        let in_flight = tokio::spawn(send_plain_http(
+            addr,
+            "GET /ctx-slo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        ));
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        let saturated = send_plain_http(
+            addr,
+            "GET /ctx-slo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            saturated.starts_with("HTTP/1.1 503"),
+            "expected 503 while context is saturated, got: {saturated}"
+        );
+        assert!(
+            saturated.contains("capacity exhausted"),
+            "expected capacity exhausted payload, got: {saturated}"
+        );
+
+        let metrics_resp = send_plain_http(
+            addr,
+            "GET /_internal/metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            metrics_resp.starts_with("HTTP/1.1 200"),
+            "expected 200 from metrics endpoint, got: {metrics_resp}"
+        );
+
+        let metrics = parse_http_json_body(&metrics_resp);
+        let routing = metrics
+            .get("routing")
+            .unwrap_or_else(|| panic!("missing routing field in metrics: {metrics}"));
+        assert!(
+            routing
+                .get("saturated_rejections")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                >= 1,
+            "expected at least one saturated rejection: {metrics}"
+        );
+        assert!(
+            routing
+                .get("saturated_contexts")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                >= 1,
+            "expected saturated contexts while request is in flight: {metrics}"
+        );
+        assert!(
+            routing
+                .get("saturated_isolates")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                >= 1,
+            "expected saturated isolates while request is in flight: {metrics}"
+        );
+
+        let completed = in_flight.await.expect("join failure for in-flight request");
+        assert!(
+            completed.starts_with("HTTP/1.1 200"),
+            "expected first request to complete with 200, got: {completed}"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
+    }
+
+    #[tokio::test]
+    #[ignore = "chaos test: high concurrency burst with pool scaling and deterministic status validation"]
+    async fn chaos_context_isolate_burst_keeps_statuses_deterministic() {
+        init_deno_platform();
+
+        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind probe listener");
+        let addr = probe_listener
+            .local_addr()
+            .expect("failed to get local addr");
+        drop(probe_listener);
+
+        let registry = make_pool_enabled_registry();
+        let shutdown = CancellationToken::new();
+
+        let eszip_bytes = build_eszip_async(
+            "file:///context_chaos.ts",
+            r#"
+            Deno.serve(async (_req) => {
+              await new Promise((resolve) => setTimeout(resolve, 25));
+              return new Response('ok-chaos', { headers: { 'content-type': 'text/plain' } });
+            });
+            "#,
+        )
+        .await;
+        let bundle = BundlePackage::eszip_only(eszip_bytes);
+        let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+        registry
+            .deploy(
+                "ctx-chaos".to_string(),
+                bytes::Bytes::from(bundle_data),
+                Some(IsolateConfig {
+                    context_pool_enabled: true,
+                    max_contexts_per_isolate: 2,
+                    max_active_requests_per_context: 1,
+                    ..IsolateConfig::default()
+                }),
+                None,
+            )
+            .await
+            .expect("failed to deploy ctx-chaos");
+
+        registry
+            .set_pool_limits("ctx-chaos", 1, 4)
+            .await
+            .expect("failed to set pool limits for chaos test");
+
+        let server_config = ServerConfig {
+            addr,
+            tls: None,
+            rate_limit_rps: None,
+            graceful_exit_deadline_secs: 1,
+            body_limits: BodyLimitsConfig::default(),
+            max_connections: 512,
+        };
+
+        let server_shutdown = shutdown.clone();
+        let server_registry = registry.clone();
+        let server_handle = tokio::spawn(async move {
+            run_server(server_config, server_registry, server_shutdown).await
+        });
+
+        wait_for_tcp_listener(addr).await;
+
+        let mut tasks = Vec::with_capacity(96);
+        for _ in 0..96 {
+            tasks.push(tokio::spawn(send_plain_http(
+                addr,
+                "GET /ctx-chaos HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )));
+        }
+
+        let mut ok_200 = 0_u64;
+        let mut ok_503 = 0_u64;
+
+        for task in tasks {
+            let response = task.await.expect("join failed for chaos request");
+            if response.starts_with("HTTP/1.1 200") {
+                ok_200 = ok_200.saturating_add(1);
+            } else if response.starts_with("HTTP/1.1 503") {
+                ok_503 = ok_503.saturating_add(1);
+            } else {
+                panic!("unexpected response status under chaos burst: {response}");
+            }
+        }
+
+        assert!(ok_200 > 0, "expected at least some successful responses");
+        assert!(
+            ok_200 + ok_503 == 96,
+            "unexpected status distribution: ok_200={ok_200}, ok_503={ok_503}"
+        );
+
+        let metrics_resp = send_plain_http(
+            addr,
+            "GET /_internal/metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let metrics = parse_http_json_body(&metrics_resp);
+        let total_isolates = metrics
+            .get("routing")
+            .and_then(|routing| routing.get("total_isolates"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert!(
+            total_isolates >= 1 && total_isolates <= 4,
+            "expected isolate count to stay within configured pool limits, got: {total_isolates}"
         );
 
         shutdown.cancel();
@@ -1783,7 +2102,8 @@ mod tests {
         };
 
         let server_shutdown = shutdown.clone();
-        let server_handle = tokio::spawn(async move { run_server(server_config, registry, server_shutdown).await });
+        let server_handle =
+            tokio::spawn(async move { run_server(server_config, registry, server_shutdown).await });
 
         wait_for_tcp_listener(addr).await;
 
@@ -1827,10 +2147,11 @@ mod tests {
             .await
             .expect("failed to complete held request");
         let mut held_response = Vec::new();
-        let held_n = tokio::time::timeout(Duration::from_secs(2), held.read_to_end(&mut held_response))
-            .await
-            .expect("timed out waiting held response")
-            .expect("failed to read held response");
+        let held_n =
+            tokio::time::timeout(Duration::from_secs(2), held.read_to_end(&mut held_response))
+                .await
+                .expect("timed out waiting held response")
+                .expect("failed to read held response");
         assert!(held_n > 0, "expected held request to eventually complete");
 
         shutdown.cancel();
@@ -1867,7 +2188,8 @@ mod tests {
         };
 
         let server_shutdown = shutdown.clone();
-        let server_handle = tokio::spawn(async move { run_server(server_config, registry, server_shutdown).await });
+        let server_handle =
+            tokio::spawn(async move { run_server(server_config, registry, server_shutdown).await });
 
         wait_for_tcp_listener(addr).await;
 
@@ -1876,9 +2198,15 @@ mod tests {
             tasks.push(tokio::spawn(async move {
                 match TcpStream::connect(addr).await {
                     Ok(mut stream) => {
-                        let _ = stream.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await;
+                        let _ = stream
+                            .write_all(
+                                b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                            )
+                            .await;
                         let mut buf = [0_u8; 64];
-                        let _ = tokio::time::timeout(Duration::from_millis(200), stream.read(&mut buf)).await;
+                        let _ =
+                            tokio::time::timeout(Duration::from_millis(200), stream.read(&mut buf))
+                                .await;
                         true
                     }
                     Err(_) => false,
@@ -1896,8 +2224,15 @@ mod tests {
         assert!(connected > 0, "at least some connections should succeed");
 
         // After stress, server should still answer.
-        let probe = send_plain_http(addr, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await;
-        assert!(probe.starts_with("HTTP/1.1"), "server did not respond after stress: {probe}");
+        let probe = send_plain_http(
+            addr,
+            "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            probe.starts_with("HTTP/1.1"),
+            "server did not respond after stress: {probe}"
+        );
 
         shutdown.cancel();
         let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)

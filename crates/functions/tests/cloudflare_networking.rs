@@ -182,7 +182,8 @@ fn websocket_state_constants_available() {
 
 #[test]
 fn websocket_handshake_and_message_echo() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind websocket echo listener");
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("bind websocket echo listener");
     let addr = listener.local_addr().expect("read local address");
 
     let server = std::thread::spawn(move || {
@@ -260,7 +261,10 @@ fn websocket_handshake_and_message_echo() {
             .expect("read websocket test result");
 
         deno_core::scope!(scope, runtime);
-        assert!(success.open(scope).is_true(), "expected websocket echo success");
+        assert!(
+            success.open(scope).is_true(),
+            "expected websocket echo success"
+        );
     });
 
     server.join().expect("join websocket echo server");

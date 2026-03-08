@@ -458,23 +458,18 @@ async fn run_isolate(
                 name
             );
             inspector.wait_for_session_and_break_on_next_statement();
-        } else {
-            inspector.wait_for_session();
+            // After the session is established, give VS Code ~150ms to send its
+            // initialization messages (Runtime.enable, Debugger.enable, etc.).
+            // Then flush them through the event loop so V8 processes
+            // Debugger.enable before user code resumes.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            let _ = js_runtime
+                .run_event_loop(PollEventLoopOptions {
+                    wait_for_inspector: false,
+                    pump_v8_message_loop: true,
+                })
+                .await;
         }
-
-        // After the session is established, give VS Code ~150ms to send its
-        // initialization messages (Runtime.enable, Debugger.enable, etc.).
-        // Then flush them through the event loop so V8 processes Debugger.enable
-        // and sends Debugger.scriptParsed to VS Code BEFORE any debugger; pause
-        // occurs. Without this, scriptParsed only arrives after Debugger.paused
-        // and VS Code shows "Unknown Source" instead of opening the file.
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        let _ = js_runtime
-            .run_event_loop(PollEventLoopOptions {
-                wait_for_inspector: false,
-                pump_v8_message_loop: true,
-            })
-            .await;
 
         Some(guard)
     } else {
@@ -540,6 +535,10 @@ async fn run_isolate(
                     warn!("failed to start execution context: {}", e);
                 }
 
+                let request_context_id = req.context_id;
+                let request_function_name = req.function_name;
+                let request_payload = req.request;
+
                 let result = if config.wall_clock_timeout_ms > 0 {
                     // Get thread-safe handle for the watchdog thread
                     let v8_handle = js_runtime.v8_isolate().thread_safe_handle();
@@ -574,7 +573,12 @@ async fn run_isolate(
                     // This complements V8 terminate_execution in case JS blocks the isolate.
                     let dispatch_result = tokio::time::timeout(
                         std::time::Duration::from_millis(timeout_ms),
-                        handler::dispatch_request(&mut js_runtime, req.request),
+                        handler::dispatch_request_for_context(
+                            &mut js_runtime,
+                            request_payload,
+                            request_context_id.as_deref(),
+                            request_function_name.as_deref(),
+                        ),
                     )
                     .await;
 
@@ -620,7 +624,13 @@ async fn run_isolate(
                     }
                 } else {
                     // No timeout configured - execute directly
-                    let dispatch_result = handler::dispatch_request(&mut js_runtime, req.request).await;
+                    let dispatch_result = handler::dispatch_request_for_context(
+                        &mut js_runtime,
+                        request_payload,
+                        request_context_id.as_deref(),
+                        request_function_name.as_deref(),
+                    )
+                    .await;
 
                     // End execution context
                     if let Err(e) = js_runtime.execute_script(

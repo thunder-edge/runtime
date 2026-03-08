@@ -1,7 +1,9 @@
 use anyhow::Error;
 use base64::Engine;
 use deno_core::{op2, Extension, JsRuntime, OpState};
-use runtime_core::isolate::{IsolateConfig, IsolateResponse, IsolateResponseBody, OutgoingProxyConfig};
+use runtime_core::isolate::{
+    IsolateConfig, IsolateResponse, IsolateResponseBody, OutgoingProxyConfig,
+};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -109,7 +111,11 @@ pub fn inject_request_bridge_with_proxy(
     js_runtime: &mut JsRuntime,
     outgoing_proxy: &OutgoingProxyConfig,
 ) -> Result<(), Error> {
-    inject_request_bridge_with_proxy_and_config(js_runtime, outgoing_proxy, &IsolateConfig::default())
+    inject_request_bridge_with_proxy_and_config(
+        js_runtime,
+        outgoing_proxy,
+        &IsolateConfig::default(),
+    )
 }
 
 pub fn inject_request_bridge_with_proxy_and_config(
@@ -120,15 +126,11 @@ pub fn inject_request_bridge_with_proxy_and_config(
     let proxy_json = serde_json::to_string(outgoing_proxy)
         .map_err(|e| anyhow::anyhow!("failed to serialize outgoing proxy config: {e}"))?;
     let set_proxy_config = format!("globalThis.__edgeRuntimeProxyConfig = {proxy_json};");
-    js_runtime.execute_script(
-        "edge-internal:///runtime_proxy_config.js",
-        set_proxy_config,
-    )?;
+    js_runtime.execute_script("edge-internal:///runtime_proxy_config.js", set_proxy_config)?;
 
     let set_vfs_config = format!(
         "globalThis.__edgeRuntimeVfsConfig = {{ totalQuotaBytes: {}, maxFileBytes: {} }};",
-        isolate_config.vfs_total_quota_bytes,
-        isolate_config.vfs_max_file_bytes
+        isolate_config.vfs_total_quota_bytes, isolate_config.vfs_max_file_bytes
     );
     js_runtime.execute_script("edge-internal:///runtime_vfs_config.js", set_vfs_config)?;
 
@@ -148,7 +150,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
         isolate_config.zlib_operation_timeout_ms,
     );
     js_runtime.execute_script("edge-internal:///runtime_zlib_config.js", set_zlib_config)?;
-    
+
     let set_egress_config = format!(
         "globalThis.__edgeRuntimeEgressConfig = {{ maxRequestsPerExecution: {} }};",
         isolate_config.egress_max_requests_per_execution,
@@ -164,8 +166,33 @@ pub fn inject_request_bridge_with_proxy_and_config(
             r#"
             globalThis.__edgeRuntime = {
                 handler: null,
+                _handlers: new Map(),
                 registerHandler(fn) {
                     this.handler = fn;
+                    const bootstrapContextId =
+                        globalThis.__edgeRuntimeCurrentBootstrapContextId || 'default';
+                    this._handlers.set(bootstrapContextId, fn);
+                },
+                registerHandlerForContext(contextId, fn) {
+                    if (!contextId || typeof contextId !== 'string') {
+                        throw new Error('[thunder] invalid context id for registerHandlerForContext');
+                    }
+                    this._handlers.set(contextId, fn);
+                    if (!this.handler) {
+                        this.handler = fn;
+                    }
+                },
+                resolveHandler(contextId) {
+                    if (contextId && this._handlers.has(contextId)) {
+                        return this._handlers.get(contextId);
+                    }
+                    if (this.handler) {
+                        return this.handler;
+                    }
+                    if (this._handlers.has('default')) {
+                        return this._handlers.get('default');
+                    }
+                    return null;
                 },
 
                 // Execution context tracking for resource cleanup
@@ -721,14 +748,14 @@ pub fn inject_request_bridge_with_proxy_and_config(
             };
 
             // Expose a function for Rust to call
-            globalThis.__edgeRuntime.handleRequest = async function(method, url, headersJson, body, streamId) {
-                const handler = globalThis.__edgeRuntime.handler;
+            globalThis.__edgeRuntime.handleRequest = async function(method, url, headersJson, body, streamId, contextId, functionName) {
+                const handler = globalThis.__edgeRuntime.resolveHandler(contextId);
                 if (!handler) {
                     return JSON.stringify({
                         status: 503,
                         headers: [["content-type", "application/json"]],
                         body_kind: 'inline',
-                        body_base64: btoa('{"error":"no handler registered"}'),
+                        body_base64: btoa(`{"error":"no handler registered for context '${contextId || 'default'}' function '${functionName || '<unknown>'}'"}`),
                     });
                 }
 
@@ -842,6 +869,15 @@ pub async fn dispatch_request(
     js_runtime: &mut JsRuntime,
     request: http::Request<bytes::Bytes>,
 ) -> Result<IsolateResponse, Error> {
+    dispatch_request_for_context(js_runtime, request, None, None).await
+}
+
+pub async fn dispatch_request_for_context(
+    js_runtime: &mut JsRuntime,
+    request: http::Request<bytes::Bytes>,
+    context_id: Option<&str>,
+    function_name: Option<&str>,
+) -> Result<IsolateResponse, Error> {
     let method = request.method().to_string();
 
     // Build an absolute URL — `new Request(url)` in JS requires one.
@@ -862,6 +898,8 @@ pub async fn dispatch_request(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
     let headers_json = serde_json::to_string(&headers_list)?;
+    let context_id = context_id.unwrap_or("default");
+    let function_name = function_name.unwrap_or("<unknown>");
 
     let body = request.into_body();
     let stream_id = Uuid::new_v4().to_string();
@@ -909,6 +947,10 @@ pub async fn dispatch_request(
             .ok_or_else(|| anyhow::anyhow!("failed to allocate headers string"))?;
         let stream_id_v8 = deno_core::v8::String::new(scope, &stream_id)
             .ok_or_else(|| anyhow::anyhow!("failed to allocate stream id string"))?;
+        let context_id_v8 = deno_core::v8::String::new(scope, context_id)
+            .ok_or_else(|| anyhow::anyhow!("failed to allocate context id string"))?;
+        let function_name_v8 = deno_core::v8::String::new(scope, function_name)
+            .ok_or_else(|| anyhow::anyhow!("failed to allocate function name string"))?;
 
         let body_arg: deno_core::v8::Local<deno_core::v8::Value> = if body.is_empty() {
             deno_core::v8::null(scope).into()
@@ -924,12 +966,14 @@ pub async fn dispatch_request(
             uint8.into()
         };
 
-        let args: [deno_core::v8::Local<deno_core::v8::Value>; 5] = [
+        let args: [deno_core::v8::Local<deno_core::v8::Value>; 7] = [
             method_v8.into(),
             uri_v8.into(),
             headers_v8.into(),
             body_arg,
             stream_id_v8.into(),
+            context_id_v8.into(),
+            function_name_v8.into(),
         ];
 
         let result = handle_request_fn
@@ -1251,6 +1295,118 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_for_context_uses_registered_context_handler() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let mut runtime = make_runtime();
+            inject_request_bridge(&mut runtime).expect("inject_request_bridge failed");
+
+            runtime
+                .execute_script(
+                    "<test>",
+                    deno_core::ascii_str!(
+                        r#"
+                        globalThis.__edgeRuntime.registerHandlerForContext('ctx-a', () => {
+                          return new Response('handler-a', { status: 200 });
+                        });
+                        globalThis.__edgeRuntime.registerHandlerForContext('ctx-b', () => {
+                          return new Response('handler-b', { status: 200 });
+                        });
+                        "#
+                    ),
+                )
+                .unwrap();
+
+            let request_a = http::Request::builder()
+                .method("GET")
+                .uri("/ctx-a")
+                .header("host", "localhost:9000")
+                .body(bytes::Bytes::new())
+                .unwrap();
+            let response_a = dispatch_request_for_context(
+                &mut runtime,
+                request_a,
+                Some("ctx-a"),
+                Some("ctx-function"),
+            )
+            .await
+            .expect("dispatch_request_for_context should succeed for ctx-a");
+
+            let request_b = http::Request::builder()
+                .method("GET")
+                .uri("/ctx-b")
+                .header("host", "localhost:9000")
+                .body(bytes::Bytes::new())
+                .unwrap();
+            let response_b = dispatch_request_for_context(
+                &mut runtime,
+                request_b,
+                Some("ctx-b"),
+                Some("ctx-function"),
+            )
+            .await
+            .expect("dispatch_request_for_context should succeed for ctx-b");
+
+            let body_a = match response_a.body {
+                IsolateResponseBody::Full(body) => body,
+                IsolateResponseBody::Stream(mut body_rx) => {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        runtime.run_event_loop(deno_core::PollEventLoopOptions {
+                            wait_for_inspector: false,
+                            pump_v8_message_loop: true,
+                        }),
+                    )
+                    .await;
+
+                    let mut out = Vec::new();
+                    while let Some(chunk) =
+                        tokio::time::timeout(std::time::Duration::from_millis(100), body_rx.recv())
+                            .await
+                            .expect("timed out receiving stream body for ctx-a")
+                    {
+                        let chunk = chunk.expect("chunk error");
+                        out.extend_from_slice(&chunk);
+                    }
+                    bytes::Bytes::from(out)
+                }
+            };
+            let body_b = match response_b.body {
+                IsolateResponseBody::Full(body) => body,
+                IsolateResponseBody::Stream(mut body_rx) => {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        runtime.run_event_loop(deno_core::PollEventLoopOptions {
+                            wait_for_inspector: false,
+                            pump_v8_message_loop: true,
+                        }),
+                    )
+                    .await;
+
+                    let mut out = Vec::new();
+                    while let Some(chunk) =
+                        tokio::time::timeout(std::time::Duration::from_millis(100), body_rx.recv())
+                            .await
+                            .expect("timed out receiving stream body for ctx-b")
+                    {
+                        let chunk = chunk.expect("chunk error");
+                        out.extend_from_slice(&chunk);
+                    }
+                    bytes::Bytes::from(out)
+                }
+            };
+
+            assert_eq!(body_a, bytes::Bytes::from_static(b"handler-a"));
+            assert_eq!(body_b, bytes::Bytes::from_static(b"handler-b"));
+        });
+    }
+
+    #[test]
     fn dispatch_preserves_multiple_set_cookie_headers() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1299,16 +1455,12 @@ mod tests {
                 .filter_map(|v| v.to_str().ok().map(str::to_string))
                 .collect();
             assert_eq!(set_cookie_values.len(), 2, "expected two set-cookie values");
-            assert!(
-                set_cookie_values
-                    .iter()
-                    .any(|v| v.contains("a=1") && v.contains("HttpOnly"))
-            );
-            assert!(
-                set_cookie_values
-                    .iter()
-                    .any(|v| v.contains("b=2") && v.contains("Secure"))
-            );
+            assert!(set_cookie_values
+                .iter()
+                .any(|v| v.contains("a=1") && v.contains("HttpOnly")));
+            assert!(set_cookie_values
+                .iter()
+                .any(|v| v.contains("b=2") && v.contains("Secure")));
 
             let x_custom_values: Vec<String> = response
                 .parts

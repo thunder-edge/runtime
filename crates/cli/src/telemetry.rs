@@ -31,7 +31,12 @@ pub enum OtlpProtocol {
 #[derive(Debug, Args, Clone)]
 pub struct TelemetryArgs {
     /// Enable OpenTelemetry exporters (traces/metrics/logs).
-    #[arg(long, default_value_t = false, global = true, env = "EDGE_RUNTIME_OTEL_ENABLED")]
+    #[arg(
+        long,
+        default_value_t = false,
+        global = true,
+        env = "EDGE_RUNTIME_OTEL_ENABLED"
+    )]
     otel_enabled: bool,
 
     /// OTLP transport protocol.
@@ -197,7 +202,10 @@ pub fn init(
         let exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_http()
             .with_protocol(Protocol::HttpBinary)
-            .with_endpoint(format!("{}/v1/traces", args.otel_endpoint.trim_end_matches('/')))
+            .with_endpoint(format!(
+                "{}/v1/traces",
+                args.otel_endpoint.trim_end_matches('/')
+            ))
             .with_timeout(timeout)
             .build()?;
 
@@ -241,7 +249,10 @@ pub fn init(
         let exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()
             .with_protocol(Protocol::HttpBinary)
-            .with_endpoint(format!("{}/v1/metrics", args.otel_endpoint.trim_end_matches('/')))
+            .with_endpoint(format!(
+                "{}/v1/metrics",
+                args.otel_endpoint.trim_end_matches('/')
+            ))
             .with_timeout(timeout)
             .build()?;
 
@@ -264,7 +275,9 @@ pub fn init(
                 .build(),
             meter
                 .u64_counter("edge_runtime_isolate_log_export_errors_total")
-                .with_description("Total number of isolate console logs dropped due to export errors")
+                .with_description(
+                    "Total number of isolate console logs dropped due to export errors",
+                )
                 .build(),
             meter
                 .u64_histogram("edge_runtime_isolate_log_batch_size")
@@ -280,7 +293,10 @@ pub fn init(
         let exporter = opentelemetry_otlp::LogExporter::builder()
             .with_http()
             .with_protocol(Protocol::HttpBinary)
-            .with_endpoint(format!("{}/v1/logs", args.otel_endpoint.trim_end_matches('/')))
+            .with_endpoint(format!(
+                "{}/v1/logs",
+                args.otel_endpoint.trim_end_matches('/')
+            ))
             .with_timeout(timeout)
             .build()?;
 

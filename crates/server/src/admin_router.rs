@@ -206,7 +206,10 @@ impl AdminRouter {
                 self.handle_function_route(req, path, method).await
             }
 
-            _ => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
+            _ => json_response(
+                StatusCode::NOT_FOUND,
+                r#"{"error":"not found","hint":"admin listener serves only /_internal/* routes; use ingress listener for /{function_name}"}"#,
+            ),
         }
     }
 

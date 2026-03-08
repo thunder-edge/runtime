@@ -103,7 +103,11 @@ async fn parse_eszip(bytes: &[u8]) -> eszip::EszipV2 {
     eszip
 }
 
-fn run_module_and_expect_true(specifier: &str, source: &str, check_expr: &'static str) -> Result<(), String> {
+fn run_module_and_expect_true(
+    specifier: &str,
+    source: &str,
+    check_expr: &'static str,
+) -> Result<(), String> {
     let eszip_bytes = build_eszip(specifier, source);
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -618,7 +622,7 @@ fn node_stream_module_can_be_imported() {
 fn node_stream_pipeline_handles_backpressure_on_long_flow() {
     deno_core::JsRuntime::init_platform(None);
 
-        let source = r#"
+    let source = r#"
             import { Writable } from "node:stream";
 
             let output = "";
@@ -726,7 +730,9 @@ fn node_stream_pipeline_handles_backpressure_on_long_flow() {
             let dbg = js_runtime
                 .execute_script(
                     "<debug>",
-                    deno_core::ascii_str!("String(globalThis.__nodeStreamBackpressureDebug || 'no-debug')"),
+                    deno_core::ascii_str!(
+                        "String(globalThis.__nodeStreamBackpressureDebug || 'no-debug')"
+                    ),
                 )
                 .map_err(|e| format!("debug script failed: {e}"))?;
             let dbg_text = {
@@ -734,7 +740,9 @@ fn node_stream_pipeline_handles_backpressure_on_long_flow() {
                 let dbg_local = dbg.open(scope2);
                 dbg_local.to_rust_string_lossy(scope2)
             };
-            Err(format!("node:stream long-flow backpressure check failed: {dbg_text}"))
+            Err(format!(
+                "node:stream long-flow backpressure check failed: {dbg_text}"
+            ))
         }
     });
 
@@ -1483,9 +1491,9 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
 
 #[test]
 fn node_zlib_timeout_guardrail_triggers_under_load() {
-        deno_core::JsRuntime::init_platform(None);
+    deno_core::JsRuntime::init_platform(None);
 
-        let source = r#"
+    let source = r#"
             const zlib = await import('node:zlib');
 
             const payload = new Uint8Array(8 * 1024 * 1024);
@@ -1513,20 +1521,20 @@ fn node_zlib_timeout_guardrail_triggers_under_load() {
             globalThis.__nodeZlibTimeoutUnderLoadOk = results.some(Boolean);
         "#;
 
-        let result = run_module_and_expect_true(
-                "file:///node_zlib_timeout_under_load.ts",
-                source,
-                "globalThis.__nodeZlibTimeoutUnderLoadOk === true",
-        );
+    let result = run_module_and_expect_true(
+        "file:///node_zlib_timeout_under_load.ts",
+        source,
+        "globalThis.__nodeZlibTimeoutUnderLoadOk === true",
+    );
 
-        assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
 fn node_zlib_runtime_config_defaults_are_respected() {
-        deno_core::JsRuntime::init_platform(None);
+    deno_core::JsRuntime::init_platform(None);
 
-        let source = r#"
+    let source = r#"
             globalThis.__edgeRuntimeZlibConfig = {
                 maxOutputLength: 64 * 1024 * 1024,
                 maxInputLength: 1024,
@@ -1548,20 +1556,20 @@ fn node_zlib_runtime_config_defaults_are_respected() {
             globalThis.__nodeZlibRuntimeDefaultsOk = runtimeDefaultsApplied;
         "#;
 
-        let result = run_module_and_expect_true(
-                "file:///node_zlib_runtime_defaults.ts",
-                source,
-                "globalThis.__nodeZlibRuntimeDefaultsOk === true",
-        );
+    let result = run_module_and_expect_true(
+        "file:///node_zlib_runtime_defaults.ts",
+        source,
+        "globalThis.__nodeZlibRuntimeDefaultsOk === true",
+    );
 
-        assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
 fn web_request_clone_preserves_body_and_locks_original_after_read() {
-        deno_core::JsRuntime::init_platform(None);
+    deno_core::JsRuntime::init_platform(None);
 
-        let source = r#"
+    let source = r#"
                 const req = new Request('https://example.com/test', {
                     method: 'POST',
                     body: 'clone-me',
@@ -1588,20 +1596,20 @@ fn web_request_clone_preserves_body_and_locks_original_after_read() {
                     secondReadThrows;
         "#;
 
-        let result = run_module_and_expect_true(
-                "file:///web_request_clone_semantics.ts",
-                source,
-                "globalThis.__webRequestCloneOk === true",
-        );
+    let result = run_module_and_expect_true(
+        "file:///web_request_clone_semantics.ts",
+        source,
+        "globalThis.__webRequestCloneOk === true",
+    );
 
-        assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
 fn web_response_clone_preserves_body_and_locks_original_after_read() {
-        deno_core::JsRuntime::init_platform(None);
+    deno_core::JsRuntime::init_platform(None);
 
-        let source = r#"
+    let source = r#"
                 const resp = new Response('response-clone', {
                     headers: { 'content-type': 'text/plain' },
                 });
@@ -1626,20 +1634,20 @@ fn web_response_clone_preserves_body_and_locks_original_after_read() {
                     secondReadThrows;
         "#;
 
-        let result = run_module_and_expect_true(
-                "file:///web_response_clone_semantics.ts",
-                source,
-                "globalThis.__webResponseCloneOk === true",
-        );
+    let result = run_module_and_expect_true(
+        "file:///web_response_clone_semantics.ts",
+        source,
+        "globalThis.__webResponseCloneOk === true",
+    );
 
-        assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
 fn web_stream_tee_splits_stream_without_data_loss() {
-        deno_core::JsRuntime::init_platform(None);
+    deno_core::JsRuntime::init_platform(None);
 
-        let source = r#"
+    let source = r#"
                 const encoder = new TextEncoder();
                 const stream = new ReadableStream({
                     start(controller) {
@@ -1671,12 +1679,11 @@ fn web_stream_tee_splits_stream_without_data_loss() {
                 globalThis.__webTeeOk = leftOut === 'ABC' && rightOut === 'ABC';
         "#;
 
-        let result = run_module_and_expect_true(
-                "file:///web_stream_tee_semantics.ts",
-                source,
-                "globalThis.__webTeeOk === true",
-        );
+    let result = run_module_and_expect_true(
+        "file:///web_stream_tee_semantics.ts",
+        source,
+        "globalThis.__webTeeOk === true",
+    );
 
-        assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "{result:?}");
 }
-

@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use deno_ast::{EmitOptions, MediaType, ParseParams, TranspileModuleOptions, TranspileOptions};
 use deno_core::url::Url;
-use deno_core::{op2, Extension, ModuleCodeString, ModuleName, OpState, RuntimeOptions, SourceMapData};
+use deno_core::{
+    op2, Extension, ModuleCodeString, ModuleName, OpState, RuntimeOptions, SourceMapData,
+};
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::write::{DeflateEncoder, GzEncoder, ZlibEncoder};
 use flate2::Compression;
@@ -105,7 +107,9 @@ fn read_all_limited<R: Read>(
 
     loop {
         if started.elapsed() > operation_timeout {
-            return Err(deno_error::JsErrorBox::generic("zlib operation timeout exceeded"));
+            return Err(deno_error::JsErrorBox::generic(
+                "zlib operation timeout exceeded",
+            ));
         }
 
         let read = reader
@@ -136,30 +140,30 @@ fn compress_with_limit(
     let compressed = match format {
         "gzip" => {
             let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            encoder
-                .write_all(input)
-                .map_err(|err| deno_error::JsErrorBox::generic(format!("gzip write failed: {err}")))?;
-            encoder
-                .finish()
-                .map_err(|err| deno_error::JsErrorBox::generic(format!("gzip finish failed: {err}")))?
+            encoder.write_all(input).map_err(|err| {
+                deno_error::JsErrorBox::generic(format!("gzip write failed: {err}"))
+            })?;
+            encoder.finish().map_err(|err| {
+                deno_error::JsErrorBox::generic(format!("gzip finish failed: {err}"))
+            })?
         }
         "deflate" => {
             let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-            encoder
-                .write_all(input)
-                .map_err(|err| deno_error::JsErrorBox::generic(format!("deflate write failed: {err}")))?;
-            encoder
-                .finish()
-                .map_err(|err| deno_error::JsErrorBox::generic(format!("deflate finish failed: {err}")))?
+            encoder.write_all(input).map_err(|err| {
+                deno_error::JsErrorBox::generic(format!("deflate write failed: {err}"))
+            })?;
+            encoder.finish().map_err(|err| {
+                deno_error::JsErrorBox::generic(format!("deflate finish failed: {err}"))
+            })?
         }
         "deflate-raw" => {
             let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
-            encoder
-                .write_all(input)
-                .map_err(|err| deno_error::JsErrorBox::generic(format!("deflateRaw write failed: {err}")))?;
-            encoder
-                .finish()
-                .map_err(|err| deno_error::JsErrorBox::generic(format!("deflateRaw finish failed: {err}")))?
+            encoder.write_all(input).map_err(|err| {
+                deno_error::JsErrorBox::generic(format!("deflateRaw write failed: {err}"))
+            })?;
+            encoder.finish().map_err(|err| {
+                deno_error::JsErrorBox::generic(format!("deflateRaw finish failed: {err}"))
+            })?
         }
         _ => {
             return Err(deno_error::JsErrorBox::generic(format!(
@@ -169,7 +173,9 @@ fn compress_with_limit(
     };
 
     if started.elapsed() > operation_timeout {
-        return Err(deno_error::JsErrorBox::generic("zlib operation timeout exceeded"));
+        return Err(deno_error::JsErrorBox::generic(
+            "zlib operation timeout exceeded",
+        ));
     }
 
     if compressed.len() > max_output_length {
@@ -411,7 +417,10 @@ fn op_edge_runtime_console_log(
     #[string] message: String,
     level: u8,
 ) -> Result<(), deno_error::JsErrorBox> {
-    let config = state.try_borrow::<IsolateLogConfig>().cloned().unwrap_or_default();
+    let config = state
+        .try_borrow::<IsolateLogConfig>()
+        .cloned()
+        .unwrap_or_default();
 
     if config.emit_to_stdout {
         match level {
@@ -451,10 +460,7 @@ fn op_edge_runtime_console_log(
     Ok(())
 }
 
-deno_core::extension!(
-    edge_runtime_logging,
-    ops = [op_edge_runtime_console_log],
-);
+deno_core::extension!(edge_runtime_logging, ops = [op_edge_runtime_console_log],);
 
 // === Stub types for deno_node (no npm support in edge runtime) ===
 
