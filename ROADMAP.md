@@ -470,7 +470,10 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
     - Status aplicado: validações de sandbox e quotas do VFS aplicadas nos streams com erros determinísticos (`EROFS`, `EOPNOTSUPP`, `ENOSPC`, `ENOENT`).
     - Status aplicado: cobertura adicionada em `crates/functions/tests/node_fs_compat.rs` para roundtrip via stream e erro em mount read-only.
     - Referência: `ROADMAP-NODE-COMPAT.md §5.1.4`, `§7.2.2`, `§9 Issue #4`, `§10 Phase 2`.
-- [ ] Suporte limitado de `http.createServer` stub
+- [x] Suporte limitado de `http.createServer` stub
+    - Status aplicado: `node:http` agora expõe `createServer()` retornando instância `Server` importável para feature detection.
+    - Status aplicado: `Server.listen()` permanece não funcional por sandbox e falha com erro determinístico `[thunder] http.Server.listen is not implemented in this runtime profile`.
+    - Status aplicado: cobertura de regressão adicionada em `crates/functions/tests/node_module_imports.rs` e no relatório automático (`crates/functions/tests/web_api_report.rs`).
     - Referência: `ROADMAP-NODE-COMPAT.md §7.2.1`, `§9 Issue #6`, `§10 Phase 4`.
 - [ ] Opcional de segurança criptográfica (após P1):
     - `createCipheriv`/`createDecipheriv` e KDFs (`pbkdf2`/`scrypt`) conforme perfil de risco.

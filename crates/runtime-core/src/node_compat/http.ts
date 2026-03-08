@@ -182,8 +182,43 @@ class Agent {
   protocol = "http:";
 }
 
-function createServer(): never {
-  return notImplemented("http.createServer");
+class Server extends SimpleEmitter {
+  listening = false;
+
+  constructor(requestListener?: (...args: unknown[]) => void) {
+    super();
+    if (typeof requestListener === "function") {
+      this.on("request", requestListener);
+    }
+  }
+
+  listen(..._args: unknown[]): never {
+    return notImplemented("http.Server.listen");
+  }
+
+  close(cb?: () => void): this {
+    this.listening = false;
+    queueMicrotask(() => {
+      if (typeof cb === "function") cb();
+      this.emit("close");
+    });
+    return this;
+  }
+
+  address(): null {
+    return null;
+  }
+
+  setTimeout(_msecs: number, callback?: () => void): this {
+    if (typeof callback === "function") {
+      this.on("timeout", callback);
+    }
+    return this;
+  }
+}
+
+function createServer(requestListener?: (...args: unknown[]) => void): Server {
+  return new Server(requestListener);
 }
 
 function request(
@@ -226,6 +261,7 @@ const STATUS_CODES = {
 
 const httpModule = {
   Agent,
+  Server,
   IncomingMessage,
   ClientRequest,
   METHODS,
@@ -235,5 +271,5 @@ const httpModule = {
   get,
 };
 
-export { Agent, IncomingMessage, ClientRequest, METHODS, STATUS_CODES, createServer, request, get };
+export { Agent, Server, IncomingMessage, ClientRequest, METHODS, STATUS_CODES, createServer, request, get };
 export default httpModule;

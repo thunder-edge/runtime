@@ -1200,6 +1200,7 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
             try { cluster.fork(); } catch (err) { if (isThunderNotImplemented(err, 'cluster.fork')) deterministicErrors++; }
             try { dns.lookupService('1.1.1.1', 53, () => {}); } catch (err) { if (isThunderNotImplemented(err, 'dns.lookupService')) deterministicErrors++; }
             try { dgram.createSocket('udp4'); } catch (err) { if (isThunderNotImplemented(err, 'dgram.createSocket')) deterministicErrors++; }
+            try { http.createServer(() => {}).listen(8080); } catch (err) { if (isThunderNotImplemented(err, 'http.Server.listen')) deterministicErrors++; }
             try { net.createServer().listen(80); } catch (err) { if (isThunderNotImplemented(err, 'net.Server.listen')) deterministicErrors++; }
             try { tls.createServer(); } catch (err) { if (isThunderNotImplemented(err, 'tls.createServer')) deterministicErrors++; }
             try { repl.start(); } catch (err) { if (isThunderNotImplemented(err, 'repl.start')) deterministicErrors++; }
@@ -1391,6 +1392,7 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
                 alsPromiseValue === 'ctx:promise' &&
                 alsMicrotaskValue === 'ctx:microtask' &&
                 typeof net.connect === 'function' &&
+                typeof http.createServer === 'function' &&
                 typeof tls.connect === 'function' &&
                 typeof http.request === 'function' &&
                 typeof https.request === 'function' &&

@@ -570,12 +570,18 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                 NodeCompatCheck {
                     api: "node:http",
                     profile: "Partial",
-                                                notes: "HTTP client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional.",
+                                                notes: "HTTP client compatibility is provided as a wrapper around `fetch()`; `createServer` is an importable limited stub and `Server.listen` fails deterministically.",
                         js_check: r#"(() => {
                             const key = '__edge_node_http_check';
                             if (globalThis[key] === undefined) {
                                 globalThis[key] = 'pending';
                                 import('node:http').then((m) => {
+                                                                        let serverStubDeterministic = false;
+                                                                        try {
+                                                                            m.createServer(() => {}).listen(8080);
+                                                                        } catch (err) {
+                                                                            serverStubDeterministic = String(err?.message || '').includes('[thunder] http.Server.listen is not implemented in this runtime profile');
+                                                                        }
                                                                         const prev = globalThis.__edgeMockFetchHandler;
                                                                         globalThis.__edgeMockFetchHandler = async () => new Response('http-ok', { status: 200 });
                                                                         m.get('https://example.com', (res) => {
@@ -583,7 +589,7 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                                                                             res.on('data', (chunk) => { body += String(chunk); });
                                                                             res.on('end', () => {
                                                                                 globalThis.__edgeMockFetchHandler = prev;
-                                                                                globalThis[key] = Array.isArray(m.METHODS) && typeof m.request === 'function' && res.statusCode === 200 && body.includes('http-ok') ? 'partial' : 'none';
+                                                                                globalThis[key] = Array.isArray(m.METHODS) && typeof m.request === 'function' && typeof m.createServer === 'function' && serverStubDeterministic && res.statusCode === 200 && body.includes('http-ok') ? 'partial' : 'none';
                                                                             });
                                                                             res.on('error', () => {
                                                                                 globalThis.__edgeMockFetchHandler = prev;

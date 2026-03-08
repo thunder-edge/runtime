@@ -182,7 +182,7 @@ Unsupported privileged behavior fails with deterministic errors (for example `EO
 | `node:console` | Partial | Partial | Partial | Console module compatibility maps to runtime console implementation. |
 | `node:diagnostics_channel` | Partial | Partial | Partial | Basic publish/subscribe channel plus `TracingChannel` hooks for sync/promise tracing flows. |
 | `node:dns` | Partial | Partial | Partial | DoH-backed subset (`lookup`, `resolve*`, `reverse`) with bounded answers/timeouts; unsupported APIs remain deterministic stubs. |
-| `node:http` | Partial | Partial | Partial | HTTP client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional. |
+| `node:http` | Partial | Partial | Partial | HTTP client compatibility is provided as a wrapper around `fetch()`; `createServer` is an importable limited stub and `Server.listen` fails deterministically. |
 | `node:https` | Partial | Partial | Partial | HTTPS client compatibility is provided as a wrapper around `fetch()`; server-side APIs remain non-functional. |
 | `node:http2` | Stub | Stub | Partial | HTTP/2 compatibility surface for imports with deterministic non-functional operations. |
 | `node:inspector` | Stub | Stub | Partial | Inspector bridge compatibility surface with no-op/open stubs in this runtime profile. |
