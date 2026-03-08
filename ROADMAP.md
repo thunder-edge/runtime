@@ -465,7 +465,10 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 
 #### P2 — Compatibilidade de I/O e HTTP em Perfil Seguro
 
-- [ ] Implementar `fs.createReadStream` e `fs.createWriteStream` no VFS (sem acesso ao host).
+- [x] Implementar `fs.createReadStream` e `fs.createWriteStream` no VFS (sem acesso ao host).
+    - Status aplicado: `node:fs` agora expõe `createReadStream` com leitura chunked sobre VFS (suporte a `start/end/highWaterMark` e `encoding`) e `createWriteStream` com escrita incremental em `/tmp` e `/dev/null`, com `flags` `w/a`.
+    - Status aplicado: validações de sandbox e quotas do VFS aplicadas nos streams com erros determinísticos (`EROFS`, `EOPNOTSUPP`, `ENOSPC`, `ENOENT`).
+    - Status aplicado: cobertura adicionada em `crates/functions/tests/node_fs_compat.rs` para roundtrip via stream e erro em mount read-only.
     - Referência: `ROADMAP-NODE-COMPAT.md §5.1.4`, `§7.2.2`, `§9 Issue #4`, `§10 Phase 2`.
 - [ ] Suporte limitado de `http.createServer` stub
     - Referência: `ROADMAP-NODE-COMPAT.md §7.2.1`, `§9 Issue #6`, `§10 Phase 4`.

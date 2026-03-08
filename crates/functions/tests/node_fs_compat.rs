@@ -291,3 +291,69 @@ fn node_fs_callbacks_preserve_async_local_storage_context() {
                 "node:fs callback should preserve ALS context",
         );
 }
+
+#[test]
+fn node_fs_streams_support_vfs_roundtrip() {
+        let source = r#"
+            import fs from "node:fs";
+
+            let readResult = "";
+
+            const writeDone = new Promise((resolve, reject) => {
+                const writer = fs.createWriteStream("/tmp/stream-roundtrip.txt");
+                writer.once("error", reject);
+                writer.once("close", resolve);
+                writer.write("hello-");
+                writer.end("stream");
+            });
+
+            await writeDone;
+
+            const readDone = new Promise((resolve, reject) => {
+                const reader = fs.createReadStream("/tmp/stream-roundtrip.txt", { encoding: "utf8", highWaterMark: 3 });
+                reader.once("error", reject);
+                reader.on("data", (chunk) => {
+                    readResult += chunk;
+                });
+                reader.once("close", resolve);
+            });
+
+            await readDone;
+
+            globalThis.__nodeFsStreamsRoundtripOk =
+                readResult === "hello-stream";
+        "#;
+
+        run_module_and_check(
+                source,
+                "globalThis.__nodeFsStreamsRoundtripOk === true",
+                "node:fs streams should roundtrip data in VFS",
+        );
+}
+
+#[test]
+fn node_fs_write_stream_rejects_non_writable_mount() {
+        let source = r#"
+            import fs from "node:fs";
+
+            let sawExpectedError = false;
+            await new Promise((resolve) => {
+                const writer = fs.createWriteStream("/bundle/not-allowed.txt");
+                writer.on("error", (err) => {
+                    sawExpectedError =
+                        err?.code === "EROFS" &&
+                        err?.errno === 30 &&
+                        err?.syscall === "createWriteStream";
+                    resolve();
+                });
+            });
+
+            globalThis.__nodeFsWriteStreamErrOk = sawExpectedError;
+        "#;
+
+        run_module_and_check(
+                source,
+                "globalThis.__nodeFsWriteStreamErrOk === true",
+                "node:fs createWriteStream should fail on read-only mount",
+        );
+}

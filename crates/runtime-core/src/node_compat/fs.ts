@@ -1,4 +1,5 @@
 import { __edgeWrapNodeCallback } from "node:async_hooks";
+import { Readable, Writable } from "node:stream";
 
 type FsError = Error & {
   code: string;
@@ -12,8 +13,10 @@ type VfsConfig = {
   maxFileBytes: number;
 };
 
+type Bytes = Uint8Array<ArrayBufferLike>;
+
 type VfsState = {
-  files: Map<string, Uint8Array>;
+  files: Map<string, Bytes>;
   dirs: Set<string>;
   usedBytes: number;
   config: VfsConfig;
@@ -112,7 +115,7 @@ function isAllowedWritablePath(path: string): boolean {
   return isTmpPath(path) || isDevNull(path);
 }
 
-function toBytes(data: unknown): Uint8Array {
+function toBytes(data: unknown): Bytes {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (ArrayBuffer.isView(data)) {
@@ -131,7 +134,7 @@ function readEncoding(options?: unknown): string | undefined {
   return undefined;
 }
 
-function decodeOutput(bytes: Uint8Array, options?: unknown): unknown {
+function decodeOutput(bytes: Bytes, options?: unknown): unknown {
   const encoding = readEncoding(options);
   if (!encoding || encoding === "buffer") {
     const BufferCtor = (globalThis as unknown as { Buffer?: { from: (b: Uint8Array) => unknown } }).Buffer;
@@ -169,29 +172,29 @@ function accessSync(path: unknown): void {
   assertPathExists(normalizePath(path), "access");
 }
 
-function readFileSync(path: unknown, options?: unknown): unknown {
+function readFileBytes(path: unknown, syscall: string): Bytes {
   const p = normalizePath(path);
   const state = getVfsState();
   if (state.dirs.has(p)) {
-    fsError("EISDIR", 21, "readFile", p, `[edge-runtime] readFile '${p}': illegal operation on a directory`);
+    fsError("EISDIR", 21, syscall, p, `[edge-runtime] ${syscall} '${p}': illegal operation on a directory`);
   }
   if (isDevNull(p)) {
-    return decodeOutput(new Uint8Array(), options);
+    return new Uint8Array();
   }
   const value = state.files.get(p);
   if (!value) {
-    fsError("ENOENT", 2, "readFile", p, `[edge-runtime] readFile '${p}': no such file`);
+    fsError("ENOENT", 2, syscall, p, `[edge-runtime] ${syscall} '${p}': no such file`);
   }
-  return decodeOutput(value, options);
+  return value;
 }
 
-function writeFileSync(path: unknown, data?: unknown): void {
+function writeFileBytes(path: unknown, data: Bytes, syscall: string): void {
   const p = normalizePath(path);
   if (!isAllowedWritablePath(p)) {
     if (isBundlePath(p)) {
-      fsError("EROFS", 30, "writeFile", p, `[edge-runtime] writeFile '${p}': read-only mount (/bundle)`);
+      fsError("EROFS", 30, syscall, p, `[edge-runtime] ${syscall} '${p}': read-only mount (/bundle)`);
     }
-    fsError("EOPNOTSUPP", 95, "writeFile", p, `[edge-runtime] writeFile '${p}': path is outside writable VFS mounts`);
+    fsError("EOPNOTSUPP", 95, syscall, p, `[edge-runtime] ${syscall} '${p}': path is outside writable VFS mounts`);
   }
 
   if (isDevNull(p)) return;
@@ -199,22 +202,49 @@ function writeFileSync(path: unknown, data?: unknown): void {
   const state = getVfsState();
   const parent = parentDir(p);
   if (!state.dirs.has(parent)) {
-    fsError("ENOENT", 2, "writeFile", p, `[edge-runtime] writeFile '${p}': parent directory does not exist`);
+    fsError("ENOENT", 2, syscall, p, `[edge-runtime] ${syscall} '${p}': parent directory does not exist`);
   }
 
-  const next = toBytes(data);
-  if (next.byteLength > state.config.maxFileBytes) {
-    fsError("ENOSPC", 28, "writeFile", p, `[edge-runtime] writeFile '${p}': exceeds VFS per-file quota (${state.config.maxFileBytes} bytes)`);
+  if (data.byteLength > state.config.maxFileBytes) {
+    fsError("ENOSPC", 28, syscall, p, `[edge-runtime] ${syscall} '${p}': exceeds VFS per-file quota (${state.config.maxFileBytes} bytes)`);
   }
 
   const current = state.files.get(p);
-  const projected = state.usedBytes - (current?.byteLength ?? 0) + next.byteLength;
+  const projected = state.usedBytes - (current?.byteLength ?? 0) + data.byteLength;
   if (projected > state.config.totalQuotaBytes) {
-    fsError("ENOSPC", 28, "writeFile", p, `[edge-runtime] writeFile '${p}': exceeds VFS total quota (${state.config.totalQuotaBytes} bytes)`);
+    fsError("ENOSPC", 28, syscall, p, `[edge-runtime] ${syscall} '${p}': exceeds VFS total quota (${state.config.totalQuotaBytes} bytes)`);
   }
 
-  state.files.set(p, next);
+  state.files.set(p, data);
   state.usedBytes = projected;
+}
+
+function readFileSync(path: unknown, options?: unknown): unknown {
+  return decodeOutput(readFileBytes(path, "readFile"), options);
+}
+
+function writeFileSync(path: unknown, data?: unknown): void {
+  writeFileBytes(path, toBytes(data), "writeFile");
+}
+
+function concatBytes(left: Bytes, right: Bytes): Bytes {
+  const merged = new Uint8Array(left.byteLength + right.byteLength);
+  merged.set(left, 0);
+  merged.set(right, left.byteLength);
+  return merged;
+}
+
+function readStreamError(message: string, path?: string): never {
+  fsError("EINVAL", 22, "createReadStream", path, message);
+}
+
+function parseHighWaterMark(value: unknown, syscall: string): number {
+  if (value === undefined || value === null) return 64 * 1024;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    fsError("EINVAL", 22, syscall, undefined, `[edge-runtime] ${syscall}: invalid highWaterMark option`);
+  }
+  return Math.trunc(parsed);
 }
 
 function mkdirSync(path: unknown, options?: unknown): void {
@@ -290,24 +320,142 @@ function readdirSync(path: unknown): string[] {
   return [...names].sort();
 }
 
-function createReadStream(path: unknown): never {
-  fsError(
-    "EOPNOTSUPP",
-    95,
-    "createReadStream",
-    normalizePath(path),
-    "[thunder] fs.createReadStream is not implemented in this runtime profile",
-  );
+function parseStart(value: unknown, path: string): number {
+  if (value === undefined || value === null) return 0;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    readStreamError("[edge-runtime] createReadStream: invalid start option", path);
+  }
+  return Math.trunc(parsed);
 }
 
-function createWriteStream(path: unknown): never {
-  fsError(
-    "EOPNOTSUPP",
-    95,
-    "createWriteStream",
-    normalizePath(path),
-    "[thunder] fs.createWriteStream is not implemented in this runtime profile",
-  );
+function parseEnd(value: unknown, path: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    readStreamError("[edge-runtime] createReadStream: invalid end option", path);
+  }
+  return Math.trunc(parsed);
+}
+
+function createReadStream(path: unknown, options?: Record<string, unknown>) {
+  const p = normalizePath(path);
+  const start = parseStart(options?.start, p);
+  const end = parseEnd(options?.end, p);
+  const highWaterMark = parseHighWaterMark(options?.highWaterMark, "createReadStream");
+  const encoding = readEncoding(options);
+
+  if (end !== undefined && end < start) {
+    readStreamError("[edge-runtime] createReadStream: end must be >= start", p);
+  }
+
+  const stream = new Readable({ highWaterMark }) as Readable & {
+    path?: string;
+    bytesRead?: number;
+  };
+  stream.path = p;
+  stream.bytesRead = 0;
+
+  queueMicrotask(() => {
+    try {
+      const source = readFileBytes(p, "createReadStream");
+      if (start >= source.byteLength) {
+        stream.push(null);
+        return;
+      }
+
+      const stop = Math.min(end ?? (source.byteLength - 1), source.byteLength - 1);
+      let cursor = start;
+      while (cursor <= stop) {
+        const next = Math.min(cursor + highWaterMark, stop + 1);
+        const chunk = source.slice(cursor, next);
+        cursor = next;
+        stream.bytesRead = (stream.bytesRead ?? 0) + chunk.byteLength;
+        if (encoding && encoding !== "buffer") {
+          stream.push(decodeOutput(chunk, { encoding }));
+        } else {
+          stream.push(decodeOutput(chunk, "buffer"));
+        }
+      }
+
+      stream.push(null);
+    } catch (err) {
+      stream.destroy(err);
+    }
+  });
+
+  return stream;
+}
+
+function createWriteStream(path: unknown, options?: Record<string, unknown>) {
+  const p = normalizePath(path);
+  const flags = String(options?.flags ?? "w");
+  const highWaterMark = parseHighWaterMark(options?.highWaterMark, "createWriteStream");
+
+  let content = new Uint8Array();
+  let ready = false;
+
+  const init = () => {
+    if (ready) return;
+    ready = true;
+
+    if (!flags.startsWith("w") && !flags.startsWith("a")) {
+      fsError(
+        "EINVAL",
+        22,
+        "createWriteStream",
+        p,
+        `[edge-runtime] createWriteStream '${p}': unsupported flags '${flags}'`,
+      );
+    }
+
+    if (flags.startsWith("a") && existsSync(p)) {
+      content = readFileBytes(p, "createWriteStream");
+      return;
+    }
+
+    if (flags.startsWith("w")) {
+      content = new Uint8Array();
+      writeFileBytes(p, content, "createWriteStream");
+    }
+  };
+
+  const stream = new Writable({
+    highWaterMark,
+    write(chunk: unknown, _encoding: string, cb: (err?: unknown) => void) {
+      try {
+        init();
+        content = concatBytes(content, toBytes(chunk));
+        writeFileBytes(p, content, "createWriteStream");
+        cb();
+      } catch (err) {
+        cb(err);
+      }
+    },
+  }) as Writable & { path?: string; bytesWritten?: number };
+
+  stream.path = p;
+  stream.bytesWritten = 0;
+
+  const originalWrite = stream.write.bind(stream);
+  stream.write = ((chunk: unknown, encodingOrCb?: unknown, maybeCb?: unknown) => {
+    stream.bytesWritten = (stream.bytesWritten ?? 0) + toBytes(chunk).byteLength;
+    return originalWrite(
+      chunk,
+      encodingOrCb as string | ((err?: unknown) => void),
+      maybeCb as ((err?: unknown) => void) | undefined,
+    );
+  }) as typeof stream.write;
+
+  queueMicrotask(() => {
+    try {
+      init();
+    } catch (err) {
+      stream.destroy(err);
+    }
+  });
+
+  return stream;
 }
 
 function watch(path: unknown): never {
@@ -341,7 +489,9 @@ function callbackStyle<T>(fn: () => T, cb?: (...args: unknown[]) => void): void 
 }
 
 function readFile(path: unknown, options?: unknown, cb?: (...args: unknown[]) => void): void {
-  const callback = typeof options === "function" ? options : cb;
+  const callback = (typeof options === "function" ? options : cb) as
+    | ((...args: unknown[]) => void)
+    | undefined;
   const readOptions = typeof options === "function" ? undefined : options;
   callbackStyle(() => readFileSync(path, readOptions), callback);
 }
@@ -364,7 +514,9 @@ function readdir(path: unknown, cb?: (...args: unknown[]) => void): void {
 }
 
 function mkdir(path: unknown, options?: unknown, cb?: (...args: unknown[]) => void): void {
-  const callback = typeof options === "function" ? options : cb;
+  const callback = (typeof options === "function" ? options : cb) as
+    | ((...args: unknown[]) => void)
+    | undefined;
   const mkdirOptions = typeof options === "function" ? undefined : options;
   callbackStyle(() => mkdirSync(path, mkdirOptions), callback);
 }
