@@ -497,7 +497,10 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
     - Status aplicado: CI atualizado para executar geração do relatório e falhar quando `docs/web_standards_api_report.md` estiver desatualizado.
     - Documento `docs/NODE-COMPAT.md` + gate de regressão no CI para níveis `Full/Partial/Stub/None`.
     - Referência: `ROADMAP-NODE-COMPAT.md §8`, `§9 Issue #8`, `§10 Phase 5`.
-- [ ] Adicionar stub explícito para `node:worker_threads` com erro determinístico orientando limitações de sandbox.
+- [x] Adicionar stub explícito para `node:worker_threads` com erro determinístico orientando limitações de sandbox.
+    - Status aplicado: módulo `node:worker_threads` agora é importável no perfil compat, com `Worker` e APIs relacionadas falhando de forma determinística sob política de sandbox.
+    - Status aplicado: mensagens de erro mantêm prefixo padrão `[thunder] <api> is not implemented in this runtime profile` e explicitam limitação de criação de threads no runtime.
+    - Status aplicado: cobertura adicionada em `crates/functions/tests/node_module_imports.rs` e `crates/functions/tests/web_api_report.rs`.
     - Referência: `ROADMAP-NODE-COMPAT.md §7.3.1`, `§9 Issue #5`.
 
 #### P4 — Performance e Operação Contínua

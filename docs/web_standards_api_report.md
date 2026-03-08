@@ -199,6 +199,7 @@ Unsupported privileged behavior fails with deterministic errors (for example `EO
 | `node:dgram` | Stub | Stub | Partial | UDP/datagram import compatibility with deterministic non-functional sockets. |
 | `node:v8` | Partial | Partial | Partial | V8 compatibility introspection helpers with deterministic static values. |
 | `node:vm` | Stub | Stub | Partial | VM import compatibility with deterministic non-functional script execution APIs. |
+| `node:worker_threads` | Stub | Stub | Partial | Worker threads module is importable for feature detection; thread-spawning APIs fail deterministically by sandbox policy. |
 | `node:zlib` | Partial | Partial | Partial | Functional async+sync one-shot compression subset (`gzip/gunzip/deflate/inflate/deflateRaw/inflateRaw`) backed by native runtime ops with runtime-configurable defaults under immutable hard output/input ceilings and operation-time guardrail; stream constructors remain deterministic stubs. |
 | `node:assert` | Partial | Partial | Partial | Assertion testing helpers compatible with common assert usage patterns. |
 | `node:url` | Partial | Partial | Partial | URL module compatibility with URL constructors, file URL helpers, and domain ASCII/Unicode helpers. |

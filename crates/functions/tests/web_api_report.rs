@@ -949,6 +949,27 @@ fn define_node_compat_checks() -> Vec<NodeCompatCheck> {
                         status: String::new(),
                 },
                 NodeCompatCheck {
+                    api: "node:worker_threads",
+                    profile: "Stub",
+                    notes: "Worker threads module is importable for feature detection; thread-spawning APIs fail deterministically by sandbox policy.",
+                    js_check: r#"(() => {
+                        const key = '__edge_node_worker_threads_check';
+                        if (globalThis[key] === undefined) {
+                            globalThis[key] = 'pending';
+                            import('node:worker_threads').then((m) => {
+                                let deterministic = false;
+                                try { new m.Worker('file:///tmp/test.js'); } catch (err) { deterministic = String(err?.message || '').includes('not implemented'); }
+                                globalThis[key] = m.isMainThread === true && deterministic ? 'partial' : 'none';
+                            }).catch(() => {
+                                globalThis[key] = 'none';
+                            });
+                            return 'pending';
+                        }
+                        return globalThis[key];
+                    })()"#,
+                    status: String::new(),
+                },
+                NodeCompatCheck {
                         api: "node:zlib",
                         profile: "Partial",
                         notes: "Functional async+sync one-shot compression subset (`gzip/gunzip/deflate/inflate/deflateRaw/inflateRaw`) backed by native runtime ops with runtime-configurable defaults under immutable hard output/input ceilings and operation-time guardrail; stream constructors remain deterministic stubs.",

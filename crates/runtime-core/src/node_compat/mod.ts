@@ -38,4 +38,5 @@ import "node:url";
 import "node:util";
 import "node:v8";
 import "node:vm";
+import "node:worker_threads";
 import "node:zlib";

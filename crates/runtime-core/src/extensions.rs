@@ -82,6 +82,7 @@ deno_core::extension!(
         "node:util" = "src/node_compat/util.ts",
         "node:v8" = "src/node_compat/v8.ts",
         "node:vm" = "src/node_compat/vm.ts",
+        "node:worker_threads" = "src/node_compat/worker_threads.ts",
         "node:path" = "src/node_compat/path.ts",
         "node:url" = "src/node_compat/url.ts",
         "node:zlib" = "src/node_compat/zlib.ts",

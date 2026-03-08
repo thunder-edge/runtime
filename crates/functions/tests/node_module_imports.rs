@@ -1188,6 +1188,7 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
       import tls from "node:tls";
       import v8 from "node:v8";
       import vm from "node:vm";
+    import workerThreads from "node:worker_threads";
       import zlib from "node:zlib";
 
             function isThunderNotImplemented(err, api) {
@@ -1207,6 +1208,7 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
             try { new vm.Script('1+1').runInThisContext(); } catch (err) { if (isThunderNotImplemented(err, 'vm.Script.runInThisContext')) deterministicErrors++; }
             try { new sqlite.Database(':memory:'); } catch (err) { if (isThunderNotImplemented(err, 'sqlite.Database')) deterministicErrors++; }
             try { nodeTest.test('stub', () => {}); } catch (err) { if (isThunderNotImplemented(err, 'node:test')) deterministicErrors++; }
+            try { new workerThreads.Worker('file:///tmp/x.js'); } catch (err) { if (isThunderNotImplemented(err, 'worker_threads.Worker')) deterministicErrors++; }
 
             const zlibSyncCompat = (() => {
                 try {
@@ -1420,7 +1422,8 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
                 typeof unicodeDomain === 'string' &&
                 assertWorks &&
                 typeof punycode.toASCII === 'function' &&
-                deterministicErrors >= 10;
+                workerThreads.isMainThread === true &&
+                deterministicErrors >= 11;
     "#;
 
     let eszip_bytes = build_eszip("file:///node_extra_stubs_test.ts", source);
