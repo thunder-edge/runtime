@@ -9,11 +9,13 @@ use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full, StreamBody};
 use runtime_core::isolate::IsolateResponseBody;
 use tokio::sync::RwLock;
-use tracing::{error, info, info_span};
+use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::service::BoxBody;
+use functions::connection_manager::global_connection_manager;
 use functions::registry::{FunctionRegistry, RouteTargetError};
+use crate::current_listener_connection_capacity;
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
@@ -83,6 +85,30 @@ impl MetricsCache {
         });
         body
     }
+
+    pub async fn recompute<F>(&self, build_body: F) -> String
+    where
+        F: FnOnce() -> String,
+    {
+        let body = build_body();
+        let mut write = self.entry.write().await;
+        *write = Some(CachedMetrics {
+            body: body.clone(),
+            cached_at: Instant::now(),
+        });
+        body
+    }
+}
+
+pub fn is_metrics_fresh_query(query: Option<&str>) -> bool {
+    let Some(query) = query else {
+        return false;
+    };
+
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(key, value)| key == "fresh" && value == "1")
 }
 
 fn truncate_for_log(message: &str, max_bytes: usize) -> String {
@@ -234,7 +260,9 @@ impl Router {
         let path = req.uri().path().to_string();
         let trace_ctx = trace_context_from_headers(req.headers());
 
-        let mut resp = if path.starts_with("/_internal/") || path == "/_internal" {
+        let mut resp = if path == "/metrics" {
+            self.handle_internal(req).await
+        } else if path.starts_with("/_internal/") || path == "/_internal" {
             self.handle_internal(req).await
         } else {
             self.handle_ingress(req, &trace_ctx).await
@@ -257,7 +285,6 @@ impl Router {
         }
 
         let path = req.uri().path().to_string();
-        let method = req.method().clone();
 
         // Extract function name from first path segment
         let segments: Vec<&str> = path.splitn(3, '/').collect();
@@ -277,16 +304,6 @@ impl Router {
                 r#"{"error":"invalid function name; use lowercase slug [a-z0-9-], max 63 chars"}"#,
             );
         }
-
-        let request_span = info_span!(
-            "http.request",
-            component = "ingress",
-            function_name = %function_name,
-            request_id = %trace_ctx.trace_id,
-            method = %method,
-            path = %path
-        );
-        let _request_span_guard = request_span.enter();
 
         // Resolve isolate + logical context target
         let route_target = match self
@@ -447,6 +464,7 @@ impl Router {
     /// Route internal management API.
     async fn handle_internal(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let path = req.uri().path().to_string();
+        let metrics_fresh = is_metrics_fresh_query(req.uri().query());
         let method = req.method().clone();
 
         match (method.clone(), path.as_str()) {
@@ -455,8 +473,11 @@ impl Router {
                 json_response(StatusCode::OK, r#"{"status":"ok"}"#)
             }
 
+            // Metrics alias for external scrapers
+            (Method::GET, "/metrics") => self.handle_metrics(metrics_fresh).await,
+
             // Metrics
-            (Method::GET, "/_internal/metrics") => self.handle_metrics().await,
+            (Method::GET, "/_internal/metrics") => self.handle_metrics(metrics_fresh).await,
 
             // List functions
             (Method::GET, "/_internal/functions") => {
@@ -477,11 +498,16 @@ impl Router {
         }
     }
 
-    async fn handle_metrics(&self) -> Response<BoxBody> {
-        let body = self
-            .metrics_cache
-            .get_or_compute(|| build_metrics_body(&self.registry))
-            .await;
+    async fn handle_metrics(&self, fresh: bool) -> Response<BoxBody> {
+        let body = if fresh {
+            self.metrics_cache
+                .recompute(|| build_metrics_body(&self.registry))
+                .await
+        } else {
+            self.metrics_cache
+                .get_or_compute(|| build_metrics_body(&self.registry))
+                .await
+        };
         json_response(StatusCode::OK, &body)
     }
 
@@ -743,6 +769,24 @@ pub fn extract_function_and_path(path: &str) -> (&str, String) {
 }
 
 pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
+    fn clamp01(value: f64) -> f64 {
+        if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(0.0, 1.0)
+        }
+    }
+
+    fn saturation_level(score: f64) -> &'static str {
+        if score >= 0.90 {
+            "critical"
+        } else if score >= 0.75 {
+            "warning"
+        } else {
+            "healthy"
+        }
+    }
+
     let functions = registry.list();
     let total_requests: u64 = functions.iter().map(|f| f.metrics.total_requests).sum();
     let total_errors: u64 = functions.iter().map(|f| f.metrics.total_errors).sum();
@@ -764,6 +808,8 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
         .map(|f| f.metrics.total_warm_start_time_us)
         .sum();
     let routing = registry.routing_metrics_snapshot();
+    let egress = global_connection_manager().snapshot();
+    let listener_connection_capacity = current_listener_connection_capacity();
 
     let avg_cold_start_ms = if total_cold_starts > 0 {
         total_cold_start_ms / total_cold_starts
@@ -804,11 +850,14 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
     // This syscall-heavy section is why caching is needed.
     let mut sys = sysinfo::System::new_all();
     sys.refresh_processes();
+    sys.refresh_memory();
     let current_pid = sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from(0));
     let process_memory_mb = sys
         .process(current_pid)
         .map(|p| p.memory() as f64 / (1024.0 * 1024.0))
         .unwrap_or(0.0);
+    let total_memory_mib = (sys.total_memory() / (1024 * 1024)) as f64;
+    let available_memory_mib = (sys.available_memory().max(sys.free_memory()) / (1024 * 1024)) as f64;
 
     let function_count = registry.count();
     let estimated_memory_per_function_mb = if function_count > 0 {
@@ -816,6 +865,93 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
     } else {
         0.0
     };
+
+    let memory_pressure_host = if total_memory_mib > 0.0 && available_memory_mib > 0.0 {
+        clamp01(1.0 - (available_memory_mib / total_memory_mib))
+    } else {
+        0.0
+    };
+    let memory_pressure_process = if total_memory_mib > 0.0 {
+        clamp01(process_memory_mb / total_memory_mib)
+    } else {
+        0.0
+    };
+    // Avoid false positive "critical" at idle when host reports low available memory
+    // but this process is still using a tiny memory share.
+    let memory_pressure = memory_pressure_process.max(memory_pressure_host * memory_pressure_process);
+
+    let total_cpu_time_ms: f64 = functions
+        .iter()
+        .map(|f| f.metrics.total_cpu_time_ms as f64)
+        .sum();
+    let total_warm_request_time_ms: f64 = functions
+        .iter()
+        .map(|f| f.metrics.avg_warm_request_ms_precise * f.metrics.total_requests as f64)
+        .sum();
+    let cpu_pressure = if total_warm_request_time_ms > 0.0 {
+        clamp01(total_cpu_time_ms / total_warm_request_time_ms)
+    } else {
+        0.0
+    };
+
+    let total_isolate_capacity: u64 = functions.iter().map(|f| f.pool.max as u64).sum();
+    let pool_isolates_pressure = if total_isolate_capacity > 0 {
+        clamp01(routing.total_isolates as f64 / total_isolate_capacity as f64)
+    } else {
+        0.0
+    };
+    let pool_contexts_pressure = if routing.total_contexts > 0 {
+        clamp01(routing.saturated_contexts as f64 / routing.total_contexts as f64)
+    } else {
+        0.0
+    };
+    let pool_pressure = pool_isolates_pressure.max(pool_contexts_pressure);
+
+    let fd_pressure_runtime = if egress.soft_limit > 0 {
+        clamp01(egress.open_fd_count as f64 / egress.soft_limit as f64)
+    } else {
+        0.0
+    };
+    let fd_pressure_listener_clamp =
+        if listener_connection_capacity.configured_max_connections > 0 {
+            clamp01(
+                1.0
+                    - (listener_connection_capacity.effective_max_connections as f64
+                        / listener_connection_capacity.configured_max_connections as f64),
+            )
+        } else {
+            0.0
+        };
+    let fd_pressure = fd_pressure_runtime.max(fd_pressure_listener_clamp);
+
+    let global_saturation_score = [
+        memory_pressure,
+        cpu_pressure,
+        pool_isolates_pressure,
+        pool_contexts_pressure,
+        fd_pressure,
+    ]
+    .into_iter()
+    .fold(0.0_f64, |acc, value| acc.max(value));
+    let global_saturation_level = saturation_level(global_saturation_score);
+    let should_scale_out = global_saturation_score >= 0.75;
+
+    let mut active_signals: Vec<&str> = Vec::new();
+    if memory_pressure >= 0.75 {
+        active_signals.push("memory");
+    }
+    if cpu_pressure >= 0.75 {
+        active_signals.push("cpu");
+    }
+    if pool_isolates_pressure >= 0.75 {
+        active_signals.push("pool_isolates");
+    }
+    if pool_contexts_pressure >= 0.75 {
+        active_signals.push("pool_contexts");
+    }
+    if fd_pressure >= 0.75 {
+        active_signals.push("fd");
+    }
 
     let mut cold_slowest: Vec<_> = functions
         .iter()
@@ -1004,16 +1140,52 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
         "total_warm_start_time_us": total_warm_start_us,
         "memory": {
             "process_memory_mb": process_memory_mb,
+            "total_memory_mib": total_memory_mib,
+            "available_memory_mib": available_memory_mib,
             "estimated_per_function_mb": estimated_memory_per_function_mb
+        },
+        "process_saturation": {
+            "score": global_saturation_score,
+            "level": global_saturation_level,
+            "should_scale_out": should_scale_out,
+            "active_signals": active_signals,
+            "thresholds": {
+                "warning": 0.75,
+                "critical": 0.90,
+            },
+            "components": {
+                "memory": memory_pressure,
+                "cpu": cpu_pressure,
+                "pool": pool_pressure,
+                "pool_isolates": pool_isolates_pressure,
+                "pool_contexts": pool_contexts_pressure,
+                "fd": fd_pressure,
+            },
+            "debug": {
+                "memory_host_raw": memory_pressure_host,
+                "memory_process_raw": memory_pressure_process,
+            }
         },
         "routing": {
             "total_contexts": routing.total_contexts,
             "total_isolates": routing.total_isolates,
+            "global_pool_total_isolates": routing.global_pool_total_isolates,
+            "global_pool_max_isolates": routing.global_pool_max_isolates,
+            "isolate_accounting_gap": routing
+                .global_pool_total_isolates
+                .saturating_sub(routing.total_isolates),
             "total_active_requests": routing.total_active_requests,
             "saturated_rejections": routing.saturated_rejections,
+            "saturated_rejections_context_capacity": routing.saturated_rejections_context_capacity,
+            "saturated_rejections_scale_blocked": routing.saturated_rejections_scale_blocked,
+            "saturated_rejections_scale_failed": routing.saturated_rejections_scale_failed,
+            "burst_scale_batch_last": routing.burst_scale_batch_last,
+            "burst_scale_events_total": routing.burst_scale_events_total,
             "saturated_contexts": routing.saturated_contexts,
             "saturated_isolates": routing.saturated_isolates,
         },
+        "listener_connection_capacity": listener_connection_capacity,
+        "egress_connection_manager": egress,
         "top10": {
             "cold_slowest": cold_slowest,
             "cold_fastest": cold_fastest,

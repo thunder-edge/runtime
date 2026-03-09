@@ -490,6 +490,7 @@ All endpoints below are served on the **admin listener** (default port 9000):
 |----------|--------|-------------|
 | `/_internal/health` | GET | Health check |
 | `/_internal/metrics` | GET | Runtime and function metrics |
+| `/metrics` | GET | Alias for runtime and function metrics |
 | `/_internal/functions` | GET | List all deployed functions |
 | `/_internal/functions` | POST | Deploy new function (body: eszip, header: `x-function-name`) |
 | `/_internal/functions/{name}` | GET | Get function info |
@@ -498,6 +499,10 @@ All endpoints below are served on the **admin listener** (default port 9000):
 | `/_internal/functions/{name}/reload` | POST | Hot reload (requires feature flag) |
 | `/_internal/functions/{name}/pool` | GET | Get per-function pool limits |
 | `/_internal/functions/{name}/pool` | PUT | Update per-function pool limits (`min`, `max`) |
+
+Metrics freshness note:
+- `/_internal/metrics` and `/metrics` may return cached snapshots.
+- Use `?fresh=1` to force recomputation when validating just-finished load tests.
 
 #### Snapshot/V8 Compatibility
 

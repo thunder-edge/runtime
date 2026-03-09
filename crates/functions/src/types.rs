@@ -232,6 +232,18 @@ impl Default for PoolLimits {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ContextPoolLimits {
+    pub min: usize,
+    pub max: usize,
+}
+
+impl Default for ContextPoolLimits {
+    fn default() -> Self {
+        Self { min: 1, max: 8 }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionPoolSnapshot {
     pub min: usize,
@@ -243,6 +255,8 @@ pub struct FunctionPoolSnapshot {
 pub struct FunctionEntry {
     /// Unique name (used as path prefix for routing).
     pub name: String,
+    /// Original deploy package bytes (used for replica boot and updates).
+    pub bundle_package_bytes: Bytes,
     /// The raw eszip bundle bytes (kept for hot-reload).
     pub eszip_bytes: Bytes,
     /// The original bundle format used.
@@ -421,6 +435,7 @@ mod tests {
         let now = Utc::now();
         let entry = FunctionEntry {
             name: "test-fn".to_string(),
+            bundle_package_bytes: Bytes::new(),
             eszip_bytes: Bytes::new(),
             bundle_format: BundleFormat::Eszip,
             package_v8_version: get_v8_version().to_string(),

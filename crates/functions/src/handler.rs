@@ -4,8 +4,11 @@ use deno_core::{op2, Extension, JsRuntime, OpState};
 use runtime_core::isolate::{
     IsolateConfig, IsolateResponse, IsolateResponseBody, OutgoingProxyConfig,
 };
+use std::time::Duration;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+use crate::connection_manager::{global_connection_manager, AcquireError};
 
 #[derive(Default)]
 struct ResponseStreamRegistry {
@@ -48,12 +51,65 @@ fn op_edge_stream_error(
     Ok(())
 }
 
+#[op2(async(lazy), fast)]
+#[string]
+async fn op_edge_acquire_egress_lease(
+    #[string] tenant: String,
+    #[string] execution_id: String,
+    timeout_ms: u32,
+) -> Result<String, deno_error::JsErrorBox> {
+    let timeout = if timeout_ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(timeout_ms as u64))
+    };
+
+    let lease_id = global_connection_manager()
+        .acquire_lease(tenant, execution_id, timeout)
+        .await
+        .map_err(|err| {
+            let reason = match err {
+                AcquireError::Backpressure => "backpressure".to_string(),
+                AcquireError::Timeout => "timeout".to_string(),
+                AcquireError::Internal(message) => format!("internal error: {message}"),
+            };
+            deno_error::JsErrorBox::generic(format!(
+                "[thunder] outbound lease acquisition failed: {reason}"
+            ))
+        })?;
+
+    Ok(lease_id.to_string())
+}
+
+#[op2(fast)]
+fn op_edge_release_egress_lease(
+    #[string] lease_id: String,
+) -> Result<bool, deno_error::JsErrorBox> {
+    let parsed_id = lease_id.parse::<u64>().map_err(|e| {
+        deno_error::JsErrorBox::generic(format!(
+            "[thunder] invalid egress lease id '{lease_id}': {e}"
+        ))
+    })?;
+    Ok(global_connection_manager().release_lease(parsed_id))
+}
+
+#[op2(fast)]
+fn op_edge_release_execution_egress_leases(
+    #[string] execution_id: String,
+) -> Result<u32, deno_error::JsErrorBox> {
+    let released = global_connection_manager().release_execution_leases(&execution_id);
+    Ok(released as u32)
+}
+
 deno_core::extension!(
     edge_response_stream,
     ops = [
         op_edge_stream_chunk,
         op_edge_stream_end,
-        op_edge_stream_error
+        op_edge_stream_error,
+        op_edge_acquire_egress_lease,
+        op_edge_release_egress_lease,
+        op_edge_release_execution_egress_leases
     ],
 );
 
@@ -210,9 +266,11 @@ pub fn inject_request_bridge_with_proxy_and_config(
                 _promiseRegistry: new Map(),     // executionId -> Set<{promise, reject}>
                 _wsRegistry: new Map(),          // executionId -> Set<WebSocket>
                 _egressRegistry: new Map(),      // executionId -> number
+                _egressLeaseRegistry: new Map(), // executionId -> Set<leaseId>
                 _executionState: new Map(),      // executionId -> { active: boolean, token: number }
                 _nextExecutionToken: 1,
                 _lastBlockedNetworkLog: null,
+                _currentTenant: 'default',
                 _egressConfig: globalThis.__edgeRuntimeEgressConfig || {
                     maxRequestsPerExecution: 0,
                 },
@@ -241,11 +299,44 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     this._promiseRegistry.set(executionId, new Set());
                     this._wsRegistry.set(executionId, new Set());
                     this._egressRegistry.set(executionId, 0);
+                    this._egressLeaseRegistry.set(executionId, new Set());
                     this._executionState.set(executionId, {
                         active: true,
                         token: this._nextExecutionToken++,
                     });
                     this._clearAsyncHooksExecutionContext(executionId);
+                },
+
+                _trackEgressLease(executionId, leaseId) {
+                    if (!executionId || leaseId === null || leaseId === undefined) return;
+                    let leases = this._egressLeaseRegistry.get(executionId);
+                    if (!leases) {
+                        leases = new Set();
+                        this._egressLeaseRegistry.set(executionId, leases);
+                    }
+                    leases.add(String(leaseId));
+                },
+
+                _untrackEgressLease(executionId, leaseId) {
+                    if (!executionId || leaseId === null || leaseId === undefined) return;
+                    const leases = this._egressLeaseRegistry.get(executionId);
+                    if (!leases) return;
+                    leases.delete(String(leaseId));
+                    if (leases.size === 0) {
+                        this._egressLeaseRegistry.delete(executionId);
+                    }
+                },
+
+                _releaseExecutionEgressLeases(executionId) {
+                    if (!executionId) return 0;
+                    let released = 0;
+                    try {
+                        released = Number(Deno.core.ops.op_edge_release_execution_egress_leases(executionId) || 0);
+                    } catch (_) {
+                        // Avoid surfacing cleanup failures to user handlers.
+                    }
+                    this._egressLeaseRegistry.delete(executionId);
+                    return released;
                 },
                 
                 consumeEgressToken(kind, target) {
@@ -336,12 +427,14 @@ pub fn inject_request_bridge_with_proxy_and_config(
                 endExecution(executionId) {
                     this._deactivateExecution(executionId);
                     this._closeExecutionWebSockets(executionId, 1001, 'Execution ended');
+                    this._releaseExecutionEgressLeases(executionId);
                     this._timerRegistry.delete(executionId);
                     this._intervalRegistry.delete(executionId);
                     this._abortRegistry.delete(executionId);
                     this._promiseRegistry.delete(executionId);
                     this._wsRegistry.delete(executionId);
                     this._egressRegistry.delete(executionId);
+                    this._egressLeaseRegistry.delete(executionId);
                     if (this._currentExecutionId === executionId) {
                         this._currentExecutionId = null;
                     }
@@ -396,6 +489,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
 
                     // Close tracked WebSocket connections for this execution
                     this._closeExecutionWebSockets(executionId, 1013, 'Request cancelled due to execution timeout');
+                    this._releaseExecutionEgressLeases(executionId);
 
                     // Cleanup registries
                     this._timerRegistry.delete(executionId);
@@ -404,6 +498,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     this._promiseRegistry.delete(executionId);
                     this._wsRegistry.delete(executionId);
                     this._egressRegistry.delete(executionId);
+                    this._egressLeaseRegistry.delete(executionId);
                     if (this._currentExecutionId === executionId) {
                         this._currentExecutionId = null;
                     }
@@ -615,12 +710,31 @@ pub fn inject_request_bridge_with_proxy_and_config(
                 return globalThis.__originalClearInterval(id);
             };
 
-            // Wrap fetch to track with AbortController
-            globalThis.fetch = function(input, init = {}) {
+            // Wrap fetch to enforce centralized egress lease limits and track aborts.
+            globalThis.fetch = async function(input, init = {}) {
                 const execId = globalThis.__edgeRuntime._currentExecutionId;
+                const tenant = String(globalThis.__edgeRuntime._currentTenant || 'default');
 
-                const invokeFetch = (requestInput, requestInit) => {
+                const invokeFetch = async (requestInput, requestInit) => {
                     globalThis.__edgeRuntime.consumeEgressToken('fetch', globalThis.__edgeRuntime._requestTarget(requestInput));
+
+                    let leaseId = null;
+                    try {
+                        leaseId = await Deno.core.ops.op_edge_acquire_egress_lease(
+                            tenant,
+                            String(execId || 'no-execution'),
+                            75,
+                        );
+                        if (execId) {
+                            globalThis.__edgeRuntime._trackEgressLease(execId, leaseId);
+                        }
+                    } catch (error) {
+                        const target = globalThis.__edgeRuntime._requestTarget(requestInput);
+                        const message = String(error?.message || error || 'capacity unavailable');
+                        throw new Error(
+                            `[thunder] outbound connection capacity exhausted target='${target}' tenant='${tenant}' reason='${message}'`,
+                        );
+                    }
 
                     let proxySelection = null;
                     let selectedUrl = null;
@@ -636,7 +750,9 @@ pub fn inject_request_bridge_with_proxy_and_config(
                         // If URL parsing fails, fallback to original fetch path.
                     }
 
-                    return globalThis.__originalFetch(requestInput, requestInit).catch((error) => {
+                    try {
+                        return await globalThis.__originalFetch(requestInput, requestInit);
+                    } catch (error) {
                         if (globalThis.__edgeRuntime._isBlockedNetworkError(error)) {
                             globalThis.__edgeRuntime._logBlockedNetworkRequest(requestInput, error);
                         }
@@ -646,12 +762,23 @@ pub fn inject_request_bridge_with_proxy_and_config(
                             throw new Error(`[thunder] outgoing proxy request failed kind='${proxySelection.proxyKind}' target='${target}' reason='${reason}'`);
                         }
                         throw error;
-                    });
+                    } finally {
+                        if (leaseId !== null && leaseId !== undefined) {
+                            try {
+                                Deno.core.ops.op_edge_release_egress_lease(leaseId);
+                            } catch (_) {
+                                // Best-effort release. Reaper handles orphaned leases.
+                            }
+                            if (execId) {
+                                globalThis.__edgeRuntime._untrackEgressLease(execId, leaseId);
+                            }
+                        }
+                    }
                 };
 
                 // If no execution context, just call original fetch
                 if (!execId) {
-                    return invokeFetch(input, init);
+                    return await invokeFetch(input, init);
                 }
 
                 // Create AbortController if not provided
@@ -664,7 +791,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     globalThis.__edgeRuntime._trackAbortController(controller);
                 } else if (signal.aborted) {
                     // Already aborted, just call original
-                    return invokeFetch(input, init);
+                    return await invokeFetch(input, init);
                 } else {
                     // User provided signal, wrap it with our controller
                     controller = new AbortController();
@@ -686,7 +813,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     globalThis.__edgeRuntime._untrackAbortController(controller);
                 }).catch(() => {});
 
-                return fetchPromise;
+                return await fetchPromise;
             };
 
             // Wrap queueMicrotask to track execution context
@@ -765,6 +892,11 @@ pub fn inject_request_bridge_with_proxy_and_config(
                         body_base64: btoa(`{"error":"no handler registered for context '${contextId || 'default'}' function '${functionName || '<unknown>'}'"}`),
                     });
                 }
+
+                const previousTenant = globalThis.__edgeRuntime._currentTenant;
+                globalThis.__edgeRuntime._currentTenant = String(
+                    functionName || contextId || previousTenant || 'default',
+                );
 
                 try {
                     const parsedHeaders = JSON.parse(headersJson || '[]');
@@ -851,6 +983,8 @@ pub fn inject_request_bridge_with_proxy_and_config(
                         body_kind: 'inline',
                         body_base64: btoa(JSON.stringify({ error: String(err) })),
                     });
+                } finally {
+                    globalThis.__edgeRuntime._currentTenant = previousTenant || 'default';
                 }
             };
             "#

@@ -2,33 +2,37 @@ import http from 'k6/http';
 import { check, group, sleep } from 'k6';
 
 // Configuration
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:9000';
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+const ADMIN_URL = __ENV.ADMIN_URL || 'http://localhost:9000';
 const EXAMPLES = [
   'hello',
-  'json-api',
-  'cors',
-  'basic-auth',
+  // 'json-api',
+  // 'cors',
+  // 'basic-auth',
   'error-handling',
   'middleware',
   'url-redirect',
+  'documentation',
+  'html-page',
+  
 ];
 
 export const options = {
   stages: [
-    { duration: '10s', target: 1 },   // Cold start test: 1 VU for 10s
-    { duration: '30s', target: 5 },   // Warm start ramp: 5 VUs for 30s
-    { duration: '30s', target: 10 },  // Load test: 10 VUs for 30s
-    { duration: '10s', target: 0 },   // Cooldown: ramp down to 0 VUs
+    { duration: '10s', target: 150 },    // Cold start test: 50 VUs for 10s
+    { duration: '30s', target: 150 },   // Warm start ramp: 50 VUs for 990s
+    { duration: '0s', target: 0 },      // Cooldown: ramp down to 0 VUs
   ],
 };
 
 export function setup() {
   console.log('📊 Starting load test setup...');
   console.log(`   Base URL: ${BASE_URL}`);
+  console.log(`   Admin URL: ${ADMIN_URL}`);
   console.log(`   Examples: ${EXAMPLES.join(', ')}`);
 
   // Collect initial metrics
-  const metricsRes = http.get(`${BASE_URL}/_internal/metrics`);
+  const metricsRes = http.get(`${ADMIN_URL}/_internal/metrics`);
   return {
     initialMetrics: metricsRes.body,
     startTime: new Date().toISOString(),
@@ -46,7 +50,7 @@ export default function (data) {
       check(res, {
         'status is 200': (r) => r.status === 200,
         'response time < 500ms': (r) => r.timings.duration < 500,
-        'has content': (r) => r.body.length > 0,
+        'has content': (r) => typeof r.body === 'string' && r.body.length > 0,
       });
     });
 
@@ -58,7 +62,7 @@ export function teardown(data) {
   console.log('\n📊 Collecting final metrics...');
 
   // Collect final metrics
-  const metricsRes = http.get(`${BASE_URL}/_internal/metrics`);
+  const metricsRes = http.get(`${ADMIN_URL}/_internal/metrics`);
 
   if (metricsRes.status === 200) {
     try {

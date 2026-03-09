@@ -4,6 +4,9 @@
 
 Load testing the Deno Edge Runtime helps understand performance characteristics, measure cold/warm start latency, and identify bottlenecks. This guide covers the k6-based load testing infrastructure.
 
+For deep operational tuning under sustained/high arrival rates, see:
+- `docs/high-load-capacity-fd-saturation.md`
+
 ## What is Load Testing?
 
 Load testing simulates real-world usage by generating multiple concurrent requests to your application. It measures:
@@ -211,10 +214,19 @@ Error Rate:     0%
 
 ## Metrics Endpoint
 
-The server exposes real-time metrics at:
+The server exposes metrics at:
 
 ```bash
 curl http://localhost:9000/_internal/metrics
+curl http://localhost:9000/metrics
+```
+
+When you need immediate post-test values (without cache lag), use:
+
+```bash
+curl http://localhost:9000/_internal/metrics?fresh=1
+# or
+curl http://localhost:9000/metrics?fresh=1
 ```
 
 ### Sample Response
@@ -270,7 +282,7 @@ Watch for memory leaks:
 ```bash
 # Check metrics over time
 while true; do
-  curl -s http://localhost:9000/_internal/metrics | jq '.functions[].metrics'
+  curl -s http://localhost:9000/_internal/metrics?fresh=1 | jq '.functions[].metrics'
   sleep 5
 done
 ```
@@ -393,7 +405,7 @@ Run the quick ESZIP benchmark and inspect metrics:
 
 ```bash
 ./scripts/quick-benchmark.sh
-curl http://localhost:9000/_internal/metrics | jq '.functions[] | {name, metrics}'
+curl http://localhost:9000/_internal/metrics?fresh=1 | jq '.functions[] | {name, metrics}'
 ```
 
 ## Best Practices

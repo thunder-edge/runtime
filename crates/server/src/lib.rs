@@ -11,6 +11,8 @@ pub mod trace_context;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use functions::registry::FunctionRegistry;
+use serde::Serialize;
 
 use crate::admin_router::AdminRouter;
 use crate::bundle_signature::{BundleSignatureConfig, BundleSignatureVerifier};
@@ -30,6 +33,244 @@ use crate::service::EdgeService;
 
 // Re-export for convenience
 pub use crate::body_limits::BodyLimitsConfig;
+
+const FD_RESERVED_RATIO: f64 = 0.10;
+const FD_RESERVED_ABSOLUTE: usize = 64;
+const ACCEPT_EMFILE_BACKOFF: Duration = Duration::from_millis(50);
+const ACCEPT_PERMIT_WAIT: Duration = Duration::from_millis(500);
+const DEFAULT_NOFILE_TARGET: usize = 10_000;
+const NOFILE_TARGET_ENV: &str = "EDGE_RUNTIME_NOFILE_TARGET";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenerConnectionCapacitySnapshot {
+    pub configured_max_connections: u64,
+    pub effective_max_connections: u64,
+    pub soft_limit: u64,
+    pub reserved_fd: u64,
+    pub fd_budget: u64,
+}
+
+#[derive(Debug)]
+struct ListenerConnectionCapacityState {
+    configured_max_connections: AtomicU64,
+    effective_max_connections: AtomicU64,
+    soft_limit: AtomicU64,
+    reserved_fd: AtomicU64,
+    fd_budget: AtomicU64,
+}
+
+impl ListenerConnectionCapacityState {
+    fn new() -> Self {
+        Self {
+            configured_max_connections: AtomicU64::new(0),
+            effective_max_connections: AtomicU64::new(0),
+            soft_limit: AtomicU64::new(0),
+            reserved_fd: AtomicU64::new(0),
+            fd_budget: AtomicU64::new(0),
+        }
+    }
+
+    fn store(&self, snapshot: &ListenerConnectionCapacitySnapshot) {
+        self.configured_max_connections
+            .store(snapshot.configured_max_connections, Ordering::Relaxed);
+        self.effective_max_connections
+            .store(snapshot.effective_max_connections, Ordering::Relaxed);
+        self.soft_limit.store(snapshot.soft_limit, Ordering::Relaxed);
+        self.reserved_fd
+            .store(snapshot.reserved_fd, Ordering::Relaxed);
+        self.fd_budget.store(snapshot.fd_budget, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> ListenerConnectionCapacitySnapshot {
+        ListenerConnectionCapacitySnapshot {
+            configured_max_connections: self.configured_max_connections.load(Ordering::Relaxed),
+            effective_max_connections: self.effective_max_connections.load(Ordering::Relaxed),
+            soft_limit: self.soft_limit.load(Ordering::Relaxed),
+            reserved_fd: self.reserved_fd.load(Ordering::Relaxed),
+            fd_budget: self.fd_budget.load(Ordering::Relaxed),
+        }
+    }
+}
+
+static LISTENER_CONNECTION_CAPACITY: OnceLock<ListenerConnectionCapacityState> = OnceLock::new();
+
+fn listener_connection_capacity_state() -> &'static ListenerConnectionCapacityState {
+    LISTENER_CONNECTION_CAPACITY.get_or_init(ListenerConnectionCapacityState::new)
+}
+
+pub fn current_listener_connection_capacity() -> ListenerConnectionCapacitySnapshot {
+    listener_connection_capacity_state().snapshot()
+}
+
+fn fd_soft_limit() -> Option<usize> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+
+    // Safety: getrlimit writes to a valid pointer to `rlimit`.
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) };
+    if rc == 0 {
+        Some(lim.rlim_cur as usize)
+    } else {
+        None
+    }
+}
+
+fn resolve_nofile_target() -> usize {
+    match std::env::var(NOFILE_TARGET_ENV) {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(0) => {
+                warn!(
+                    function_name = "runtime",
+                    request_id = "system",
+                    env = NOFILE_TARGET_ENV,
+                    value = %raw,
+                    default = DEFAULT_NOFILE_TARGET,
+                    "invalid nofile target (must be > 0), falling back to default"
+                );
+                DEFAULT_NOFILE_TARGET
+            }
+            Ok(v) => v,
+            Err(_) => {
+                warn!(
+                    function_name = "runtime",
+                    request_id = "system",
+                    env = NOFILE_TARGET_ENV,
+                    value = %raw,
+                    default = DEFAULT_NOFILE_TARGET,
+                    "failed to parse nofile target, falling back to default"
+                );
+                DEFAULT_NOFILE_TARGET
+            }
+        },
+        Err(_) => DEFAULT_NOFILE_TARGET,
+    }
+}
+
+fn maybe_raise_nofile_limit() {
+    let target = resolve_nofile_target();
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+
+    // Safety: getrlimit writes to a valid pointer to `rlimit`.
+    let get_rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) };
+    if get_rc != 0 {
+        warn!(
+            function_name = "runtime",
+            request_id = "system",
+            target,
+            error = %std::io::Error::last_os_error(),
+            "failed to read RLIMIT_NOFILE"
+        );
+        return;
+    }
+
+    let current = lim.rlim_cur as usize;
+    let hard = lim.rlim_max as usize;
+    if current >= target {
+        info!(
+            function_name = "runtime",
+            request_id = "system",
+            current,
+            hard,
+            target,
+            "RLIMIT_NOFILE already satisfies target"
+        );
+        return;
+    }
+
+    let desired = target.min(hard);
+    if desired <= current {
+        warn!(
+            function_name = "runtime",
+            request_id = "system",
+            current,
+            hard,
+            target,
+            "cannot raise RLIMIT_NOFILE: target exceeds hard limit"
+        );
+        return;
+    }
+
+    let new_lim = libc::rlimit {
+        rlim_cur: desired as libc::rlim_t,
+        rlim_max: lim.rlim_max,
+    };
+
+    // Safety: setrlimit reads a valid pointer to immutable `rlimit` data.
+    let set_rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &new_lim) };
+    if set_rc != 0 {
+        warn!(
+            function_name = "runtime",
+            request_id = "system",
+            current,
+            hard,
+            target,
+            desired,
+            error = %std::io::Error::last_os_error(),
+            "failed to raise RLIMIT_NOFILE"
+        );
+        return;
+    }
+
+    info!(
+        function_name = "runtime",
+        request_id = "system",
+        previous = current,
+        current = desired,
+        hard,
+        target,
+        env = NOFILE_TARGET_ENV,
+        "raised RLIMIT_NOFILE"
+    );
+}
+
+fn compute_listener_connection_capacity(configured: usize) -> ListenerConnectionCapacitySnapshot {
+    let configured = configured.max(1);
+    let Some(soft_limit) = fd_soft_limit() else {
+        return ListenerConnectionCapacitySnapshot {
+            configured_max_connections: configured as u64,
+            effective_max_connections: configured as u64,
+            soft_limit: 0,
+            reserved_fd: 0,
+            fd_budget: 0,
+        };
+    };
+
+    if soft_limit == 0 {
+        return ListenerConnectionCapacitySnapshot {
+            configured_max_connections: configured as u64,
+            effective_max_connections: configured as u64,
+            soft_limit: 0,
+            reserved_fd: 0,
+            fd_budget: 0,
+        };
+    }
+
+    let ratio_reserved = ((soft_limit as f64) * FD_RESERVED_RATIO).round() as usize;
+    let reserved_candidate = FD_RESERVED_ABSOLUTE.max(ratio_reserved);
+    // Keep room for active listeners even when process soft limit is low.
+    let max_reserved = soft_limit.saturating_sub(32);
+    let reserved = reserved_candidate.min(max_reserved);
+    let fd_budget = soft_limit.saturating_sub(reserved).max(1);
+    let effective = configured.min(fd_budget);
+
+    ListenerConnectionCapacitySnapshot {
+        configured_max_connections: configured as u64,
+        effective_max_connections: effective as u64,
+        soft_limit: soft_limit as u64,
+        reserved_fd: reserved as u64,
+        fd_budget: fd_budget as u64,
+    }
+}
+
+fn is_fd_exhaustion(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(code) if code == libc::EMFILE || code == libc::ENFILE)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration Types
@@ -115,6 +356,8 @@ pub async fn run_dual_server(
     registry: Arc<FunctionRegistry>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
+    maybe_raise_nofile_limit();
+
     // Warn if no API key configured
     if config.admin.api_key.is_none() {
         warn!(
@@ -125,13 +368,37 @@ pub async fn run_dual_server(
         );
     }
 
-    // Create connection semaphore shared across all listeners
-    let connection_semaphore = Arc::new(Semaphore::new(config.max_connections));
+    // Create connection semaphore shared across all listeners.
+    // Clamp with FD budget so configured limits cannot exceed process capacity.
+    let capacity = compute_listener_connection_capacity(config.max_connections);
+    let effective_max_connections = capacity.effective_max_connections as usize;
+    listener_connection_capacity_state().store(&capacity);
+    // Keep a dedicated admin pool so control-plane stays responsive under ingress load.
+    let min_admin_connections = 16usize.min(effective_max_connections.max(1));
+    let admin_connections = (effective_max_connections / 10)
+        .max(min_admin_connections)
+        .min(256)
+        .min(effective_max_connections.max(1));
+    let ingress_connections = effective_max_connections.max(1);
+
+    let admin_connection_semaphore = Arc::new(Semaphore::new(admin_connections));
+    let ingress_connection_semaphore = Arc::new(Semaphore::new(ingress_connections));
+    if effective_max_connections < config.max_connections {
+        warn!(
+            function_name = "runtime",
+            request_id = "system",
+            configured = config.max_connections,
+            effective = effective_max_connections,
+            "max_connections clamped by RLIMIT_NOFILE budget"
+        );
+    }
     info!(
         function_name = "runtime",
         request_id = "system",
-        "connection limit set to {} concurrent connections",
-        config.max_connections
+        "connection limits set: total_effective={}, ingress_pool={}, admin_pool={}",
+        effective_max_connections,
+        ingress_connections,
+        admin_connections,
     );
 
     // Create routers with shared registry and body limits
@@ -150,7 +417,7 @@ pub async fn run_dual_server(
     // Spawn admin listener
     let admin_shutdown = shutdown.clone();
     let admin_config = config.admin.clone();
-    let admin_semaphore = connection_semaphore.clone();
+    let admin_semaphore = admin_connection_semaphore.clone();
     let admin_handle = tokio::spawn(async move {
         if let Err(e) =
             run_admin_listener(admin_config, admin_router, admin_shutdown, admin_semaphore).await
@@ -167,7 +434,7 @@ pub async fn run_dual_server(
     // Spawn ingress listener
     let ingress_shutdown = shutdown.clone();
     let ingress_config = config.ingress.clone();
-    let ingress_semaphore = connection_semaphore.clone();
+    let ingress_semaphore = ingress_connection_semaphore.clone();
     let ingress_handle = tokio::spawn(async move {
         if let Err(e) = run_ingress_listener(
             ingress_config,
@@ -264,11 +531,26 @@ async fn run_admin_listener(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, peer_addr)) => {
-                        // Try to acquire connection permit
-                        let permit = match connection_semaphore.clone().try_acquire_owned() {
-                            Ok(permit) => permit,
+                        let permit = match tokio::time::timeout(
+                            ACCEPT_PERMIT_WAIT,
+                            connection_semaphore.clone().acquire_owned(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(permit)) => permit,
+                            Ok(Err(_)) => {
+                                tracing::debug!("admin semaphore closed before serving {}", peer_addr);
+                                return Ok(());
+                            }
                             Err(_) => {
-                                warn!(function_name = "runtime", request_id = "system", "admin: connection limit reached, rejecting {}", peer_addr);
+                                warn!(
+                                    function_name = "runtime",
+                                    request_id = "system",
+                                    listener = "admin",
+                                    peer_addr = %peer_addr,
+                                    wait_timeout_ms = ACCEPT_PERMIT_WAIT.as_millis() as u64,
+                                    "connection refused by runtime: permit wait timeout"
+                                );
                                 drop(stream);
                                 continue;
                             }
@@ -302,7 +584,18 @@ async fn run_admin_listener(
                         });
                     }
                     Err(e) => {
-                        error!(function_name = "runtime", request_id = "system", "admin accept error: {}", e);
+                        if is_fd_exhaustion(&e) {
+                            error!(
+                                function_name = "runtime",
+                                request_id = "system",
+                                listener = "admin",
+                                "connection refused by runtime: accept failed due to fd exhaustion: {}",
+                                e
+                            );
+                            tokio::time::sleep(ACCEPT_EMFILE_BACKOFF).await;
+                        } else {
+                            error!(function_name = "runtime", request_id = "system", "admin accept error: {}", e);
+                        }
                     }
                 }
             }
@@ -382,11 +675,26 @@ async fn run_tcp_ingress(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, peer_addr)) => {
-                        // Try to acquire connection permit
-                        let permit = match connection_semaphore.clone().try_acquire_owned() {
-                            Ok(permit) => permit,
+                        let permit = match tokio::time::timeout(
+                            ACCEPT_PERMIT_WAIT,
+                            connection_semaphore.clone().acquire_owned(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(permit)) => permit,
+                            Ok(Err(_)) => {
+                                tracing::debug!("ingress semaphore closed before serving {}", peer_addr);
+                                return Ok(());
+                            }
                             Err(_) => {
-                                warn!(function_name = "runtime", request_id = "system", "ingress: connection limit reached, rejecting {}", peer_addr);
+                                warn!(
+                                    function_name = "runtime",
+                                    request_id = "system",
+                                    listener = "ingress_tcp",
+                                    peer_addr = %peer_addr,
+                                    wait_timeout_ms = ACCEPT_PERMIT_WAIT.as_millis() as u64,
+                                    "connection refused by runtime: permit wait timeout"
+                                );
                                 drop(stream);
                                 continue;
                             }
@@ -420,7 +728,18 @@ async fn run_tcp_ingress(
                         });
                     }
                     Err(e) => {
-                        error!(function_name = "runtime", request_id = "system", "ingress accept error: {}", e);
+                        if is_fd_exhaustion(&e) {
+                            error!(
+                                function_name = "runtime",
+                                request_id = "system",
+                                listener = "ingress_tcp",
+                                "connection refused by runtime: accept failed due to fd exhaustion: {}",
+                                e
+                            );
+                            tokio::time::sleep(ACCEPT_EMFILE_BACKOFF).await;
+                        } else {
+                            error!(function_name = "runtime", request_id = "system", "ingress accept error: {}", e);
+                        }
                     }
                 }
             }
@@ -462,11 +781,25 @@ async fn run_unix_ingress(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
-                        // Try to acquire connection permit
-                        let permit = match connection_semaphore.clone().try_acquire_owned() {
-                            Ok(permit) => permit,
+                        let permit = match tokio::time::timeout(
+                            ACCEPT_PERMIT_WAIT,
+                            connection_semaphore.clone().acquire_owned(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(permit)) => permit,
+                            Ok(Err(_)) => {
+                                tracing::debug!("unix ingress semaphore closed before serving connection");
+                                return Ok(());
+                            }
                             Err(_) => {
-                                warn!(function_name = "runtime", request_id = "system", "unix ingress: connection limit reached, rejecting connection");
+                                warn!(
+                                    function_name = "runtime",
+                                    request_id = "system",
+                                    listener = "ingress_unix",
+                                    wait_timeout_ms = ACCEPT_PERMIT_WAIT.as_millis() as u64,
+                                    "connection refused by runtime: permit wait timeout"
+                                );
                                 drop(stream);
                                 continue;
                             }
@@ -488,7 +821,18 @@ async fn run_unix_ingress(
                         });
                     }
                     Err(e) => {
-                        error!(function_name = "runtime", request_id = "system", "unix accept error: {}", e);
+                        if is_fd_exhaustion(&e) {
+                            error!(
+                                function_name = "runtime",
+                                request_id = "system",
+                                listener = "ingress_unix",
+                                "connection refused by runtime: accept failed due to fd exhaustion: {}",
+                                e
+                            );
+                            tokio::time::sleep(ACCEPT_EMFILE_BACKOFF).await;
+                        } else {
+                            error!(function_name = "runtime", request_id = "system", "unix accept error: {}", e);
+                        }
                     }
                 }
             }
@@ -526,18 +870,33 @@ pub async fn run_server(
     registry: Arc<FunctionRegistry>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
+    maybe_raise_nofile_limit();
+
     let router = router::Router::new(registry.clone(), config.body_limits, config.rate_limit_rps);
     let svc = service::EdgeService::new(router);
 
     let listener = TcpListener::bind(config.addr).await?;
 
-    // Create connection semaphore
-    let connection_semaphore = Arc::new(Semaphore::new(config.max_connections));
+    // Create connection semaphore.
+    // Clamp with FD budget so configured limits cannot exceed process capacity.
+    let capacity = compute_listener_connection_capacity(config.max_connections);
+    let effective_max_connections = capacity.effective_max_connections as usize;
+    listener_connection_capacity_state().store(&capacity);
+    let connection_semaphore = Arc::new(Semaphore::new(effective_max_connections));
+    if effective_max_connections < config.max_connections {
+        warn!(
+            function_name = "runtime",
+            request_id = "system",
+            configured = config.max_connections,
+            effective = effective_max_connections,
+            "max_connections clamped by RLIMIT_NOFILE budget"
+        );
+    }
     info!(
         function_name = "runtime",
         request_id = "system",
         "connection limit set to {} concurrent connections",
-        config.max_connections
+        effective_max_connections
     );
 
     // Optional TLS acceptor
@@ -578,11 +937,26 @@ pub async fn run_server(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, peer_addr)) => {
-                        // Try to acquire connection permit
-                        let permit = match connection_semaphore.clone().try_acquire_owned() {
-                            Ok(permit) => permit,
+                        let permit = match tokio::time::timeout(
+                            ACCEPT_PERMIT_WAIT,
+                            connection_semaphore.clone().acquire_owned(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(permit)) => permit,
+                            Ok(Err(_)) => {
+                                tracing::debug!("legacy semaphore closed before serving {}", peer_addr);
+                                return Ok(());
+                            }
                             Err(_) => {
-                                warn!(function_name = "runtime", request_id = "system", "connection limit reached, rejecting {}", peer_addr);
+                                warn!(
+                                    function_name = "runtime",
+                                    request_id = "system",
+                                    listener = "legacy",
+                                    peer_addr = %peer_addr,
+                                    wait_timeout_ms = ACCEPT_PERMIT_WAIT.as_millis() as u64,
+                                    "connection refused by runtime: permit wait timeout"
+                                );
                                 drop(stream);
                                 continue;
                             }
@@ -617,7 +991,18 @@ pub async fn run_server(
                         });
                     }
                     Err(e) => {
-                        error!(function_name = "runtime", request_id = "system", "failed to accept connection: {}", e);
+                        if is_fd_exhaustion(&e) {
+                            error!(
+                                function_name = "runtime",
+                                request_id = "system",
+                                listener = "legacy",
+                                "connection refused by runtime: accept failed due to fd exhaustion: {}",
+                                e
+                            );
+                            tokio::time::sleep(ACCEPT_EMFILE_BACKOFF).await;
+                        } else {
+                            error!(function_name = "runtime", request_id = "system", "failed to accept connection: {}", e);
+                        }
                     }
                 }
             }
@@ -693,9 +1078,12 @@ mod tests {
                 enabled: true,
                 global_max_isolates: 64,
                 min_free_memory_mib: 0,
+                capacity_wait_timeout_ms: 75,
+                capacity_wait_max_waiters: 20_000,
                 outgoing_proxy: runtime_core::isolate::OutgoingProxyConfig::default(),
             },
             PoolLimits::default(),
+            functions::types::ContextPoolLimits::default(),
         ))
     }
 

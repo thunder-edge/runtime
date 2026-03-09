@@ -276,6 +276,7 @@ pub fn run(args: WatchArgs) -> Result<(), anyhow::Error> {
             default_config.clone(),
             build_watch_pool_config(&args),
             functions::types::PoolLimits::default(),
+            functions::types::ContextPoolLimits::default(),
         ));
 
         crate::telemetry::spawn_isolate_log_exporter(
@@ -677,6 +678,8 @@ fn build_watch_pool_config(args: &WatchArgs) -> functions::registry::PoolRuntime
         enabled: false,
         global_max_isolates: 1024,
         min_free_memory_mib: 256,
+        capacity_wait_timeout_ms: 300,
+        capacity_wait_max_waiters: 20_000,
         outgoing_proxy: OutgoingProxyConfig {
             http_proxy: args.http_outgoing_proxy.clone(),
             https_proxy: args.https_outgoing_proxy.clone(),

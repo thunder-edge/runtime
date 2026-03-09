@@ -321,6 +321,7 @@ pub async fn create_function(
 
     Ok(FunctionEntry {
         name,
+        bundle_package_bytes: Bytes::from(bundle_data),
         eszip_bytes: Bytes::from(eszip_bytes_vec),
         bundle_format,
         package_v8_version,

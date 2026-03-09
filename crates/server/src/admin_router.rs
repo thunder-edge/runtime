@@ -10,9 +10,6 @@ use bytes::Bytes;
 use http::header::HeaderMap;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
-use tracing::info_span;
-use uuid::Uuid;
-
 use functions::registry::FunctionRegistry;
 
 use crate::body_limits::{
@@ -21,8 +18,8 @@ use crate::body_limits::{
 };
 use crate::bundle_signature::BundleSignatureVerifier;
 use crate::router::{
-    build_metrics_body, is_valid_function_name, json_response, normalize_function_name,
-    sanitize_internal_error, MetricsCache, METRICS_CACHE_TTL_SECS,
+    build_metrics_body, is_metrics_fresh_query, is_valid_function_name, json_response,
+    normalize_function_name, sanitize_internal_error, MetricsCache, METRICS_CACHE_TTL_SECS,
 };
 use crate::service::BoxBody;
 
@@ -30,12 +27,18 @@ use crate::service::BoxBody;
 struct PoolLimitsUpdateRequest {
     min: usize,
     max: usize,
+    #[serde(default)]
+    context_min: Option<usize>,
+    #[serde(default)]
+    context_max: Option<usize>,
 }
 
 #[derive(serde::Serialize)]
 struct PoolLimitsResponse {
     min: usize,
     max: usize,
+    context_min: usize,
+    context_max: usize,
 }
 
 fn boxed_full_response(response: Response<Full<Bytes>>) -> Response<BoxBody> {
@@ -131,17 +134,6 @@ impl AdminRouter {
     ) -> Result<Response<BoxBody>, Infallible> {
         let path = req.uri().path().to_string();
         let method = req.method().clone();
-        let request_id = Uuid::new_v4().simple().to_string();
-        let request_span = info_span!(
-            "http.request",
-            component = "admin",
-            function_name = "admin",
-            request_id = %request_id,
-            method = %method,
-            path = %path
-        );
-        let _request_span_guard = request_span.enter();
-
         // Check authentication
         if let Err(resp) = self.check_auth(&req) {
             return Ok(resp);
@@ -182,6 +174,7 @@ impl AdminRouter {
         path: &str,
         method: Method,
     ) -> Response<BoxBody> {
+        let metrics_fresh = is_metrics_fresh_query(req.uri().query());
         match (method.clone(), path) {
             // Health check
             (Method::GET, "/_internal/health") => {
@@ -189,7 +182,7 @@ impl AdminRouter {
             }
 
             // Metrics
-            (Method::GET, "/_internal/metrics") => self.handle_metrics().await,
+            (Method::GET, "/_internal/metrics") => self.handle_metrics(metrics_fresh).await,
 
             // List functions
             (Method::GET, "/_internal/functions") => {
@@ -214,11 +207,16 @@ impl AdminRouter {
     }
 
     /// Handle GET /_internal/metrics
-    async fn handle_metrics(&self) -> Response<BoxBody> {
-        let body = self
-            .metrics_cache
-            .get_or_compute(|| build_metrics_body(&self.registry))
-            .await;
+    async fn handle_metrics(&self, fresh: bool) -> Response<BoxBody> {
+        let body = if fresh {
+            self.metrics_cache
+                .recompute(|| build_metrics_body(&self.registry))
+                .await
+        } else {
+            self.metrics_cache
+                .get_or_compute(|| build_metrics_body(&self.registry))
+                .await
+        };
         json_response(StatusCode::OK, &body)
     }
 
@@ -464,17 +462,24 @@ impl AdminRouter {
             }
 
             // GET /_internal/functions/{name}/pool
-            (Method::GET, Some("pool")) => match self.registry.get_pool_limits(name) {
-                Some(limits) => {
+            (Method::GET, Some("pool")) => {
+                match (
+                    self.registry.get_pool_limits(name),
+                    self.registry.get_context_pool_limits(name),
+                ) {
+                    (Some(limits), Some(context_limits)) => {
                     let body = serde_json::to_string(&PoolLimitsResponse {
                         min: limits.min,
                         max: limits.max,
+                        context_min: context_limits.min,
+                        context_max: context_limits.max,
                     })
                     .unwrap_or_else(|_| "{}".to_string());
                     json_response(StatusCode::OK, &body)
                 }
-                None => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
-            },
+                    _ => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
+                }
+            }
 
             // PUT /_internal/functions/{name}/pool
             (Method::PUT, Some("pool")) => {
@@ -516,9 +521,23 @@ impl AdminRouter {
                     }
                 };
 
+                let current_context_limits = self.registry.get_context_pool_limits(name);
+                let Some(current_context_limits) = current_context_limits else {
+                    return json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#);
+                };
+
+                let next_context_min = update.context_min.unwrap_or(current_context_limits.min);
+                let next_context_max = update.context_max.unwrap_or(current_context_limits.max);
+
                 match self
                     .registry
-                    .set_pool_limits(name, update.min, update.max)
+                    .set_scaling_limits(
+                        name,
+                        update.min,
+                        update.max,
+                        next_context_min,
+                        next_context_max,
+                    )
                     .await
                 {
                     Ok(info) => {

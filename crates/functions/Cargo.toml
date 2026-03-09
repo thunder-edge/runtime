@@ -29,6 +29,7 @@ url.workspace = true
 tungstenite = "0.24"
 base64.workspace = true
 sysinfo.workspace = true
+libc.workspace = true
 
 [features]
 hot-reload = []

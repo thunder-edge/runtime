@@ -109,9 +109,12 @@ async fn deploy_inline_function(
         config.clone(),
         PoolRuntimeConfig {
             outgoing_proxy,
+            capacity_wait_timeout_ms: 75,
+            capacity_wait_max_waiters: 20_000,
             ..PoolRuntimeConfig::default()
         },
         PoolLimits::default(),
+        functions::types::ContextPoolLimits::default(),
     );
     registry
         .deploy(

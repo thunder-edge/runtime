@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use functions::registry::{FunctionRegistry, PoolRuntimeConfig};
-use functions::types::PoolLimits;
+use functions::types::{ContextPoolLimits, PoolLimits};
 use runtime_core::isolate::{IsolateConfig, OutgoingProxyConfig};
 use runtime_core::ssrf::SsrfConfig;
 
@@ -131,12 +131,12 @@ pub struct StartArgs {
     // ─────────────────────────────────────────────────────────────────────────
     // Connection Limits
     // ─────────────────────────────────────────────────────────────────────────
-    /// Maximum concurrent connections across all listeners (default: 10000)
-    #[arg(long, default_value_t = 10_000, env = "EDGE_RUNTIME_MAX_CONNECTIONS")]
+    /// Maximum concurrent active connections across all listeners (default: 50000)
+    #[arg(long, default_value_t = 50_000, env = "EDGE_RUNTIME_MAX_CONNECTIONS")]
     max_connections: usize,
 
     /// Enable isolate pooling in this process.
-    #[arg(long, default_value_t = false, env = "EDGE_RUNTIME_POOL_ENABLED")]
+    #[arg(long, default_value_t = true, env = "EDGE_RUNTIME_POOL_ENABLED")]
     pool_enabled: bool,
 
     /// Global max isolates across all functions in this process.
@@ -147,6 +147,22 @@ pub struct StartArgs {
     )]
     pool_global_max_isolates: usize,
 
+    /// Default minimum isolates kept warm per function pool.
+    #[arg(
+        long,
+        default_value_t = 5,
+        env = "EDGE_RUNTIME_POOL_MIN_ISOLATES"
+    )]
+    pool_min_isolates: usize,
+
+    /// Default maximum isolates allowed per function pool.
+    #[arg(
+        long,
+        default_value_t = 10,
+        env = "EDGE_RUNTIME_POOL_MAX_ISOLATES"
+    )]
+    pool_max_isolates: usize,
+
     /// Minimum free memory required (MiB) to allow pool scale-up.
     #[arg(
         long,
@@ -155,10 +171,26 @@ pub struct StartArgs {
     )]
     pool_min_free_memory_mib: u64,
 
+    /// Wait time (ms) to queue requests under temporary pool saturation before returning 503.
+    #[arg(
+        long,
+        default_value_t = 300,
+        env = "EDGE_RUNTIME_POOL_CAPACITY_WAIT_TIMEOUT_MS"
+    )]
+    pool_capacity_wait_timeout_ms: u64,
+
+    /// Max number of concurrent waiting requests while pool is saturated.
+    #[arg(
+        long,
+        default_value_t = 20_000,
+        env = "EDGE_RUNTIME_POOL_CAPACITY_MAX_WAITERS"
+    )]
+    pool_capacity_max_waiters: usize,
+
     /// Enable context-aware scheduler (context-first, isolate-next).
     #[arg(
         long,
-        default_value_t = false,
+        default_value_t = true,
         env = "EDGE_RUNTIME_CONTEXT_POOL_ENABLED"
     )]
     context_pool_enabled: bool,
@@ -174,10 +206,26 @@ pub struct StartArgs {
     /// Max active requests per logical context.
     #[arg(
         long,
-        default_value_t = 1,
+        default_value_t = 8,
         env = "EDGE_RUNTIME_MAX_ACTIVE_REQUESTS_PER_CONTEXT"
     )]
     max_active_requests_per_context: usize,
+
+    /// Default minimum logical contexts maintained per function.
+    #[arg(
+        long,
+        default_value_t = 1,
+        env = "EDGE_RUNTIME_CONTEXT_POOL_MIN_CONTEXTS"
+    )]
+    context_pool_min_contexts: usize,
+
+    /// Default maximum logical contexts allowed per function.
+    #[arg(
+        long,
+        default_value_t = 256,
+        env = "EDGE_RUNTIME_CONTEXT_POOL_MAX_CONTEXTS"
+    )]
+    context_pool_max_contexts: usize,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Common Options
@@ -345,15 +393,36 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             zlib_max_input_length: args.zlib_max_input_length,
             zlib_operation_timeout_ms: args.zlib_operation_timeout_ms,
             egress_max_requests_per_execution: args.egress_max_requests_per_execution,
-            context_pool_enabled: args.context_pool_enabled,
+            context_pool_enabled: if args.pool_enabled && !args.context_pool_enabled {
+                tracing::warn!(
+                    "pool enabled without context pool; enabling context-aware scheduler automatically"
+                );
+                true
+            } else {
+                args.context_pool_enabled
+            },
             max_contexts_per_isolate: args.max_contexts_per_isolate,
             max_active_requests_per_context: args.max_active_requests_per_context,
         };
+
+        if args.pool_min_isolates > args.pool_max_isolates {
+            return Err(anyhow::anyhow!(
+                "invalid pool isolate limits: --pool-min-isolates must be <= --pool-max-isolates"
+            ));
+        }
+
+        if args.context_pool_min_contexts > args.context_pool_max_contexts {
+            return Err(anyhow::anyhow!(
+                "invalid context limits: --context-pool-min-contexts must be <= --context-pool-max-contexts"
+            ));
+        }
 
         let pool_config = PoolRuntimeConfig {
             enabled: args.pool_enabled,
             global_max_isolates: args.pool_global_max_isolates,
             min_free_memory_mib: args.pool_min_free_memory_mib,
+            capacity_wait_timeout_ms: args.pool_capacity_wait_timeout_ms,
+            capacity_wait_max_waiters: args.pool_capacity_max_waiters,
             outgoing_proxy: OutgoingProxyConfig {
                 http_proxy: args.http_outgoing_proxy,
                 https_proxy: args.https_outgoing_proxy,
@@ -368,7 +437,14 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
             shutdown.clone(),
             default_config,
             pool_config,
-            PoolLimits::default(),
+            PoolLimits {
+                min: args.pool_min_isolates,
+                max: args.pool_max_isolates,
+            },
+            ContextPoolLimits {
+                min: args.context_pool_min_contexts,
+                max: args.context_pool_max_contexts,
+            },
         ));
 
         crate::telemetry::spawn_isolate_log_exporter(shutdown.clone(), args.print_isolate_logs);

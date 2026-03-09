@@ -82,10 +82,8 @@ echo "════════════════════════�
 echo ""
 
 if command -v k6 &> /dev/null; then
-    k6 run "$SCRIPT_DIR/load-test.js" \
-        --vus 10 \
-        --duration 60s \
-        -e BASE_URL="$SERVER_URL"
+    k6 run "$SCRIPT_DIR/k6_1k_rps.js" \
+        -e BASE_URL="http://localhost:8080"
 else
     echo "⚠️  k6 not found. Please install k6:"
     echo "   macOS: brew install k6"
@@ -93,19 +91,19 @@ else
     exit 1
 fi
 
-echo ""
-echo "════════════════════════════════════════════════════════════"
-echo "✅ ESZIP load test completed"
-echo ""
+# echo ""
+# echo "════════════════════════════════════════════════════════════"
+# echo "✅ ESZIP load test completed"
+# echo ""
 
 # Fetch final metrics
-echo "📊 Final Metrics:"
-echo "────────────────────────────────────────────────────────────"
+# echo "📊 Final Metrics:"
+# echo "────────────────────────────────────────────────────────────"
 
-if curl -s "$SERVER_URL/_internal/metrics" | grep -q "functions"; then
-    curl -s "$SERVER_URL/_internal/metrics" | jq '.functions[] | {name, status, metrics}' 2>/dev/null || \
-    curl -s "$SERVER_URL/_internal/metrics" | python3 -m json.tool 2>/dev/null || \
-    curl -s "$SERVER_URL/_internal/metrics"
-fi
+# if curl -s "$SERVER_URL/_internal/metrics" | grep -q "functions"; then
+#     curl -s "$SERVER_URL/_internal/metrics" | jq '.functions[] | {name, status, metrics}' 2>/dev/null || \
+#     curl -s "$SERVER_URL/_internal/metrics" | python3 -m json.tool 2>/dev/null || \
+#     curl -s "$SERVER_URL/_internal/metrics"
+# fi
 
 echo ""

@@ -11,7 +11,7 @@ use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full, StreamBody};
 use runtime_core::isolate::IsolateResponseBody;
-use tracing::{info, info_span};
+use tracing::{info, warn};
 
 use crate::service::BoxBody;
 use functions::registry::{FunctionRegistry, RouteTargetError};
@@ -92,7 +92,6 @@ impl IngressRouter {
         trace_ctx: &crate::trace_context::TraceContext,
     ) -> Response<BoxBody> {
         let path = req.uri().path().to_string();
-        let method = req.method().clone();
 
         // Extract function name from first path segment
         let segments: Vec<&str> = path.splitn(3, '/').collect();
@@ -112,16 +111,6 @@ impl IngressRouter {
                 r#"{"error":"invalid function name"}"#,
             );
         }
-
-        let request_span = info_span!(
-            "http.request",
-            component = "ingress",
-            function_name = %function_name,
-            request_id = %trace_ctx.trace_id,
-            method = %method,
-            path = %path
-        );
-        let _request_span_guard = request_span.enter();
 
         // Resolve isolate + logical context target
         let route_target = match self
@@ -185,13 +174,9 @@ impl IngressRouter {
                 }
             };
 
-        // Build forwarded request
-        let mut forwarded_req = http::Request::builder()
-            .method(parts.method)
-            .uri(&forwarded_path)
-            .body(body_bytes)
-            .unwrap();
-        *forwarded_req.headers_mut() = parts.headers;
+        let forwarded_method = parts.method.clone();
+        let forwarded_headers = parts.headers.clone();
+        let forwarded_body = body_bytes.clone();
 
         // Send to isolate with timeout
         let timeout_duration = if config.wall_clock_timeout_ms > 0 {
@@ -201,18 +186,62 @@ impl IngressRouter {
         };
 
         let req_started = Instant::now();
-        apply_trace_headers(forwarded_req.headers_mut(), trace_ctx);
 
-        let route_result = tokio::time::timeout(
-            timeout_duration,
-            route_target.handle.send_routed_request(
-                forwarded_req,
-                Some(function_name.to_string()),
-                Some(route_target.context_id.clone()),
-            ),
-        )
-        .await;
-        self.registry.release_route_target(&route_target);
+        let mut route_target = route_target;
+        let mut route_result;
+        let mut attempt = 0_u8;
+        loop {
+            attempt = attempt.saturating_add(1);
+
+            let mut forwarded_req = http::Request::builder()
+                .method(forwarded_method.clone())
+                .uri(&forwarded_path)
+                .body(forwarded_body.clone())
+                .unwrap();
+            *forwarded_req.headers_mut() = forwarded_headers.clone();
+            apply_trace_headers(forwarded_req.headers_mut(), trace_ctx);
+
+            route_result = tokio::time::timeout(
+                timeout_duration,
+                route_target.handle.send_routed_request(
+                    forwarded_req,
+                    Some(function_name.to_string()),
+                    Some(route_target.context_id.clone()),
+                ),
+            )
+            .await;
+            self.registry.release_route_target(&route_target);
+
+            let should_retry = matches!(&route_result, Ok(Err(err)) if attempt == 1 && err.to_string().contains("channel closed"));
+            if !should_retry {
+                break;
+            }
+
+            warn!(
+                function_name = %function_name,
+                request_id = %trace_ctx.trace_id,
+                "transient channel-closed while routing request; retrying once"
+            );
+
+            route_target = match self.registry.get_route_target_with_status(function_name).await {
+                Ok(target) => target,
+                Err(RouteTargetError::FunctionUnavailable) => {
+                    return json_response(
+                        StatusCode::NOT_FOUND,
+                        &format!(
+                            r#"{{"error":"function '{}' not found or not running"}}"#,
+                            function_name
+                        ),
+                    )
+                }
+                Err(RouteTargetError::CapacityExhausted) => {
+                    return json_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        r#"{"error":"capacity exhausted"}"#,
+                    )
+                }
+            };
+        }
 
         let response = match route_result {
             Ok(Ok(resp)) => {
