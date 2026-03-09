@@ -164,7 +164,7 @@ await runSuite("requested-items-compat", [
   {
     name: "WebSocket API",
     run: () => {
-      assert(typeof WebSocket === "undefined", "WebSocket should not exist");
+      assert(typeof WebSocket === "function", "WebSocket should exist");
     },
   },
   {

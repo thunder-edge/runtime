@@ -520,7 +520,7 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 
 ## Fase 6 — Roteamento e Contrato de Funções Moderno
 
-> Objetivo: evoluir o runtime para suportar roteamento baseado em filesystem, deploys multi-rota e um contrato RESTful baseado em `export default`, preservando compatibilidade com o modelo atual e mantendo o prefixo canônico `/{function_id}/...` no runtime.
+> Objetivo: evoluir o runtime para suportar roteamento baseado em filesystem, deploys multi-rota e um contrato RESTful baseado em `export default`, preservando compatibilidade com o modelo atual e mantendo o prefixo canônico `/{function_id}/...` no runtime. Esta fase tambem inclui catalogo de roteamento global por dominio (host/path -> function) sem misturar funcoes no mesmo contexto de execucao.
 >
 > Documento de referência detalhado: [ROADMAP_ROUTING.md](./ROADMAP_ROUTING.md)
 
@@ -547,6 +547,7 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 ### 6.3 Ingress em Dois Estágios e Compatibilidade com Proxy Reverso
 
 - [ ] Preservar `/{function_id}` como primeiro segmento canônico do runtime
+- [ ] Resolver opcionalmente `host + path` via manifesto global antes do fallback por prefixo
 - [ ] Resolver o deployment pelo prefixo e rotear por manifest apenas no sufixo restante
 - [ ] Documentar explicitamente o mapeamento `{function_id}.my-edge-runtime.com/... -> localhost:9000/{function_id}/...`
 - [ ] Indexar e expor rotas no `FunctionRegistry`
@@ -574,6 +575,18 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 - [ ] Expor introspecção administrativa e documentação operacional por rota
 
 **Referência:** `ROADMAP_ROUTING.md` seções 10, 11, 12, 13 e 14.
+
+### 6.6 Manifesto Global de Dominios (Edge Routing)
+
+- [ ] Criar `schemas/routing-manifest.v1.schema.json` para mapeamento global de host/path -> `function_id`
+- [ ] Definir prioridade deterministica: host exato > wildcard de host > path estatico > path dinamico > catch-all
+- [ ] Validar conflitos em tempo de deploy (rotas ambiguas entre funcoes diferentes)
+- [ ] Integrar no ingress: `host+path` primeiro, fallback para `/{function_id}` quando nao houver match
+- [ ] Garantir isolamento fisico por funcao (sem co-hosting de funcoes distintas no mesmo context)
+- [ ] Expor introspeccao administrativa para tabela global de roteamento (`/_internal/routing`)
+- [ ] Documentar operacao com proxy reverso, DNS wildcard e estrategia de migracao gradual
+
+**Referência:** `ROADMAP_ROUTING.md` seções 5, 7, 13, 14 e 15.
 
 ---
 

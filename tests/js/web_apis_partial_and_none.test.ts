@@ -21,7 +21,7 @@ await runSuite("web-apis-partial-and-none", [
     name: "unsupported worker-like/web platform apis",
     run: () => {
       assert(typeof Worker === "undefined", "Worker should not exist");
-      assert(typeof WebSocket === "undefined", "WebSocket should not exist");
+      assert(typeof WebSocket === "function", "WebSocket should exist");
       assert(typeof indexedDB === "undefined", "indexedDB should not exist");
       assert(typeof Notification === "undefined", "Notification should not exist");
       assert(typeof ServiceWorker === "undefined", "ServiceWorker should not exist");

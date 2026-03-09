@@ -2178,7 +2178,7 @@ mod tests {
         reg.handle_last_used.insert(extra_a.id, 10);
         reg.handle_last_used.insert(extra_b.id, 20);
 
-        assert!(reg.evict_lru_replica_for_capacity());
+        assert!(reg.evict_lru_replica_for_capacity("fn-caller"));
 
         {
             let fn_a = reg.functions.get("fn-a").expect("missing fn-a");
@@ -2230,7 +2230,7 @@ mod tests {
         };
         reg.functions.insert("fn-min".to_string(), entry);
 
-        assert!(!reg.evict_lru_replica_for_capacity());
+        assert!(!reg.evict_lru_replica_for_capacity("fn-min"));
         let current = reg.functions.get("fn-min").expect("missing fn-min");
         assert_eq!(current.extra_isolate_handles.len(), 1);
     }

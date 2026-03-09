@@ -16,6 +16,7 @@ use crate::body_limits::{
     check_content_length, collect_body_with_limit, payload_too_large_response, BodyLimitError,
     BodyLimitsConfig,
 };
+use crate::global_routing::{load_global_routing_table_from_env, GlobalRoutingState};
 use crate::bundle_signature::BundleSignatureVerifier;
 use crate::router::{
     build_metrics_body, is_metrics_fresh_query, is_valid_function_name, json_response,
@@ -100,6 +101,7 @@ pub struct AdminRouter {
     body_limits: BodyLimitsConfig,
     metrics_cache: Arc<MetricsCache>,
     bundle_signature_verifier: BundleSignatureVerifier,
+    global_routing: GlobalRoutingState,
 }
 
 impl AdminRouter {
@@ -114,6 +116,38 @@ impl AdminRouter {
         body_limits: BodyLimitsConfig,
         bundle_signature_verifier: BundleSignatureVerifier,
     ) -> Self {
+        Self::new_with_global_routing(
+            registry,
+            api_key,
+            body_limits,
+            bundle_signature_verifier,
+            load_global_routing_table_from_env(),
+        )
+    }
+
+    pub fn new_with_global_routing(
+        registry: Arc<FunctionRegistry>,
+        api_key: Option<String>,
+        body_limits: BodyLimitsConfig,
+        bundle_signature_verifier: BundleSignatureVerifier,
+        global_routing: Option<crate::global_routing::GlobalRoutingTable>,
+    ) -> Self {
+        Self::new_with_global_routing_state(
+            registry,
+            api_key,
+            body_limits,
+            bundle_signature_verifier,
+            GlobalRoutingState::new(global_routing),
+        )
+    }
+
+    pub fn new_with_global_routing_state(
+        registry: Arc<FunctionRegistry>,
+        api_key: Option<String>,
+        body_limits: BodyLimitsConfig,
+        bundle_signature_verifier: BundleSignatureVerifier,
+        global_routing: GlobalRoutingState,
+    ) -> Self {
         Self {
             registry,
             api_key,
@@ -122,6 +156,7 @@ impl AdminRouter {
                 METRICS_CACHE_TTL_SECS,
             ))),
             bundle_signature_verifier,
+            global_routing,
         }
     }
 
@@ -184,6 +219,16 @@ impl AdminRouter {
             // Metrics
             (Method::GET, "/_internal/metrics") => self.handle_metrics(metrics_fresh).await,
 
+            // Global routing table introspection
+            (Method::GET, "/_internal/routing") => self.handle_routing(),
+
+            // Validate a routing manifest payload without applying it.
+            (Method::POST, "/_internal/routing/validate") => {
+                self.handle_validate_routing_manifest(req).await
+            }
+
+            (Method::PUT, "/_internal/routing") => self.handle_put_routing_manifest(req).await,
+
             // List functions
             (Method::GET, "/_internal/functions") => {
                 let functions = self.registry.list();
@@ -218,6 +263,168 @@ impl AdminRouter {
                 .await
         };
         json_response(StatusCode::OK, &body)
+    }
+
+    fn handle_routing(&self) -> Response<BoxBody> {
+        match self.global_routing.get() {
+            Some(table) => {
+                let body = serde_json::json!({
+                    "enabled": true,
+                    "source": table.source(),
+                    "routes": table.routes(),
+                })
+                .to_string();
+                json_response(StatusCode::OK, &body)
+            }
+            None => {
+                let body = serde_json::json!({
+                    "enabled": false,
+                    "source": serde_json::Value::Null,
+                    "routes": [],
+                })
+                .to_string();
+                json_response(StatusCode::OK, &body)
+            }
+        }
+    }
+
+    async fn handle_put_routing_manifest(
+        &self,
+        req: Request<hyper::body::Incoming>,
+    ) -> Response<BoxBody> {
+        if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
+            check_content_length(&req, self.body_limits.max_request_body_bytes)
+        {
+            return boxed_full_response(payload_too_large_response(
+                self.body_limits.max_request_body_bytes,
+            ));
+        }
+
+        let (_, body) = req.into_parts();
+        let body_bytes = match collect_body_with_limit(body, self.body_limits.max_request_body_bytes).await {
+            Ok(bytes) => bytes,
+            Err(BodyLimitError::LimitExceeded)
+            | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
+                return boxed_full_response(payload_too_large_response(
+                    self.body_limits.max_request_body_bytes,
+                ));
+            }
+            Err(_) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    r#"{"error":"failed to read request body"}"#,
+                )
+            }
+        };
+
+        if body_bytes.is_empty() {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"empty routing manifest payload"}"#,
+            );
+        }
+
+        let manifest_json = match std::str::from_utf8(&body_bytes) {
+            Ok(raw) => raw,
+            Err(_) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    r#"{"error":"routing manifest payload must be UTF-8 JSON"}"#,
+                )
+            }
+        };
+
+        match self
+            .global_routing
+            .replace_from_manifest_json(manifest_json, "admin:put")
+        {
+            Ok(active) => {
+                let body = serde_json::json!({
+                    "enabled": true,
+                    "source": active.source(),
+                    "routeCount": active.routes().len(),
+                })
+                .to_string();
+                json_response(StatusCode::OK, &body)
+            }
+            Err(err) => json_response(
+                StatusCode::BAD_REQUEST,
+                &serde_json::json!({
+                    "valid": false,
+                    "error": "invalid routing manifest",
+                    "details": err.to_string(),
+                })
+                .to_string(),
+            ),
+        }
+    }
+
+    async fn handle_validate_routing_manifest(
+        &self,
+        req: Request<hyper::body::Incoming>,
+    ) -> Response<BoxBody> {
+        if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
+            check_content_length(&req, self.body_limits.max_request_body_bytes)
+        {
+            return boxed_full_response(payload_too_large_response(
+                self.body_limits.max_request_body_bytes,
+            ));
+        }
+
+        let (_, body) = req.into_parts();
+        let body_bytes = match collect_body_with_limit(body, self.body_limits.max_request_body_bytes).await {
+            Ok(bytes) => bytes,
+            Err(BodyLimitError::LimitExceeded)
+            | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
+                return boxed_full_response(payload_too_large_response(
+                    self.body_limits.max_request_body_bytes,
+                ));
+            }
+            Err(_) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    r#"{"error":"failed to read request body"}"#,
+                )
+            }
+        };
+
+        if body_bytes.is_empty() {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"empty routing manifest payload"}"#,
+            );
+        }
+
+        let manifest_json = match std::str::from_utf8(&body_bytes) {
+            Ok(raw) => raw,
+            Err(_) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    r#"{"error":"routing manifest payload must be UTF-8 JSON"}"#,
+                )
+            }
+        };
+
+        match runtime_core::manifest::validate_routing_manifest_json(manifest_json) {
+            Ok(parsed) => {
+                let body = serde_json::json!({
+                    "valid": true,
+                    "manifestVersion": parsed.manifest_version,
+                    "routeCount": parsed.routes.len(),
+                })
+                .to_string();
+                json_response(StatusCode::OK, &body)
+            }
+            Err(err) => json_response(
+                StatusCode::BAD_REQUEST,
+                &serde_json::json!({
+                    "valid": false,
+                    "error": "invalid routing manifest",
+                    "details": err.to_string(),
+                })
+                .to_string(),
+            ),
+        }
     }
 
     /// Handle POST /_internal/functions (deploy)

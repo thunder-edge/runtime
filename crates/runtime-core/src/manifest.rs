@@ -118,6 +118,21 @@ pub struct ResolvedFunctionManifest {
     pub observability: ManifestObservability,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingManifest {
+    pub manifest_version: u32,
+    pub routes: Vec<RoutingRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingRule {
+    pub host: String,
+    pub path: String,
+    pub target_function: String,
+}
+
 #[derive(Debug, Clone)]
 enum ParsedNetworkTarget {
     Host(String),
@@ -174,6 +189,26 @@ static MANIFEST_VALIDATOR: Lazy<Validator> = Lazy::new(|| {
         .expect("valid manifest validator")
 });
 
+static ROUTING_MANIFEST_VALIDATOR: Lazy<Validator> = Lazy::new(|| {
+    let common_schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/base/common.schema.json"))
+            .expect("valid common schema JSON");
+    let manifest_schema: Value = serde_json::from_str(include_str!(
+        "../../../schemas/routing-manifest.v1.schema.json"
+    ))
+    .expect("valid routing manifest schema JSON");
+
+    let mut options = jsonschema::options().with_draft(Draft::Draft202012);
+    options = options.with_resource(
+        COMMON_SCHEMA_URI,
+        Resource::from_contents(common_schema).expect("valid common schema resource"),
+    );
+
+    options
+        .build(&manifest_schema)
+        .expect("valid routing manifest validator")
+});
+
 pub fn validate_manifest_json(manifest_json: &str) -> Result<FunctionManifest, Error> {
     let manifest_value: Value = serde_json::from_str(manifest_json)
         .map_err(|e| anyhow::anyhow!("manifest is not valid JSON: {e}"))?;
@@ -203,6 +238,29 @@ pub fn parse_validate_and_resolve_manifest(
 ) -> Result<ResolvedFunctionManifest, Error> {
     let manifest = validate_manifest_json(manifest_json)?;
     resolve_manifest_for_profile(&manifest, profile)
+}
+
+pub fn validate_routing_manifest_json(manifest_json: &str) -> Result<RoutingManifest, Error> {
+    let manifest_value: Value = serde_json::from_str(manifest_json)
+        .map_err(|e| anyhow::anyhow!("routing manifest is not valid JSON: {e}"))?;
+
+    let schema_errors: Vec<String> = ROUTING_MANIFEST_VALIDATOR
+        .iter_errors(&manifest_value)
+        .map(|err| err.to_string())
+        .collect();
+    if !schema_errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "routing manifest schema validation failed: {}",
+            schema_errors.join("; ")
+        ));
+    }
+
+    let manifest: RoutingManifest = serde_json::from_value(manifest_value).map_err(|e| {
+        anyhow::anyhow!("routing manifest parsing failed after schema validation: {e}")
+    })?;
+
+    validate_routing_manifest_semantics(&manifest)?;
+    Ok(manifest)
 }
 
 pub fn resolve_manifest_for_profile(
@@ -328,6 +386,22 @@ fn validate_manifest_semantics(manifest: &FunctionManifest) -> Result<(), Error>
                     )
                 })?;
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_routing_manifest_semantics(manifest: &RoutingManifest) -> Result<(), Error> {
+    let mut seen = std::collections::HashSet::new();
+    for route in &manifest.routes {
+        let key = (route.host.to_ascii_lowercase(), route.path.clone());
+        if !seen.insert(key) {
+            return Err(anyhow::anyhow!(
+                "routing manifest has duplicate host+path entry: {} {}",
+                route.host,
+                route.path
+            ));
         }
     }
 
@@ -571,5 +645,49 @@ mod tests {
         let err = parse_validate_and_resolve_manifest(json, Some("prod"))
             .expect_err("must reject unknown profile");
         assert!(err.to_string().contains("was not found"));
+    }
+
+    #[test]
+    fn validates_minimal_routing_manifest() {
+        let json = r#"{
+            "manifestVersion": 1,
+            "routes": [
+                {
+                    "host": "api.example.com",
+                    "path": "/users/:id",
+                    "targetFunction": "users-api"
+                }
+            ]
+        }"#;
+
+        let manifest =
+            validate_routing_manifest_json(json).expect("routing manifest should validate");
+        assert_eq!(manifest.routes.len(), 1);
+        assert_eq!(manifest.routes[0].target_function, "users-api");
+    }
+
+    #[test]
+    fn rejects_routing_manifest_with_duplicate_host_and_path() {
+        let json = r#"{
+            "manifestVersion": 1,
+            "routes": [
+                {
+                    "host": "api.example.com",
+                    "path": "/users/:id",
+                    "targetFunction": "users-api"
+                },
+                {
+                    "host": "API.EXAMPLE.COM",
+                    "path": "/users/:id",
+                    "targetFunction": "users-api-v2"
+                }
+            ]
+        }"#;
+
+        let err = validate_routing_manifest_json(json)
+            .expect_err("duplicate host+path should be rejected");
+        assert!(err
+            .to_string()
+            .contains("routing manifest has duplicate host+path entry"));
     }
 }

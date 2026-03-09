@@ -2,6 +2,7 @@ pub mod admin_router;
 pub mod body_limits;
 pub mod bundle_signature;
 pub mod graceful;
+pub mod global_routing;
 pub mod ingress_router;
 pub mod middleware;
 pub mod router;
@@ -28,6 +29,7 @@ use serde::Serialize;
 
 use crate::admin_router::AdminRouter;
 use crate::bundle_signature::{BundleSignatureConfig, BundleSignatureVerifier};
+use crate::global_routing::{load_global_routing_table_from_env, GlobalRoutingState};
 use crate::ingress_router::IngressRouter;
 use crate::service::EdgeService;
 
@@ -401,17 +403,22 @@ pub async fn run_dual_server(
         admin_connections,
     );
 
+    // Load once so ingress/admin share the exact same routing snapshot.
+    let global_routing = GlobalRoutingState::new(load_global_routing_table_from_env());
+
     // Create routers with shared registry and body limits
-    let admin_router = AdminRouter::new(
+    let admin_router = AdminRouter::new_with_global_routing_state(
         registry.clone(),
         config.admin.api_key.clone(),
         config.admin.body_limits,
         BundleSignatureVerifier::from_config(config.admin.bundle_signature.clone())?,
+        global_routing.clone(),
     );
-    let ingress_router = IngressRouter::new(
+    let ingress_router = IngressRouter::new_with_global_routing_state(
         registry.clone(),
         config.ingress.body_limits,
         config.ingress.rate_limit_rps,
+        global_routing,
     );
 
     // Spawn admin listener
@@ -1636,6 +1643,131 @@ mod tests {
         assert!(
             admin_ingress_resp.contains("admin listener serves only /_internal/* routes"),
             "expected admin 404 response to include ingress hint: {admin_ingress_resp}"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
+    }
+
+    #[tokio::test]
+    async fn e2e_host_based_routing_updates_via_put_and_routes_without_prefix() {
+        init_deno_platform();
+
+        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind admin probe listener");
+        let admin_addr = admin_probe
+            .local_addr()
+            .expect("failed to get admin local addr");
+        drop(admin_probe);
+
+        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind ingress probe listener");
+        let ingress_addr = ingress_probe
+            .local_addr()
+            .expect("failed to get ingress local addr");
+        drop(ingress_probe);
+
+        let registry = make_test_registry();
+        let shutdown = CancellationToken::new();
+
+        let hello_eszip = build_eszip_async(
+            "file:///host_routing_e2e.ts",
+            r#"
+            Deno.serve(async (req) => {
+              const path = new URL(req.url).pathname;
+              return new Response(`host-route-ok:${path}`);
+            });
+            "#,
+        )
+        .await;
+        let bundle = BundlePackage::eszip_only(hello_eszip);
+        let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+        registry
+            .deploy(
+                "host-route-fn".to_string(),
+                bytes::Bytes::from(bundle_data),
+                None,
+                None,
+            )
+            .await
+            .expect("failed to deploy host routing test function");
+
+        let server_config = DualServerConfig {
+            admin: AdminListenerConfig {
+                addr: admin_addr,
+                api_key: None,
+                tls: None,
+                body_limits: BodyLimitsConfig::default(),
+                bundle_signature: BundleSignatureConfig {
+                    required: false,
+                    public_key_path: None,
+                },
+            },
+            ingress: IngressListenerConfig {
+                listener_type: IngressListenerType::Tcp(ingress_addr),
+                tls: None,
+                rate_limit_rps: None,
+                body_limits: BodyLimitsConfig::default(),
+            },
+            graceful_exit_deadline_secs: 1,
+            max_connections: 128,
+        };
+
+        let server_shutdown = shutdown.clone();
+        let registry_for_server = registry.clone();
+        let server_handle = tokio::spawn(async move {
+            run_dual_server(server_config, registry_for_server, server_shutdown).await
+        });
+
+        wait_for_tcp_listener(admin_addr).await;
+        wait_for_tcp_listener(ingress_addr).await;
+
+        let before_req =
+            "GET /api/ping HTTP/1.1\r\nHost: api.customer-a.local\r\nConnection: close\r\n\r\n";
+        let before_resp = send_plain_http(ingress_addr, before_req).await;
+        assert!(
+            before_resp.starts_with("HTTP/1.1 400") || before_resp.starts_with("HTTP/1.1 404"),
+            "expected unresolved route before PUT update: {before_resp}"
+        );
+
+        let routing_manifest = r#"{
+            "manifestVersion": 1,
+            "routes": [
+                {
+                    "host": "api.customer-a.local",
+                    "path": "/api/:name",
+                    "targetFunction": "host-route-fn"
+                }
+            ]
+        }"#;
+        let put_req = format!(
+            "PUT /_internal/routing HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            routing_manifest.len(),
+            routing_manifest
+        );
+        let put_resp = send_plain_http(admin_addr, &put_req).await;
+        assert!(
+            put_resp.starts_with("HTTP/1.1 200"),
+            "expected routing PUT success: {put_resp}"
+        );
+
+        let after_req =
+            "GET /api/ping HTTP/1.1\r\nHost: api.customer-a.local\r\nConnection: close\r\n\r\n";
+        let after_resp = send_plain_http(ingress_addr, after_req).await;
+        assert!(
+            after_resp.starts_with("HTTP/1.1 200"),
+            "expected host-based routing request success after PUT: {after_resp}"
+        );
+        assert!(
+            after_resp.contains("host-route-ok:/api/ping"),
+            "expected request path to be forwarded unchanged for host-based route: {after_resp}"
         );
 
         shutdown.cancel();

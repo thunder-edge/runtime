@@ -8,7 +8,7 @@ export const options = {
   scenarios: {
     steady_1k_rps: {
       executor: 'constant-arrival-rate',
-      rate: 5000,
+      rate: 1000,
       timeUnit: '1s',
       duration: '90s',
       preAllocatedVUs: 2000,

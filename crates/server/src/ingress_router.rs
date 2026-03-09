@@ -15,12 +15,14 @@ use tracing::{info, warn};
 
 use crate::service::BoxBody;
 use functions::registry::{FunctionRegistry, RouteTargetError};
+use http::header::HOST;
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
     payload_too_large_response, BodyLimitError, BodyLimitsConfig,
 };
 use crate::middleware::{rate_limit_layer, rate_limited_response, RateLimitLayer};
+use crate::global_routing::{load_global_routing_table_from_env, GlobalRoutingState, GlobalRoutingTable};
 use crate::router::{is_valid_function_name, json_response, sanitize_internal_error};
 use crate::trace_context::{
     add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
@@ -40,6 +42,7 @@ pub struct IngressRouter {
     registry: Arc<FunctionRegistry>,
     body_limits: BodyLimitsConfig,
     rate_limiter: Option<RateLimitLayer>,
+    global_routing: GlobalRoutingState,
 }
 
 impl IngressRouter {
@@ -49,10 +52,39 @@ impl IngressRouter {
         body_limits: BodyLimitsConfig,
         rate_limit_rps: Option<u64>,
     ) -> Self {
+        Self::new_with_global_routing(
+            registry,
+            body_limits,
+            rate_limit_rps,
+            load_global_routing_table_from_env(),
+        )
+    }
+
+    pub fn new_with_global_routing(
+        registry: Arc<FunctionRegistry>,
+        body_limits: BodyLimitsConfig,
+        rate_limit_rps: Option<u64>,
+        global_routing: Option<GlobalRoutingTable>,
+    ) -> Self {
+        Self::new_with_global_routing_state(
+            registry,
+            body_limits,
+            rate_limit_rps,
+            GlobalRoutingState::new(global_routing),
+        )
+    }
+
+    pub fn new_with_global_routing_state(
+        registry: Arc<FunctionRegistry>,
+        body_limits: BodyLimitsConfig,
+        rate_limit_rps: Option<u64>,
+        global_routing: GlobalRoutingState,
+    ) -> Self {
         Self {
             registry,
             body_limits,
             rate_limiter: rate_limit_rps.map(rate_limit_layer),
+            global_routing,
         }
     }
 
@@ -92,30 +124,21 @@ impl IngressRouter {
         trace_ctx: &crate::trace_context::TraceContext,
     ) -> Response<BoxBody> {
         let path = req.uri().path().to_string();
+        let host = req
+            .headers()
+            .get(HOST)
+            .and_then(|value| value.to_str().ok());
 
-        // Extract function name from first path segment
-        let segments: Vec<&str> = path.splitn(3, '/').collect();
-        // segments: ["", "function_name", "rest/of/path"]
-        let function_name = if segments.len() >= 2 { segments[1] } else { "" };
-
-        if function_name.is_empty() {
-            return json_response(
-                StatusCode::NOT_FOUND,
-                r#"{"error":"no function specified"}"#,
-            );
-        }
-
-        if !is_valid_function_name(function_name) {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                r#"{"error":"invalid function name"}"#,
-            );
-        }
+        let (function_name, forwarded_path) =
+            match self.resolve_route_target(path.as_str(), host) {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
 
         // Resolve isolate + logical context target
         let route_target = match self
             .registry
-            .get_route_target_with_status(function_name)
+            .get_route_target_with_status(function_name.as_str())
             .await
         {
             Ok(target) => target,
@@ -137,14 +160,10 @@ impl IngressRouter {
         };
 
         // Get function config for timeouts
-        let config = self.registry.get_config(function_name).unwrap_or_default();
-
-        // Rewrite path: strip the function_name prefix
-        let forwarded_path = if segments.len() >= 3 {
-            format!("/{}", segments[2])
-        } else {
-            "/".to_string()
-        };
+        let config = self
+            .registry
+            .get_config(function_name.as_str())
+            .unwrap_or_default();
 
         // Check Content-Length header for fast rejection
         if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
@@ -205,7 +224,7 @@ impl IngressRouter {
                 timeout_duration,
                 route_target.handle.send_routed_request(
                     forwarded_req,
-                    Some(function_name.to_string()),
+                    Some(function_name.clone()),
                     Some(route_target.context_id.clone()),
                 ),
             )
@@ -223,7 +242,11 @@ impl IngressRouter {
                 "transient channel-closed while routing request; retrying once"
             );
 
-            route_target = match self.registry.get_route_target_with_status(function_name).await {
+            route_target = match self
+                .registry
+                .get_route_target_with_status(function_name.as_str())
+                .await
+            {
                 Ok(target) => target,
                 Err(RouteTargetError::FunctionUnavailable) => {
                     return json_response(
@@ -307,11 +330,60 @@ impl IngressRouter {
 
         response
     }
+
+    fn resolve_route_target(
+        &self,
+        path: &str,
+        host: Option<&str>,
+    ) -> Result<(String, String), Response<BoxBody>> {
+        if let Some(table) = self.global_routing.get() {
+            if let Some(matched) = table.resolve(host, path) {
+                return Ok((matched.target_function, path.to_string()));
+            }
+        }
+
+        // Fallback to canonical /{function_name}/... path-prefix routing.
+        let segments: Vec<&str> = path.splitn(3, '/').collect();
+        let function_name = if segments.len() >= 2 { segments[1] } else { "" };
+
+        if function_name.is_empty() {
+            return Err(json_response(
+                StatusCode::NOT_FOUND,
+                r#"{"error":"no function specified"}"#,
+            ));
+        }
+
+        if !is_valid_function_name(function_name) {
+            return Err(json_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"invalid function name"}"#,
+            ));
+        }
+
+        let forwarded_path = if segments.len() >= 3 {
+            format!("/{}", segments[2])
+        } else {
+            "/".to_string()
+        };
+
+        Ok((function_name.to_string(), forwarded_path))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::global_routing::GlobalRoutingTable;
+    use functions::registry::FunctionRegistry;
+    use runtime_core::isolate::IsolateConfig;
+    use tokio_util::sync::CancellationToken;
+
+    fn test_registry() -> Arc<FunctionRegistry> {
+        Arc::new(FunctionRegistry::new(
+            CancellationToken::new(),
+            IsolateConfig::default(),
+        ))
+    }
 
     #[test]
     fn test_internal_path_detection() {
@@ -389,5 +461,52 @@ mod tests {
         let resp = crate::middleware::rate_limited_response(1);
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(resp.headers().get("retry-after").unwrap(), "1");
+    }
+
+    #[test]
+    fn test_resolve_route_target_uses_global_stage0_when_matched() {
+        let manifest = r#"{
+            "manifestVersion": 1,
+            "routes": [
+                {
+                    "host": "api.example.com",
+                    "path": "/users/:id",
+                    "targetFunction": "users-api"
+                }
+            ]
+        }"#;
+        let table = GlobalRoutingTable::from_manifest_json(manifest, "test")
+            .expect("global routing manifest should parse");
+
+        let router = IngressRouter::new_with_global_routing(
+            test_registry(),
+            BodyLimitsConfig::default(),
+            None,
+            Some(table),
+        );
+
+        let resolved = router
+            .resolve_route_target("/users/123", Some("api.example.com"))
+            .expect("stage0 should resolve route");
+
+        assert_eq!(resolved.0, "users-api");
+        assert_eq!(resolved.1, "/users/123");
+    }
+
+    #[test]
+    fn test_resolve_route_target_falls_back_to_prefix_mode() {
+        let router = IngressRouter::new_with_global_routing(
+            test_registry(),
+            BodyLimitsConfig::default(),
+            None,
+            None,
+        );
+
+        let resolved = router
+            .resolve_route_target("/my-function/v1/ping", Some("api.example.com"))
+            .expect("fallback routing should resolve");
+
+        assert_eq!(resolved.0, "my-function");
+        assert_eq!(resolved.1, "/v1/ping");
     }
 }
