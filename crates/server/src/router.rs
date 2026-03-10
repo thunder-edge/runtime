@@ -21,6 +21,7 @@ use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
     payload_too_large_response, BodyLimitError, BodyLimitsConfig,
 };
+use crate::function_route_matcher::{is_asset_route, match_suffix_route, RouteMatchDecision};
 use crate::middleware::{rate_limit_layer, rate_limited_response, RateLimitLayer};
 use crate::trace_context::{
     add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
@@ -338,6 +339,35 @@ impl Router {
         } else {
             "/".to_string()
         };
+
+        if let Some(route_metadata) = self.registry.get_route_metadata(function_name) {
+            match match_suffix_route(&route_metadata, &forwarded_path, req.method()) {
+                RouteMatchDecision::NotFound => {
+                    return json_response(StatusCode::NOT_FOUND, r#"{"error":"route not found"}"#)
+                }
+                RouteMatchDecision::MethodNotAllowed { allow } => {
+                    let mut resp = json_response(
+                        StatusCode::METHOD_NOT_ALLOWED,
+                        r#"{"error":"method not allowed"}"#,
+                    );
+                    if !allow.is_empty() {
+                        let value = allow.join(", ");
+                        if let Ok(header) = http::header::HeaderValue::from_str(&value) {
+                            resp.headers_mut().insert(http::header::ALLOW, header);
+                        }
+                    }
+                    return resp;
+                }
+                RouteMatchDecision::Matched(route) => {
+                    if is_asset_route(&route) {
+                        return json_response(
+                            StatusCode::NOT_FOUND,
+                            r#"{"error":"asset route not found"}"#,
+                        );
+                    }
+                }
+            }
+        }
 
         // Check Content-Length header for fast rejection
         if let Err(BodyLimitError::ContentLengthExceeded { .. }) =

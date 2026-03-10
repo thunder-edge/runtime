@@ -79,6 +79,11 @@ let io = TokioIo::new(maybe_stream);
 
 **Status:** ✅ Concluído
 
+Backlog de regressão pós-fix (IPv6):
+- [ ] Após correção de bypass IPv6 no denylist/política de rede, inverter o teste ofensivo `sandbox_detects_ipv6_ssrf_bypass_vectors` para teste de proteção estrita.
+- [ ] Exigir estado `denied` para vetores `::ffff:169.254.169.254`, `fd00::/7` e `fe80::/10` no teste de sandbox (sem fallback permissivo).
+- [ ] Manter baseline explícito de IPv4 privado (`127.0.0.1`) como controle para evitar falso positivo de política.
+
 ---
 
 ### 2.4 Sanitizar Error Messages para Clientes
@@ -140,6 +145,11 @@ Status aplicado (07/03/2026):
 - Teste E2E `e2e_ingress_streaming_long_chunked_body_completes` em `crates/server/src/lib.rs` valida fluxo chunked longo com marcador inicial/final e conclusão estável.
 - Teste `node_stream_pipeline_handles_backpressure_on_long_flow` em `crates/functions/tests/node_module_imports.rs` valida sinalização real de backpressure (`write()` retornando `false`) e `drain` no fluxo com escrita assíncrona.
 - Bridge Web Streams <-> Node Streams implementada em `node:stream` com `Readable.fromWeb`/`Readable.toWeb` e `Writable.fromWeb`/`Writable.toWeb`, validada por testes dedicados em `crates/functions/tests/node_module_imports.rs`.
+
+Backlog de regressão pós-fix (limite de body streaming):
+- [ ] Após implementar enforcement de limite para `IsolateResponseBody::Stream`, inverter o teste `e2e_ingress_streaming_response_exceeds_limit_without_rejection` para esperar rejeição determinística ao ultrapassar `max_response_body_bytes`.
+- [ ] Validar status/code e payload de erro finais (ex.: `413` ou erro interno padronizado) de forma estável no E2E.
+- [ ] Cobrir cenário de stream parcial interrompido no limite para garantir encerramento limpo sem vazamento de recursos.
 
 **Critério de aceite:** SSR com streaming envia chunks progressivos, sem deadlock e sem corrupção de body.
 
@@ -530,35 +540,52 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
 - [x] Adicionar parsing e validação v2 em `crates/runtime-core/src/manifest.rs`
 - [x] Introduzir `flavor: single | routed-app`
 - [x] Modelar `routes[]` e `asset` routes para apps frontend/backend
-- [ ] Corrigir documentação que hoje pressupõe schema v2 já existente
+- [x] Corrigir documentação que hoje pressupõe schema v2 já existente
 
 Status aplicado (10/03/2026):
 - `schemas/function-manifest.v2.schema.json` adicionado com `flavor` (`single`/`routed-app`) e rotas tipadas por `kind` (`function`/`asset`).
-- `crates/runtime-core/src/manifest.rs` atualizado para validar dinamicamente `manifestVersion` 1 ou 2, mantendo compatibilidade com `v1`.
+- `crates/runtime-core/src/manifest.rs` atualizado para aceitar apenas `manifestVersion: 2`.
 - Semântica de `v2` adicionada: `single` não aceita `routes`; `routed-app` exige `routes`; rotas `function` exigem `entrypoint`; rotas `asset` exigem `assetDir`.
 - Testes unitários de manifesto expandidos para cobrir cenários `v2` (`single`, `routed-app`, casos inválidos), com execução local verde em `cargo test -p runtime-core manifest::tests`.
+- Documentação de manifesto publicada em `docs/function-manifest.md` (v2-only), link corrigido em `docs/cli.md` e documentação de endpoint de introspecção `GET /_internal/functions/{name}/manifest`.
 
 **Referência:** `ROADMAP_ROUTING.md` seções 5, 6, 7 e 15.
 
 ### 6.2 Build, Bundle e Deploy Multi-Rota
 
-- [ ] Estender `crates/cli/src/commands/bundle.rs` para scan de `functions/`
-- [ ] Detectar colisões e prioridade de rotas em build time
-- [ ] Gerar metadata de rotas e embuti-la no artefato de deploy
-- [ ] Aceitar deploys `routed-app` no fluxo atual de `POST /_internal/functions`
-- [ ] Preparar suporte opcional a `public/` para assets estáticos
+- [x] Estender `crates/cli/src/commands/bundle.rs` para scan de `functions/`
+- [x] Detectar colisões e prioridade de rotas em build time
+- [x] Gerar metadata de rotas e embuti-la no artefato de deploy
+- [x] Aceitar deploys `routed-app` no fluxo atual de `POST /_internal/functions`
+- [x] Preparar suporte opcional a `public/` para assets estáticos
+
+Status aplicado (10/03/2026):
+- `thunder bundle` ganhou suporte opcional a `--manifest` (v2).
+- Quando o manifest é `flavor: routed-app` e `routes[]` está vazio, o CLI faz scan de `functions/` e preenche `routes[]` automaticamente com rotas `kind: function`.
+- Rotas passam por validação de colisão em build time com erro determinístico para padrões canônicos ambíguos (incluindo sobreposição `function`/`asset`).
+- O bundle agora embute metadata de rotas com ordem de precedência determinística para uso em deploy/runtime.
+- Deploy via `POST /_internal/functions` aceita manifest embutido no bundle quando o header `x-function-manifest-b64` não é enviado.
+- Quando existe diretório `public/`, o bundler gera rotas `kind: asset` por arquivo estático no fluxo `routed-app`.
+- O comportamento permanece restrito a `routed-app`; manifests `single` não são alterados por esse fluxo.
 
 **Referência:** `ROADMAP_ROUTING.md` seções 5, 7, 8, 10 e 13.
 
 ### 6.3 Ingress em Dois Estágios e Compatibilidade com Proxy Reverso
 
-- [ ] Preservar `/{function_id}` como primeiro segmento canônico do runtime
-- [ ] Resolver opcionalmente `host + path` via manifesto global antes do fallback por prefixo
-- [ ] Resolver o deployment pelo prefixo e rotear por manifest apenas no sufixo restante
+- [x] Preservar `/{function_id}` como primeiro segmento canônico do runtime
+- [x] Resolver opcionalmente `host + path` via manifesto global antes do fallback por prefixo
+- [x] Resolver o deployment pelo prefixo e rotear por manifest apenas no sufixo restante
 - [ ] Documentar explicitamente o mapeamento `{function_id}.my-edge-runtime.com/... -> localhost:9000/{function_id}/...`
-- [ ] Indexar e expor rotas no `FunctionRegistry`
-- [ ] Implementar matching com prioridade determinística e erro em ambiguidades
-- [ ] Fazer short-circuit de rotas de asset sem entrar no isolate
+- [x] Indexar e expor rotas no `FunctionRegistry`
+- [x] Implementar matching com prioridade determinística e erro em ambiguidades
+- [x] Fazer short-circuit de rotas de asset sem entrar no isolate
+
+Status aplicado (10/03/2026):
+- `crates/server/src/ingress_router.rs` mantém roteamento em dois estágios: Stage 0 opcional (`host + path` via `GlobalRoutingTable`) seguido de fallback canônico por prefixo `/{function_id}`.
+- Após resolver o deployment, o ingress aplica matching por metadata de rota no sufixo restante, retornando `404` para rota inexistente e `405` + header `Allow` quando o path existe sem método permitido.
+- `crates/functions/src/types.rs` e `crates/functions/src/lifecycle.rs` passaram a persistir `embedded_route_metadata` no `FunctionEntry` durante deploy/update.
+- `crates/functions/src/registry.rs` agora expõe `get_route_metadata(...)` para introspecção/uso de roteamento.
+- Rotas `asset` são short-circuitadas no ingress sem encaminhamento para isolate (retorno determinístico no edge).
 
 **Referência:** `ROADMAP_ROUTING.md` seções 2, 5, 8, 12 e 14.
 
@@ -577,7 +604,7 @@ Status aplicado (10/03/2026):
 - [ ] Criar exemplos completos para `single` e `routed-app`
 - [ ] Documentar deploy de app backend e app frontend com assets
 - [ ] Escrever guia de migração de `Deno.serve()` para `export default`
-- [ ] Adicionar testes E2E cobrindo manifest v1, manifest v2, prefixo `/{function_id}`, routing, params, 405 e assets
+- [ ] Adicionar testes E2E cobrindo manifest v2 (v2-only), prefixo `/{function_id}`, routing, params, 405 e assets
 - [ ] Expor introspecção administrativa e documentação operacional por rota
 
 **Referência:** `ROADMAP_ROUTING.md` seções 10, 11, 12, 13 e 14.
@@ -593,6 +620,22 @@ Status aplicado (10/03/2026):
 - [ ] Documentar operacao com proxy reverso, DNS wildcard e estrategia de migracao gradual
 
 **Referência:** `ROADMAP_ROUTING.md` seções 5, 7, 13, 14 e 15.
+
+### 6.7 Trilha OpenNext (Adapter Futuro)
+
+> Objetivo: preparar o runtime para receber um wrapper/adapter de OpenNext sem quebrar isolamento, semantica HTTP e contrato de deploy atual.
+>
+> Documento de referencia detalhado: [ROADMAP_OPENNEXT.md](./ROADMAP_OPENNEXT.md)
+
+- [ ] Definir contrato de adapter OpenNext -> runtime (`manifest v2`, `routes[]`, `assets`, metadados de build).
+- [ ] Entregar PoC de build/deploy OpenNext em modo `routed-app` (sem recursos cloud proprietarios).
+- [ ] Mapear rewrites/redirects/headers/cookies do OpenNext para as regras do ingress do runtime.
+- [ ] Fechar semantica de assets estaticos (`public/` e artefatos de build) com short-circuit fora do isolate quando aplicavel.
+- [ ] Consolidar testes E2E de SSR streaming, headers/cookies e rotas dinamicas com artefato gerado por OpenNext.
+- [ ] Definir matriz de compatibilidade OpenNext (Full/Partial/None) por feature critica (SSR, RSC, server actions, cache, image, middleware).
+- [ ] Publicar playbook de operacao: limites conhecidos, tuning de pool/context, troubleshooting e regressao.
+
+**Critério de aceite:** app Next.js de referencia (build via OpenNext adapter) sobe com SSR streaming, rotas dinamicas e semantica HTTP estavel no runtime.
 
 ---
 

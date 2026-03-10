@@ -688,6 +688,7 @@ thunder bundle --entrypoint <FILE> --output <FILE>
   - Optional.
   - Path to a function manifest (v2).
   - When provided with `flavor: "routed-app"` and empty `routes`, the CLI auto-scans a `functions/` directory and fills `routes[]`.
+  - If a sibling `public/` directory exists, static asset routes (`kind: "asset"`) are generated per file.
   - `single` manifests are not modified by this auto-scan.
 
 ### Behavior Notes
@@ -696,6 +697,8 @@ thunder bundle --entrypoint <FILE> --output <FILE>
   - If `deno` is available in `PATH`, runs `deno check` first.
   - If not available, falls back to syntax/module-graph validation only.
 - Routed-app manifest auto-scan is applied only when `--manifest` is provided and `routes[]` is empty.
+- Routed-app routes are validated for build-time collisions using canonical path/method matching; ambiguous overlaps fail the bundle command.
+- Routed-app bundles embed manifest JSON and route metadata (including precedence rank) into the deploy artifact.
 - Result is written as a serialized `BundlePackage` containing ESZIP bytes.
 - Supports `edge://assert/*` and `ext:edge_assert/*` through embedded native modules bundled in the binary (`include_str!`).
 

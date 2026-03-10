@@ -2,7 +2,7 @@
   <img src=".github/assets/logo.svg" alt="Logo" width="400"/>
 </p>
 
-<a href="https://github.com/globocom/thunder-edge/actions/workflows/ci-cd.yml"><img src="https://github.com/globocom/thunder-edge/actions/workflows/ci-cd.yml/badge.svg" /></a>
+<a href="https://github.com/thunder-edge/runtime/actions/workflows/ci-cd.yml"><img src="https://github.com/thunder-edge/runtime/actions/workflows/ci-cd.yml/badge.svg" /></a>
 
 
 Thunder is a Rust-powered edge runtime and ecosystem built on the Deno stack, designed to run JavaScript and TypeScript functions with modern Web APIs, strong per-function isolation, and a CLI-first workflow with a built-in testing framework. ⚡

@@ -1177,6 +1177,13 @@ impl FunctionRegistry {
             .and_then(|entry| entry.manifest.clone())
     }
 
+    /// Get bundled route metadata currently attached to a function.
+    pub fn get_route_metadata(&self, name: &str) -> Option<BundleRouteMetadata> {
+        self.functions
+            .get(name)
+            .and_then(|entry| entry.route_metadata.clone())
+    }
+
     /// List all functions.
     pub fn list(&self) -> Vec<FunctionInfo> {
         let names: Vec<String> = self
@@ -1654,6 +1661,7 @@ mod tests {
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1696,6 +1704,7 @@ mod tests {
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1749,6 +1758,7 @@ mod tests {
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1799,6 +1809,7 @@ mod tests {
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1853,6 +1864,7 @@ mod tests {
                 ..IsolateConfig::default()
             },
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1924,6 +1936,7 @@ mod tests {
                 ..IsolateConfig::default()
             },
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1980,6 +1993,7 @@ mod tests {
                 ..IsolateConfig::default()
             },
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2045,6 +2059,7 @@ mod tests {
                 ..IsolateConfig::default()
             },
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2085,6 +2100,7 @@ mod tests {
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2137,6 +2153,7 @@ mod tests {
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2172,6 +2189,7 @@ mod tests {
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2230,6 +2248,7 @@ mod tests {
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
             manifest: None,
+            route_metadata: None,
             metrics: Arc::new(FunctionMetrics::default()),
             created_at: Utc::now(),
             updated_at: Utc::now(),

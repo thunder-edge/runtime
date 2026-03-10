@@ -4,7 +4,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use runtime_core::isolate::{IsolateConfig, IsolateHandle};
-use runtime_core::manifest::ResolvedFunctionManifest;
+use runtime_core::manifest::{ManifestRouteKind, ResolvedFunctionManifest};
 use serde::{Deserialize, Serialize};
 
 /// Bundle format for function deployment.
@@ -42,7 +42,33 @@ pub struct BundlePackage {
     /// Primary bundle data (snapshot-flavor payload or eszip bytes).
     pub bundle: Vec<u8>,
     /// Fallback eszip bytes (used if snapshot fails to load).
+    #[serde(default)]
     pub fallback_eszip: Option<Vec<u8>>,
+    /// Optional manifest JSON embedded at bundle time.
+    #[serde(default)]
+    pub embedded_manifest_json: Option<String>,
+    /// Optional routed-app route metadata generated at build time.
+    #[serde(default)]
+    pub embedded_route_metadata: Option<BundleRouteMetadata>,
+}
+
+/// Build-time route metadata embedded in routed-app bundle artifacts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleRouteMetadata {
+    pub generated_at_unix_ms: i64,
+    pub routes: Vec<BundleRouteRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleRouteRecord {
+    pub kind: ManifestRouteKind,
+    pub path: String,
+    pub methods: Vec<String>,
+    pub entrypoint: Option<String>,
+    pub asset_dir: Option<String>,
+    pub precedence_rank: u32,
 }
 
 impl BundlePackage {
@@ -53,6 +79,8 @@ impl BundlePackage {
             v8_version: get_v8_version().to_string(),
             bundle: snapshot,
             fallback_eszip: Some(fallback_eszip),
+            embedded_manifest_json: None,
+            embedded_route_metadata: None,
         }
     }
 
@@ -63,6 +91,8 @@ impl BundlePackage {
             v8_version: get_v8_version().to_string(),
             bundle: eszip,
             fallback_eszip: None,
+            embedded_manifest_json: None,
+            embedded_route_metadata: None,
         }
     }
 
@@ -279,6 +309,8 @@ pub struct FunctionEntry {
     pub config: IsolateConfig,
     /// Optional manifest policy resolved at deploy time.
     pub manifest: Option<ResolvedFunctionManifest>,
+    /// Optional route metadata embedded by the bundle pipeline.
+    pub route_metadata: Option<BundleRouteMetadata>,
     /// Metrics.
     pub metrics: Arc<FunctionMetrics>,
     /// When the function was deployed.
@@ -447,6 +479,7 @@ mod tests {
             status: FunctionStatus::Running,
             config: IsolateConfig::default(),
             manifest: None,
+            route_metadata: None,
             metrics,
             created_at: now,
             updated_at: now,

@@ -27,7 +27,7 @@ use runtime_core::isolate::{
     OutgoingProxyConfig,
 };
 use runtime_core::isolate_logs::IsolateLogConfig;
-use runtime_core::manifest::ResolvedFunctionManifest;
+use runtime_core::manifest::{resolve_manifest_for_profile, validate_manifest_json, ResolvedFunctionManifest};
 use runtime_core::mem_check::{near_heap_limit_callback, HeapLimitState};
 use runtime_core::module_loader::{EszipModuleLoader, ModuleCodeCacheMap};
 use runtime_core::permissions::create_permissions_with_policy;
@@ -146,6 +146,28 @@ pub async fn create_function(
     // Parse the bundle package
     let bundle_package: BundlePackage = bincode::deserialize(&bundle_data)
         .map_err(|e| anyhow::anyhow!("failed to deserialize bundle package: {e}"))?;
+    let route_metadata = bundle_package.embedded_route_metadata.clone();
+
+    let resolved_manifest = if let Some(manifest) = manifest {
+        Some(manifest)
+    } else if let Some(manifest_json) = bundle_package.embedded_manifest_json.as_deref() {
+        let parsed = validate_manifest_json(manifest_json).map_err(|e| {
+            anyhow::anyhow!("embedded manifest validation failed for '{}': {e}", name)
+        })?;
+        let resolved = resolve_manifest_for_profile(&parsed, None).map_err(|e| {
+            anyhow::anyhow!("embedded manifest profile resolution failed for '{}': {e}", name)
+        })?;
+        if resolved.name != name {
+            return Err(anyhow::anyhow!(
+                "embedded manifest name '{}' does not match function name '{}'",
+                resolved.name,
+                name
+            ));
+        }
+        Some(resolved)
+    } else {
+        None
+    };
 
     let now = Utc::now();
     let metrics = Arc::new(FunctionMetrics::default());
@@ -194,7 +216,7 @@ pub async fn create_function(
     // Spawn the isolate supervisor on a dedicated thread (JsRuntime is !Send)
     let isolate_name = name.clone();
     let isolate_config = config.clone();
-    let isolate_manifest = manifest.clone();
+    let isolate_manifest = resolved_manifest.clone();
     let isolate_metrics = metrics.clone();
     let isolate_outgoing_proxy = outgoing_proxy.clone();
     let bundle_format = bundle_package.format;
@@ -332,7 +354,8 @@ pub async fn create_function(
         inspector_stop,
         status: FunctionStatus::Running,
         config,
-        manifest,
+        manifest: resolved_manifest,
+        route_metadata,
         metrics,
         created_at: now,
         updated_at: now,

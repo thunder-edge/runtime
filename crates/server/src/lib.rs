@@ -1,6 +1,7 @@
 pub mod admin_router;
 pub mod body_limits;
 pub mod bundle_signature;
+pub mod function_route_matcher;
 pub mod graceful;
 pub mod global_routing;
 pub mod ingress_router;

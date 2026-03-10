@@ -23,11 +23,18 @@ use tokio_util::sync::CancellationToken;
 
 static PANIC_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
 static DENO_INIT: Once = Once::new();
+static TIMEOUT_AND_TIMERS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn init_deno_platform() {
     DENO_INIT.call_once(|| {
         deno_core::JsRuntime::init_platform(None);
     });
+}
+
+fn lock_timeout_and_timers_test() -> std::sync::MutexGuard<'static, ()> {
+    TIMEOUT_AND_TIMERS_TEST_LOCK
+        .lock()
+        .expect("timeout_and_timers test lock poisoned")
 }
 
 /// Helper: create a JsRuntime with the same config as production isolates.
@@ -145,6 +152,7 @@ async fn parse_eszip(bytes: &[u8]) -> eszip::EszipV2 {
 #[test]
 fn test_terminate_execution_stops_infinite_loop() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_infinite.js",
@@ -245,6 +253,7 @@ fn test_terminate_execution_stops_infinite_loop() {
 #[test]
 fn test_isolate_timeout_returns_504() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_timeout_504.js",
@@ -332,6 +341,7 @@ fn test_isolate_timeout_returns_504() {
 #[test]
 fn test_heap_limit_infinite_allocation_marks_function_error() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_heap_oom.js",
@@ -439,6 +449,7 @@ fn test_heap_limit_infinite_allocation_marks_function_error() {
 fn test_panic_followed_by_request_marks_error_and_fails_fast() {
     let _panic_env_lock = PANIC_PATH_ENV_LOCK.lock().expect("panic env lock poisoned");
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_panic_recovery.js",
@@ -539,6 +550,7 @@ fn test_panic_followed_by_request_marks_error_and_fails_fast() {
 fn test_panic_auto_restart_recovers_to_running() {
     let _panic_env_lock = PANIC_PATH_ENV_LOCK.lock().expect("panic env lock poisoned");
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_panic_auto_restart.js",
@@ -670,6 +682,7 @@ fn test_panic_auto_restart_recovers_to_running() {
 #[test]
 fn test_graceful_shutdown_with_in_flight_request() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_shutdown_inflight.js",
@@ -766,6 +779,7 @@ fn test_graceful_shutdown_with_in_flight_request() {
 #[test]
 fn test_timer_tracking_registration() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_timer_reg.js", "globalThis.__test = true;");
 
@@ -864,6 +878,7 @@ fn test_timer_tracking_registration() {
 #[test]
 fn test_interval_tracking_registration() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_interval_reg.js", "globalThis.__test = true;");
 
@@ -952,6 +967,7 @@ fn test_interval_tracking_registration() {
 #[test]
 fn test_timer_isolation_between_executions() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_isolation.js", "globalThis.__test = true;");
 
@@ -1064,6 +1080,7 @@ fn test_timer_isolation_between_executions() {
 #[test]
 fn test_websocket_closed_on_clear_execution_timers() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_ws_cleanup_clear.js",
@@ -1159,6 +1176,7 @@ fn test_websocket_closed_on_clear_execution_timers() {
 #[test]
 fn test_websocket_closed_on_end_execution() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_ws_cleanup_end.js",
@@ -1254,6 +1272,7 @@ fn test_websocket_closed_on_end_execution() {
 fn test_websocket_unregisters_on_close_event() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind websocket server");
     let addr = listener.local_addr().expect("read local address");
@@ -1380,6 +1399,7 @@ fn test_websocket_unregisters_on_close_event() {
 #[test]
 fn test_isolate_reusable_after_timeout() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_reuse.js",
@@ -1529,6 +1549,7 @@ fn test_isolate_reusable_after_timeout() {
 #[test]
 fn test_fetch_abort_controller_tracking() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_fetch_track.js", "globalThis.__test = true;");
 
@@ -1621,6 +1642,7 @@ fn test_fetch_abort_controller_tracking() {
 #[test]
 fn test_promise_tracking_registration() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_promise_track.js", "globalThis.__test = true;");
 
@@ -1730,6 +1752,7 @@ fn test_promise_tracking_registration() {
 #[test]
 fn test_original_functions_preserved() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_originals.js", "globalThis.__test = true;");
 
@@ -1828,6 +1851,7 @@ fn test_original_functions_preserved() {
 #[test]
 fn test_async_hooks_import_preserves_bridge_timer_tracking() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_async_hooks_timer_bridge.js",
@@ -1951,6 +1975,7 @@ fn test_async_hooks_import_preserves_bridge_timer_tracking() {
 #[test]
 fn test_async_hooks_import_preserves_bridge_promise_tracking() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_async_hooks_promise_bridge.js",
@@ -2074,6 +2099,7 @@ fn test_async_hooks_import_preserves_bridge_promise_tracking() {
 #[test]
 fn test_clear_timeout_removes_from_registry() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_clear_timeout.js", "globalThis.__test = true;");
 
@@ -2178,6 +2204,7 @@ fn test_clear_timeout_removes_from_registry() {
 #[test]
 fn test_clear_interval_removes_from_registry() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_clear_interval.js",
@@ -2271,6 +2298,7 @@ fn test_clear_interval_removes_from_registry() {
 #[test]
 fn test_multiple_requests_after_timeout() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_multi_req.js",
@@ -2424,6 +2452,7 @@ fn test_multiple_requests_after_timeout() {
 #[test]
 fn test_nested_timers_tracking() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_nested.js", "globalThis.__test = true;");
 
@@ -2519,6 +2548,7 @@ fn test_nested_timers_tracking() {
 #[test]
 fn test_timer_callback_removes_from_registry() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_callback.js", "globalThis.__test = true;");
 
@@ -2629,6 +2659,7 @@ fn test_timer_callback_removes_from_registry() {
 #[test]
 fn test_timer_callback_skipped_after_clear_execution() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip("file:///test_timer_skip.js", "globalThis.__test = true;");
 
@@ -2696,6 +2727,7 @@ fn test_timer_callback_skipped_after_clear_execution() {
 #[test]
 fn test_microtask_callback_skipped_after_clear_execution() {
     init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
 
     let eszip_bytes = build_eszip(
         "file:///test_microtask_skip.js",
