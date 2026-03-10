@@ -602,6 +602,28 @@ thunder start \
   --max-connections 5000
 ```
 
+### Reverse Proxy Mapping (Canonical)
+
+When using subdomain-style routing, keep the runtime canonical prefix model:
+
+```text
+External URL:  https://{function_id}.my-edge-runtime.com/...
+Runtime URL:   http://localhost:8080/{function_id}/...
+Admin API:     http://localhost:9000/_internal/*
+```
+
+Example:
+
+```text
+https://hello.my-edge-runtime.com/api/ping
+  -> http://localhost:8080/hello/api/ping
+```
+
+Notes:
+
+- `/{function_id}` is required on ingress requests seen by the runtime.
+- Admin operations (`deploy`, `update`, `delete`) stay on the admin listener (`9000` by default), not ingress.
+
 **Corporate network with internal service access:**
 
 ```bash

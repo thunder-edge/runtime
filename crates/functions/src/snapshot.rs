@@ -135,6 +135,7 @@ pub async fn create_function_bytecode_cache_from_eszip(
         .await?;
 
     eval_result.await?;
+    handler::register_handler_from_module_exports(&mut js_runtime, &root_specifier).await?;
 
     let code_cache = module_loader.code_cache_snapshot().unwrap_or_default();
     info!(

@@ -8,14 +8,20 @@ const ASSERT_MOCK_FN_TS: &str = include_str!("../../../runtime-core/src/assert/m
 const ASSERT_MOCK_SPY_TS: &str = include_str!("../../../runtime-core/src/assert/mock/spy.ts");
 const ASSERT_MOCK_FETCH_TS: &str = include_str!("../../../runtime-core/src/assert/mock/fetch.ts");
 const ASSERT_MOCK_TIME_TS: &str = include_str!("../../../runtime-core/src/assert/mock/time.ts");
+const HTTP_USER_MOD_TS: &str = include_str!("../../../runtime-core/src/http/user_mod.ts");
+const HTTP_MOD_TS: &str = include_str!("../../../runtime-core/src/http/mod.ts");
+const HTTP_HTTP_TS: &str = include_str!("../../../runtime-core/src/http/http.ts");
 
 const THUNDER_TESTING_ALIAS: &str = "thunder:testing";
+const THUNDER_HTTP_ALIAS: &str = "thunder:http";
 const EDGE_ASSERT_MOD_SPECIFIER: &str = "edge://assert/mod.ts";
+const EDGE_HTTP_MOD_SPECIFIER: &str = "edge://http/mod.ts";
 
 pub fn rewrite_edge_assert_imports(content: Vec<u8>) -> Vec<u8> {
-    // Map local CLI shorthand to the embedded edge assert module.
+    // Map local CLI shorthand aliases to embedded modules.
     String::from_utf8_lossy(&content)
         .replace(THUNDER_TESTING_ALIAS, EDGE_ASSERT_MOD_SPECIFIER)
+        .replace(THUNDER_HTTP_ALIAS, EDGE_HTTP_MOD_SPECIFIER)
         .into_bytes()
 }
 
@@ -31,7 +37,11 @@ pub fn load_module_bytes(
         "edge://assert/mock/spy.ts" => ASSERT_MOCK_SPY_TS,
         "edge://assert/mock/fetch.ts" => ASSERT_MOCK_FETCH_TS,
         "edge://assert/mock/time.ts" => ASSERT_MOCK_TIME_TS,
+        "edge://http/mod.ts" => HTTP_USER_MOD_TS,
+        "edge://http/http.ts" => HTTP_HTTP_TS,
         "ext:edge_assert/mod.ts" => ASSERT_MOD_TS,
+        "ext:edge_http/mod.ts" => HTTP_MOD_TS,
+        "ext:edge_http/http.ts" => HTTP_HTTP_TS,
         "ext:edge_assert/assert.ts" => {
             return Ok(Some(
                 ASSERT_ASSERT_TS
@@ -95,6 +105,16 @@ mod tests {
     }
 
     #[test]
+    fn rewrites_thunder_http_alias() {
+        let input = b"import { JSONResponse } from 'thunder:http';\n".to_vec();
+        let output = rewrite_edge_assert_imports(input);
+        let out = String::from_utf8(output).expect("utf8");
+
+        assert!(out.contains("edge://http/mod.ts"));
+        assert!(!out.contains("thunder:http"));
+    }
+
+    #[test]
     fn provides_embedded_ext_module() {
         let specifier =
             deno_graph::ModuleSpecifier::parse("ext:edge_assert/assert.ts").expect("specifier");
@@ -104,5 +124,16 @@ mod tests {
 
         assert!(source.contains("export class AssertionError"));
         assert!(source.contains("edge://assert/mock/mod.ts"));
+    }
+
+    #[test]
+    fn provides_embedded_http_module() {
+        let specifier = deno_graph::ModuleSpecifier::parse("edge://http/mod.ts").expect("specifier");
+        let maybe = load_module_bytes(&specifier).expect("load");
+        let bytes = maybe.expect("module must exist");
+        let source = String::from_utf8(bytes).expect("utf8");
+
+        assert!(source.contains("HTTP"));
+        assert!(source.contains("./http.ts"));
     }
 }

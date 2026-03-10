@@ -940,6 +940,8 @@ async fn load_from_eszip_with_init(
 
     eval_result.await?;
 
+    handler::register_handler_from_module_exports(&mut js_runtime, root_specifier).await?;
+
     let module_eval_duration = module_eval_start.elapsed();
     let init_total_duration = init_total_start.elapsed();
 

@@ -1,6 +1,6 @@
 use anyhow::Error;
 use base64::Engine;
-use deno_core::{op2, Extension, JsRuntime, OpState};
+use deno_core::{op2, Extension, JsRuntime, ModuleSpecifier, OpState};
 use runtime_core::isolate::{
     IsolateConfig, IsolateResponse, IsolateResponseBody, OutgoingProxyConfig,
 };
@@ -230,6 +230,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
             globalThis.__edgeRuntime = {
                 handler: __existingPrimaryHandler,
                 _handlers: __existingHandlers,
+                _supportedHttpMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'],
                 registerHandler(fn) {
                     this.handler = fn;
                     const bootstrapContextId =
@@ -256,6 +257,166 @@ pub fn inject_request_bridge_with_proxy_and_config(
                         return this._handlers.get('default');
                     }
                     return null;
+                },
+                _appendHeaders(target, input) {
+                    if (!input) return;
+
+                    if (input instanceof Headers) {
+                        for (const [key, value] of input.entries()) {
+                            target.append(key, value);
+                        }
+                        return;
+                    }
+
+                    if (Array.isArray(input)) {
+                        for (const pair of input) {
+                            if (!Array.isArray(pair) || pair.length < 2) continue;
+                            target.append(String(pair[0]), String(pair[1]));
+                        }
+                        return;
+                    }
+
+                    if (typeof input === 'object') {
+                        for (const [key, value] of Object.entries(input)) {
+                            if (Array.isArray(value)) {
+                                for (const item of value) {
+                                    target.append(String(key), String(item));
+                                }
+                            } else {
+                                target.set(String(key), String(value));
+                            }
+                        }
+                    }
+                },
+                _normalizeHandlerReturn(value) {
+                    if (value instanceof Response) {
+                        return value;
+                    }
+
+                    if (value && typeof value.toResponse === 'function') {
+                        const converted = value.toResponse();
+                        if (converted instanceof Response) {
+                            return converted;
+                        }
+                    }
+
+                    let status = 200;
+                    const headers = new Headers();
+                    let body = value;
+
+                    const hasEnvelopeShape =
+                        body &&
+                        typeof body === 'object' &&
+                        (
+                            Object.prototype.hasOwnProperty.call(body, 'body') ||
+                            Object.prototype.hasOwnProperty.call(body, 'status') ||
+                            Object.prototype.hasOwnProperty.call(body, 'headers')
+                        );
+
+                    if (hasEnvelopeShape) {
+                        if (typeof body.status === 'number') {
+                            status = body.status;
+                        }
+                        this._appendHeaders(headers, body.headers);
+                        body = body.body;
+                    }
+
+                    if (body === null || body === undefined) {
+                        const emptyStatus = status === 200 ? 204 : status;
+                        return new Response(null, { status: emptyStatus, headers });
+                    }
+
+                    if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
+                        return new Response(body, { status, headers });
+                    }
+
+                    if (typeof Blob !== 'undefined' && body instanceof Blob) {
+                        return new Response(body, { status, headers });
+                    }
+
+                    if (
+                        body instanceof ArrayBuffer ||
+                        (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(body))
+                    ) {
+                        if (!headers.has('content-type')) {
+                            headers.set('content-type', 'application/octet-stream');
+                        }
+                        return new Response(body, { status, headers });
+                    }
+
+                    if (typeof body === 'string') {
+                        if (!headers.has('content-type')) {
+                            headers.set('content-type', 'text/plain; charset=utf-8');
+                        }
+                        return new Response(body, { status, headers });
+                    }
+
+                    if (
+                        typeof body === 'number' ||
+                        typeof body === 'boolean' ||
+                        typeof body === 'bigint'
+                    ) {
+                        if (!headers.has('content-type')) {
+                            headers.set('content-type', 'text/plain; charset=utf-8');
+                        }
+                        return new Response(String(body), { status, headers });
+                    }
+
+                    if (!headers.has('content-type')) {
+                        headers.set('content-type', 'application/json; charset=utf-8');
+                    }
+                    return new Response(JSON.stringify(body), { status, headers });
+                },
+                registerHandlerFromModuleExports(moduleNamespace) {
+                    if (!moduleNamespace || typeof moduleNamespace !== 'object') {
+                        return false;
+                    }
+
+                    const defaultExport = moduleNamespace.default;
+                    if (typeof defaultExport === 'function') {
+                        this.registerHandler((req) => defaultExport(req, undefined));
+                        return true;
+                    }
+
+                    if (defaultExport && typeof defaultExport === 'object') {
+                        const methodHandlers = new Map();
+                        const allowMethods = [];
+
+                        for (const method of this._supportedHttpMethods) {
+                            const candidate = defaultExport[method];
+                            if (typeof candidate === 'function') {
+                                methodHandlers.set(method, candidate);
+                                allowMethods.push(method);
+                            }
+                        }
+
+                        if (allowMethods.length === 0) {
+                            return false;
+                        }
+
+                        const allowHeaderValue = allowMethods.join(', ');
+                        this.registerHandler(async (req) => {
+                            const reqMethod = String(req?.method || 'GET').toUpperCase();
+                            const methodHandler = methodHandlers.get(reqMethod);
+                            if (methodHandler) {
+                                return await methodHandler(req, undefined);
+                            }
+
+                            return new Response(
+                                JSON.stringify({ error: 'method_not_allowed' }),
+                                {
+                                    status: 405,
+                                    headers: {
+                                        'content-type': 'application/json',
+                                        allow: allowHeaderValue,
+                                    },
+                                },
+                            );
+                        });
+                        return true;
+                    }
+
+                    return false;
                 },
 
                 // Execution context tracking for resource cleanup
@@ -922,12 +1083,13 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     }
                     const request = new Request(url, reqInit);
                     const executeHandler = () => handler(request);
-                    const response = globalThis.__edgeRuntimeAsyncHooks?.runWithExecutionContext
+                    const rawResponse = globalThis.__edgeRuntimeAsyncHooks?.runWithExecutionContext
                         ? await globalThis.__edgeRuntimeAsyncHooks.runWithExecutionContext(
                             globalThis.__edgeRuntime._currentExecutionId || '',
                             executeHandler,
                         )
                         : await executeHandler();
+                    const response = globalThis.__edgeRuntime._normalizeHandlerReturn(rawResponse);
 
                     let respHeaders = [];
                     response.headers.forEach((value, key) => {
@@ -1212,6 +1374,56 @@ pub async fn dispatch_request_for_context(
             Err(anyhow::anyhow!("unknown JS response body kind: {other}"))
         }
     }
+}
+
+pub async fn register_handler_from_module_exports(
+    js_runtime: &mut JsRuntime,
+    module_specifier: &ModuleSpecifier,
+) -> Result<bool, Error> {
+    let specifier_json = serde_json::to_string(module_specifier.as_str())
+        .map_err(|e| anyhow::anyhow!("failed to serialize module specifier: {e}"))?;
+
+    let register_script = format!(
+        r#"(async () => {{
+            const moduleNamespace = await import({specifier_json});
+            return Boolean(
+                globalThis.__edgeRuntime?.registerHandlerFromModuleExports?.(moduleNamespace)
+            );
+        }})()"#
+    );
+
+    let result = js_runtime.execute_script(
+        "edge-internal:///register_handler_from_module_exports.js",
+        register_script,
+    )?;
+
+    let resolved = js_runtime.resolve(result);
+    js_runtime
+        .run_event_loop(deno_core::PollEventLoopOptions {
+            wait_for_inspector: false,
+            pump_v8_message_loop: true,
+        })
+        .await?;
+
+    let resolved_value = resolved.await?;
+
+    let is_registered = {
+        let context = js_runtime.main_context();
+        let isolate = js_runtime.v8_isolate();
+        let mut handle_scope = deno_core::v8::HandleScope::new(isolate);
+        let mut handle_scope = {
+            let pinned = unsafe { std::pin::Pin::new_unchecked(&mut handle_scope) };
+            pinned.init()
+        };
+        let scope = &mut handle_scope;
+        let context = deno_core::v8::Local::new(scope, context);
+        let scope = &mut deno_core::v8::ContextScope::new(scope, context);
+
+        let local = deno_core::v8::Local::new(scope, resolved_value);
+        local.boolean_value(scope)
+    };
+
+    Ok(is_registered)
 }
 
 #[cfg(test)]
@@ -1612,6 +1824,314 @@ mod tests {
                 .collect();
             // Non Set-Cookie list headers are merged by Fetch Headers semantics.
             assert_eq!(x_custom_values, vec!["one, two".to_string()]);
+        });
+    }
+
+    #[test]
+    fn default_function_handler_accepts_any_method() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let mut runtime = make_runtime();
+            inject_request_bridge(&mut runtime).expect("inject_request_bridge failed");
+
+            runtime
+                .execute_script(
+                    "<test>",
+                    deno_core::ascii_str!(
+                        r#"
+                        globalThis.__edgeRuntime.registerHandlerFromModuleExports({
+                          default: async (req) => new Response(`method:${req.method}`, { status: 200 }),
+                        });
+                        "#
+                    ),
+                )
+                .unwrap();
+
+            let request = http::Request::builder()
+                .method("PATCH")
+                .uri("/any-method")
+                .header("host", "localhost:9000")
+                .body(bytes::Bytes::new())
+                .unwrap();
+
+            let response = dispatch_request(&mut runtime, request)
+                .await
+                .expect("dispatch_request should succeed");
+
+            assert_eq!(response.parts.status, 200);
+            let body = match response.body {
+                IsolateResponseBody::Full(body) => body,
+                IsolateResponseBody::Stream(mut body_rx) => {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        runtime.run_event_loop(deno_core::PollEventLoopOptions {
+                            wait_for_inspector: false,
+                            pump_v8_message_loop: true,
+                        }),
+                    )
+                    .await;
+
+                    let mut out = Vec::new();
+                    while let Some(chunk) = tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        body_rx.recv(),
+                    )
+                    .await
+                    .expect("timed out receiving any-method body")
+                    {
+                        let chunk = chunk.expect("chunk error");
+                        out.extend_from_slice(&chunk);
+                    }
+                    bytes::Bytes::from(out)
+                }
+            };
+            assert_eq!(body, bytes::Bytes::from_static(b"method:PATCH"));
+        });
+    }
+
+    #[test]
+    fn default_object_handler_returns_405_when_method_is_missing() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let mut runtime = make_runtime();
+            inject_request_bridge(&mut runtime).expect("inject_request_bridge failed");
+
+            runtime
+                .execute_script(
+                    "<test>",
+                    deno_core::ascii_str!(
+                        r#"
+                        globalThis.__edgeRuntime.registerHandlerFromModuleExports({
+                          default: {
+                            GET: async (_req) => new Response('ok-get', { status: 200 }),
+                            POST: async (_req) => new Response('ok-post', { status: 200 }),
+                          },
+                        });
+                        "#
+                    ),
+                )
+                .unwrap();
+
+            let request = http::Request::builder()
+                .method("PUT")
+                .uri("/method-miss")
+                .header("host", "localhost:9000")
+                .body(bytes::Bytes::new())
+                .unwrap();
+
+            let response = dispatch_request(&mut runtime, request)
+                .await
+                .expect("dispatch_request should succeed");
+
+            assert_eq!(response.parts.status, 405);
+            assert_eq!(
+                response
+                    .parts
+                    .headers
+                    .get(http::header::ALLOW)
+                    .and_then(|v| v.to_str().ok()),
+                Some("GET, POST")
+            );
+
+            let body = match response.body {
+                IsolateResponseBody::Full(body) => body,
+                IsolateResponseBody::Stream(mut body_rx) => {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        runtime.run_event_loop(deno_core::PollEventLoopOptions {
+                            wait_for_inspector: false,
+                            pump_v8_message_loop: true,
+                        }),
+                    )
+                    .await;
+
+                    let mut out = Vec::new();
+                    while let Some(chunk) = tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        body_rx.recv(),
+                    )
+                    .await
+                    .expect("timed out receiving 405 body")
+                    {
+                        let chunk = chunk.expect("chunk error");
+                        out.extend_from_slice(&chunk);
+                    }
+                    bytes::Bytes::from(out)
+                }
+            };
+            assert_eq!(
+                body,
+                bytes::Bytes::from_static(br#"{"error":"method_not_allowed"}"#)
+            );
+        });
+    }
+
+    #[test]
+    fn dispatch_auto_normalizes_response_like_objects() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let mut runtime = make_runtime();
+            inject_request_bridge(&mut runtime).expect("inject_request_bridge failed");
+
+            runtime
+                .execute_script(
+                    "<test>",
+                    deno_core::ascii_str!(
+                        r#"
+                        globalThis.__edgeRuntime.registerHandler(() => {
+                          return {
+                            statusCode: 201,
+                            toResponse() {
+                              return new Response(JSON.stringify({ created: true }), {
+                                status: this.statusCode,
+                                headers: { 'content-type': 'application/json' },
+                              });
+                            },
+                          };
+                        });
+                        "#
+                    ),
+                )
+                .unwrap();
+
+            let request = http::Request::builder()
+                .method("GET")
+                .uri("/normalize-draft")
+                .header("host", "localhost:9000")
+                .body(bytes::Bytes::new())
+                .unwrap();
+
+            let response = dispatch_request(&mut runtime, request)
+                .await
+                .expect("dispatch_request should succeed");
+
+            assert_eq!(response.parts.status, 201);
+            let body = match response.body {
+                IsolateResponseBody::Full(body) => body,
+                IsolateResponseBody::Stream(mut body_rx) => {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        runtime.run_event_loop(deno_core::PollEventLoopOptions {
+                            wait_for_inspector: false,
+                            pump_v8_message_loop: true,
+                        }),
+                    )
+                    .await;
+
+                    let mut out = Vec::new();
+                    while let Some(chunk) = tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        body_rx.recv(),
+                    )
+                    .await
+                    .expect("timed out receiving normalized draft body")
+                    {
+                        let chunk = chunk.expect("chunk error");
+                        out.extend_from_slice(&chunk);
+                    }
+                    bytes::Bytes::from(out)
+                }
+            };
+
+            assert_eq!(body, bytes::Bytes::from_static(br#"{"created":true}"#));
+        });
+    }
+
+    #[test]
+    fn dispatch_auto_normalizes_plain_object_to_json_response() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let mut runtime = make_runtime();
+            inject_request_bridge(&mut runtime).expect("inject_request_bridge failed");
+
+            runtime
+                .execute_script(
+                    "<test>",
+                    deno_core::ascii_str!(
+                        r#"
+                        globalThis.__edgeRuntime.registerHandler(() => {
+                          return {
+                            ok: true,
+                            source: 'plain-object',
+                          };
+                        });
+                        "#
+                    ),
+                )
+                .unwrap();
+
+            let request = http::Request::builder()
+                .method("GET")
+                .uri("/normalize-object")
+                .header("host", "localhost:9000")
+                .body(bytes::Bytes::new())
+                .unwrap();
+
+            let response = dispatch_request(&mut runtime, request)
+                .await
+                .expect("dispatch_request should succeed");
+
+            assert_eq!(response.parts.status, 200);
+            assert_eq!(
+                response
+                    .parts
+                    .headers
+                    .get(http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some("application/json; charset=utf-8")
+            );
+
+            let body = match response.body {
+                IsolateResponseBody::Full(body) => body,
+                IsolateResponseBody::Stream(mut body_rx) => {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        runtime.run_event_loop(deno_core::PollEventLoopOptions {
+                            wait_for_inspector: false,
+                            pump_v8_message_loop: true,
+                        }),
+                    )
+                    .await;
+
+                    let mut out = Vec::new();
+                    while let Some(chunk) = tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        body_rx.recv(),
+                    )
+                    .await
+                    .expect("timed out receiving normalized object body")
+                    {
+                        let chunk = chunk.expect("chunk error");
+                        out.extend_from_slice(&chunk);
+                    }
+                    bytes::Bytes::from(out)
+                }
+            };
+
+            assert_eq!(
+                body,
+                bytes::Bytes::from_static(br#"{"ok":true,"source":"plain-object"}"#)
+            );
         });
     }
 

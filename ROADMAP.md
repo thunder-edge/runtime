@@ -575,7 +575,7 @@ Status aplicado (10/03/2026):
 - [x] Preservar `/{function_id}` como primeiro segmento canônico do runtime
 - [x] Resolver opcionalmente `host + path` via manifesto global antes do fallback por prefixo
 - [x] Resolver o deployment pelo prefixo e rotear por manifest apenas no sufixo restante
-- [ ] Documentar explicitamente o mapeamento `{function_id}.my-edge-runtime.com/... -> localhost:9000/{function_id}/...`
+- [x] Documentar explicitamente o mapeamento `{function_id}.my-edge-runtime.com/... -> localhost:8080/{function_id}/...`
 - [x] Indexar e expor rotas no `FunctionRegistry`
 - [x] Implementar matching com prioridade determinística e erro em ambiguidades
 - [x] Fazer short-circuit de rotas de asset sem entrar no isolate
@@ -586,26 +586,39 @@ Status aplicado (10/03/2026):
 - `crates/functions/src/types.rs` e `crates/functions/src/lifecycle.rs` passaram a persistir `embedded_route_metadata` no `FunctionEntry` durante deploy/update.
 - `crates/functions/src/registry.rs` agora expõe `get_route_metadata(...)` para introspecção/uso de roteamento.
 - Rotas `asset` são short-circuitadas no ingress sem encaminhamento para isolate (retorno determinístico no edge).
+- Mapeamento canônico de proxy reverso documentado em `docs/cli.md`: `{function_id}.my-edge-runtime.com/... -> localhost:8080/{function_id}/...` (admin separado em `:9000`).
 
 **Referência:** `ROADMAP_ROUTING.md` seções 2, 5, 8, 12 e 14.
 
 ### 6.4 Contrato RESTful Baseado em `export default`
 
-- [ ] Implementar suporte oficial a `export default function(req, params?)`
-- [ ] Implementar suporte oficial a `export default { GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS }`
-- [ ] Retornar `405 Method Not Allowed` com header `Allow` para object handlers sem o verbo correspondente
-- [ ] Manter `Deno.serve()` apenas como compatibilidade transitória
+- [x] Implementar suporte oficial a `export default function(req, params?)`
+- [x] Implementar suporte oficial a `export default { GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS }`
+- [x] Retornar `405 Method Not Allowed` com header `Allow` para object handlers sem o verbo correspondente
+- [x] Manter `Deno.serve()` apenas como compatibilidade transitória
 - [ ] Alinhar `docs/function-contract-design.md` ao contrato-alvo e remover named exports do caminho recomendado
+
+Status aplicado (10/03/2026):
+- `crates/functions/src/handler.rs` passou a registrar handlers automaticamente a partir de `export default` do módulo avaliado (`registerHandlerFromModuleExports`), com suporte a `default` function e `default` object por método.
+- Para `default` object, o runtime retorna `405` com header `Allow` quando o método não está implementado no handler.
+- `crates/functions/src/lifecycle.rs` e `crates/functions/src/snapshot.rs` agora executam registro de handler por exports após `mod_evaluate`, mantendo coexistência com o caminho legado de `Deno.serve()`.
+- Testes de regressão adicionados em `crates/functions/src/handler.rs`:
+    - `default_function_handler_accepts_any_method`
+    - `default_object_handler_returns_405_when_method_is_missing`
+- Item de documentação final desta seção permanece pendente porque `docs/function-contract-design.md` não existe no workspace atual.
 
 **Referência:** `ROADMAP_ROUTING.md` seções 5, 7, 9, 11 e 13.
 
 ### 6.5 Migração, Exemplos e Observabilidade
 
-- [ ] Criar exemplos completos para `single` e `routed-app`
+- [x] Criar exemplos completos para `single` e `routed-app`
 - [ ] Documentar deploy de app backend e app frontend com assets
-- [ ] Escrever guia de migração de `Deno.serve()` para `export default`
 - [ ] Adicionar testes E2E cobrindo manifest v2 (v2-only), prefixo `/{function_id}`, routing, params, 405 e assets
 - [ ] Expor introspecção administrativa e documentação operacional por rota
+
+Status parcial aplicado (10/03/2026):
+- Exemplos adicionados em `examples/all-methods-default/all-methods-default.ts` (`single` com `export default function`) e `examples/restful-default/restful-default.ts` (`routed-app` RESTful com `export default { GET, POST, DELETE }`).
+- Documentação de helpers e retorno genérico adicionada em `docs/http-response-helpers.md` (`thunder:http`) e referência do objeto `Request` adicionada em `docs/request-reference.md`.
 
 **Referência:** `ROADMAP_ROUTING.md` seções 10, 11, 12, 13 e 14.
 
