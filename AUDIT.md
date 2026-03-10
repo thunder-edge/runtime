@@ -101,6 +101,14 @@ fetch("http://[fe80::1%25eth0]/")
 
 **Fix:** Quando o parser `deno_permissions` suportar CIDR IPv6, adicionar os ranges acima ao `DEFAULT_DENY_RANGES`. Como workaround imediato, adicionar IPs IPv6 individuais mais criticos (e.g., `[::ffff:169.254.169.254]`, `[::ffff:127.0.0.1]`, etc.).
 
+**Status de cobertura (10/03/2026):**
+- Teste ofensivo de deteccao adicionado em `crates/functions/tests/sandbox_security.rs`:
+	- `sandbox_detects_ipv6_ssrf_bypass_vectors`
+- O teste valida baseline de bloqueio IPv4 privado e detecta pelo menos um vetor IPv6 nao-denied (bypass), mantendo o finding visivel em CI.
+
+**Gate de regressao pos-fix (alinhado ao ROADMAP):**
+- Quando a correcao de IPv6 SSRF entrar, inverter o teste para exigir `denied` em todos os vetores IPv6 (`::ffff:169.254.169.254`, `fd00::/7`, `fe80::/10`).
+
 ---
 
 #### NEW-C2: Legacy Router sem Autenticacao nem Verificacao de Assinatura
@@ -147,6 +155,14 @@ O `tls_acceptor.accept(stream).await` nao possui timeout. Um cliente malicioso p
 **Impacto:** Funcao maliciosa pode usar streaming para enviar gigabytes de dados sem limitacao.
 
 **Fix:** Implementar `ByteCountingStream` wrapper que conta bytes e aborta apos `MAX_RESPONSE_BODY_BYTES`.
+
+**Status de cobertura (10/03/2026):**
+- Teste E2E de deteccao do gap adicionado em `crates/server/src/lib.rs`:
+	- `e2e_ingress_streaming_response_exceeds_limit_without_rejection`
+- O teste configura `max_response_body_bytes` baixo e confirma que a resposta streaming ainda retorna `200` e ultrapassa o limite (comportamento atual vulneravel).
+
+**Gate de regressao pos-fix (alinhado ao ROADMAP):**
+- Depois do enforcement em `IsolateResponseBody::Stream`, inverter o E2E para esperar rejeicao deterministica (status/payload definidos) ao ultrapassar o limite.
 
 ---
 
@@ -379,9 +395,9 @@ O `ServerConfig` nao define versao TLS minima explicitamente. Depende dos defaul
 | Connection limit enforcement | N/A (novo) | **PARCIAL** | `e2e_connection_limit_drops_excess_connections` em `crates/server/src/lib.rs`; stress 20k `#[ignore]` |
 | Rate limiter activation | N/A (novo) | **FALTA** | Nenhum teste de integracao para 429 Too Many Requests |
 | Bundle signature verification | N/A (novo) | **FALTA** | Feature implementada, mas sem teste E2E de assinatura invalida |
-| SSRF ranges IPv6 | N/A (novo) | **FALTA** | Ranges IPv6 nao bloqueados por limitacao do parser |
+| SSRF ranges IPv6 | N/A (novo) | **PARCIAL** | Gap coberto por teste ofensivo de deteccao (`sandbox_detects_ipv6_ssrf_bypass_vectors`); bloqueio completo IPv6 ainda pendente |
 | Additional SSRF ranges (10.x, 172.16.x, etc.) | N/A | **FALTA** | Testes cobrem apenas 127.0.0.1 e 169.254.169.254 |
-| Streaming response timeout | N/A (novo) | **FALTA** | Nenhum teste de streaming response que sofre timeout |
+| Streaming response timeout | N/A (novo) | **FALTA** | Ainda sem teste dedicado de timeout; existe cobertura do gap de limite em stream via `e2e_ingress_streaming_response_exceeds_limit_without_rejection` |
 
 ---
 

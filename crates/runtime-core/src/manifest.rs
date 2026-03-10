@@ -193,32 +193,6 @@ static DENY_RULES: Lazy<Vec<DenyRule>> = Lazy::new(|| {
         .collect()
 });
 
-static MANIFEST_V1_VALIDATOR: Lazy<Validator> = Lazy::new(|| {
-    let common_schema: Value =
-        serde_json::from_str(include_str!("../../../schemas/base/common.schema.json"))
-            .expect("valid common schema JSON");
-    let network_schema: Value =
-        serde_json::from_str(include_str!("../../../schemas/base/network.schema.json"))
-            .expect("valid network schema JSON");
-    let manifest_schema: Value =
-        serde_json::from_str(include_str!("../../../schemas/function-manifest.v1.schema.json"))
-    .expect("valid manifest schema JSON");
-
-    let mut options = jsonschema::options().with_draft(Draft::Draft202012);
-    options = options.with_resource(
-        COMMON_SCHEMA_URI,
-        Resource::from_contents(common_schema).expect("valid common schema resource"),
-    );
-    options = options.with_resource(
-        NETWORK_SCHEMA_URI,
-        Resource::from_contents(network_schema).expect("valid network schema resource"),
-    );
-
-    options
-        .build(&manifest_schema)
-        .expect("valid v1 manifest validator")
-});
-
 static MANIFEST_V2_VALIDATOR: Lazy<Validator> = Lazy::new(|| {
     let common_schema: Value =
         serde_json::from_str(include_str!("../../../schemas/base/common.schema.json"))
@@ -270,18 +244,14 @@ pub fn validate_manifest_json(manifest_json: &str) -> Result<FunctionManifest, E
         .map_err(|e| anyhow::anyhow!("manifest is not valid JSON: {e}"))?;
 
     let manifest_version = extract_manifest_version(&manifest_value)?;
-    let manifest_validator = match manifest_version {
-        1 => &*MANIFEST_V1_VALIDATOR,
-        2 => &*MANIFEST_V2_VALIDATOR,
-        other => {
-            return Err(anyhow::anyhow!(
-                "manifestVersion {} is not supported (supported: 1, 2)",
-                other
-            ));
-        }
-    };
+    if manifest_version != 2 {
+        return Err(anyhow::anyhow!(
+            "manifestVersion {} is not supported; only manifestVersion 2 is accepted",
+            manifest_version
+        ));
+    }
 
-    let schema_errors: Vec<String> = manifest_validator
+    let schema_errors: Vec<String> = MANIFEST_V2_VALIDATOR
         .iter_errors(&manifest_value)
         .map(|err| err.to_string())
         .collect();
@@ -450,51 +420,35 @@ fn dedupe_preserve_order(values: &[String]) -> Vec<String> {
 
 fn validate_manifest_semantics(manifest: &FunctionManifest) -> Result<(), Error> {
     validate_network_targets(&manifest.network.allow)?;
+    if manifest.manifest_version != 2 {
+        return Err(anyhow::anyhow!(
+            "manifestVersion {} is not supported; only manifestVersion 2 is accepted",
+            manifest.manifest_version
+        ));
+    }
 
-    match manifest.manifest_version {
-        1 => {
-            if manifest.flavor.is_some() {
-                return Err(anyhow::anyhow!(
-                    "manifestVersion 1 does not support field 'flavor'"
-                ));
-            }
+    let flavor = manifest
+        .flavor
+        .ok_or_else(|| anyhow::anyhow!("manifestVersion 2 requires field 'flavor'"))?;
+
+    match flavor {
+        ManifestFlavor::Single => {
             if !manifest.routes.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "manifestVersion 1 does not support field 'routes'"
+                    "manifest flavor 'single' must not define routes"
                 ));
             }
         }
-        2 => {
-            let flavor = manifest.flavor.ok_or_else(|| {
-                anyhow::anyhow!("manifestVersion 2 requires field 'flavor'")
-            })?;
-
-            match flavor {
-                ManifestFlavor::Single => {
-                    if !manifest.routes.is_empty() {
-                        return Err(anyhow::anyhow!(
-                            "manifest flavor 'single' must not define routes"
-                        ));
-                    }
-                }
-                ManifestFlavor::RoutedApp => {
-                    if manifest.routes.is_empty() {
-                        return Err(anyhow::anyhow!(
-                            "manifest flavor 'routed-app' requires at least one route"
-                        ));
-                    }
-                }
+        ManifestFlavor::RoutedApp => {
+            if manifest.routes.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "manifest flavor 'routed-app' requires at least one route"
+                ));
             }
-
-            validate_manifest_routes(&manifest.routes)?;
-        }
-        other => {
-            return Err(anyhow::anyhow!(
-                "manifestVersion {} is not supported (supported: 1, 2)",
-                other
-            ));
         }
     }
+
+    validate_manifest_routes(&manifest.routes)?;
 
     for (profile_name, profile) in &manifest.profiles {
         if let Some(profile_network) = &profile.network {
@@ -734,10 +688,11 @@ mod tests {
     #[test]
     fn validates_minimal_manifest() {
         let json = r#"{
-                    "$schema": "https://thunder.dev/schemas/function-manifest.v1.schema.json",
-                    "manifestVersion": 1,
+                    "$schema": "https://thunder.dev/schemas/function-manifest.v2.schema.json",
+                    "manifestVersion": 2,
                     "name": "hello",
                     "entrypoint": "./index.ts",
+                    "flavor": "single",
                     "network": {
                         "mode": "allowlist",
                         "allow": ["api.example.com:443", "8.8.8.8"]
@@ -849,9 +804,10 @@ mod tests {
     #[test]
     fn rejects_manifest_with_denylisted_ip() {
         let json = r#"{
-                    "manifestVersion": 1,
+                    "manifestVersion": 2,
                     "name": "hello",
                     "entrypoint": "./index.ts",
+                    "flavor": "single",
                     "network": {
                         "mode": "allowlist",
                         "allow": ["127.0.0.1"]
@@ -865,9 +821,10 @@ mod tests {
     #[test]
     fn rejects_manifest_with_wildcard_allow() {
         let json = r#"{
-                    "manifestVersion": 1,
+                    "manifestVersion": 2,
                     "name": "hello",
                     "entrypoint": "./index.ts",
+                    "flavor": "single",
                     "network": {
                         "mode": "allowlist",
                         "allow": ["*"]
@@ -884,9 +841,10 @@ mod tests {
     #[test]
     fn rejects_manifest_missing_required_network() {
         let json = r#"{
-                    "manifestVersion": 1,
+                    "manifestVersion": 2,
                     "name": "hello",
-                    "entrypoint": "./index.ts"
+                    "entrypoint": "./index.ts",
+                    "flavor": "single"
                 }"#;
 
         let err = validate_manifest_json(json).expect_err("schema should reject");
@@ -896,9 +854,10 @@ mod tests {
     #[test]
     fn resolves_profile_overrides_for_network_and_resources() {
         let json = r#"{
-            "manifestVersion": 1,
+            "manifestVersion": 2,
             "name": "hello",
             "entrypoint": "./index.ts",
+            "flavor": "single",
             "env": {
                 "allow": ["LOG_LEVEL"],
                 "secretRefs": ["BASE_SECRET"]
@@ -944,9 +903,10 @@ mod tests {
     #[test]
     fn rejects_unknown_profile() {
         let json = r#"{
-            "manifestVersion": 1,
+            "manifestVersion": 2,
             "name": "hello",
             "entrypoint": "./index.ts",
+            "flavor": "single",
             "network": {
                 "mode": "allowlist",
                 "allow": ["api.example.com:443"]
@@ -963,6 +923,24 @@ mod tests {
         let err = parse_validate_and_resolve_manifest(json, Some("prod"))
             .expect_err("must reject unknown profile");
         assert!(err.to_string().contains("was not found"));
+    }
+
+    #[test]
+    fn rejects_manifest_v1_as_no_longer_supported() {
+        let json = r#"{
+                    "manifestVersion": 1,
+                    "name": "hello",
+                    "entrypoint": "./index.ts",
+                    "network": {
+                        "mode": "allowlist",
+                        "allow": ["api.example.com:443"]
+                    }
+                }"#;
+
+        let err = validate_manifest_json(json).expect_err("v1 must be rejected");
+        assert!(err
+            .to_string()
+            .contains("only manifestVersion 2 is accepted"));
     }
 
     #[test]

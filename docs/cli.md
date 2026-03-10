@@ -4,7 +4,7 @@ This document describes the `edge-cli` crate command-line interface exposed by t
 
 Related docs:
 
-- [Function Manifest (v1)](./function-manifest.md)
+- [Function Manifest (v2)](./function-manifest.md)
 - [Virtual File System (VFS)](./vfs.md)
 
 ## Binary
@@ -684,12 +684,18 @@ thunder bundle --entrypoint <FILE> --output <FILE>
 - `-o, --output <OUTPUT>`
   - Required.
   - Destination file path.
+- `--manifest <MANIFEST>`
+  - Optional.
+  - Path to a function manifest (v2).
+  - When provided with `flavor: "routed-app"` and empty `routes`, the CLI auto-scans a `functions/` directory and fills `routes[]`.
+  - `single` manifests are not modified by this auto-scan.
 
 ### Behavior Notes
 
 - For TS-like entrypoints (`.ts`, `.mts`, `.cts`, `.tsx`):
   - If `deno` is available in `PATH`, runs `deno check` first.
   - If not available, falls back to syntax/module-graph validation only.
+- Routed-app manifest auto-scan is applied only when `--manifest` is provided and `routes[]` is empty.
 - Result is written as a serialized `BundlePackage` containing ESZIP bytes.
 - Supports `edge://assert/*` and `ext:edge_assert/*` through embedded native modules bundled in the binary (`include_str!`).
 
@@ -699,6 +705,12 @@ thunder bundle --entrypoint <FILE> --output <FILE>
 thunder bundle \
   --entrypoint ./examples/json-api/json-api.ts \
   --output ./bundles/eszip/json-api.eszip
+
+# With routed-app manifest auto-route generation (only when routes[] is empty)
+thunder bundle \
+  --entrypoint ./functions/index.ts \
+  --manifest ./function.manifest.json \
+  --output ./bundles/eszip/app.eszip
 ```
 
 ## `watch`

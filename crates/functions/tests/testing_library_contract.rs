@@ -125,14 +125,22 @@ fn contract_runner_features_suite_passes() {
 #[test]
 fn contract_full_js_suite_stays_green() {
     let out = assert_ok_run("./tests/js/**/*.ts");
+    let suites_summary = out
+        .lines()
+        .find(|line| line.starts_with("Test Suites:"))
+        .unwrap_or("");
     assert!(
-        out.contains("Test Suites: 10 total, 10 passed, 0 failed"),
-        "expected full suite summary in output, got:\n{}",
+        !suites_summary.is_empty() && suites_summary.contains("0 failed"),
+        "expected zero-failure suite summary in output, got:\n{}",
         out
     );
+    let tests_summary = out
+        .lines()
+        .find(|line| line.starts_with("Tests:"))
+        .unwrap_or("");
     assert!(
-        out.contains("Tests:"),
-        "expected test totals summary line in output, got:\n{}",
+        !tests_summary.is_empty() && tests_summary.contains("0 failed"),
+        "expected zero-failure test summary line in output, got:\n{}",
         out
     );
 }

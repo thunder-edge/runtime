@@ -605,6 +605,7 @@ impl Router {
 
     /// Handle routes like:
     /// - GET    /_internal/functions/{name}
+    /// - GET    /_internal/functions/{name}/manifest
     /// - PUT    /_internal/functions/{name}
     /// - DELETE /_internal/functions/{name}
     /// - POST   /_internal/functions/{name}/reload
@@ -647,6 +648,21 @@ impl Router {
                 }
                 None => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
             },
+
+            // GET /_internal/functions/{name}/manifest
+            (Method::GET, Some("manifest")) => {
+                if let Some(manifest) = self.registry.get_resolved_manifest(name) {
+                    let json = serde_json::to_string(&manifest).unwrap_or_default();
+                    json_response(StatusCode::OK, &json)
+                } else if self.registry.get_config(name).is_some() {
+                    json_response(
+                        StatusCode::NOT_FOUND,
+                        r#"{"error":"manifest not configured for function"}"#,
+                    )
+                } else {
+                    json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#)
+                }
+            }
 
             // PUT /_internal/functions/{name}
             (Method::PUT, None) => {

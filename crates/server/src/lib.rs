@@ -2121,6 +2121,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn e2e_ingress_streaming_response_exceeds_limit_without_rejection() {
+        init_deno_platform();
+
+        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind admin probe listener");
+        let admin_addr = admin_probe
+            .local_addr()
+            .expect("failed to get admin local addr");
+        drop(admin_probe);
+
+        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind ingress probe listener");
+        let ingress_addr = ingress_probe
+            .local_addr()
+            .expect("failed to get ingress local addr");
+        drop(ingress_probe);
+
+        let registry = make_test_registry();
+        let shutdown = CancellationToken::new();
+
+        let stream_eszip = build_eszip_async(
+            "file:///stream_limit_gap_e2e.ts",
+            r#"
+            Deno.serve(async () => {
+              const encoder = new TextEncoder();
+              const stream = new ReadableStream({
+                start(controller) {
+                  (async () => {
+                    for (let i = 0; i < 64; i++) {
+                      controller.enqueue(encoder.encode(`chunk-${String(i).padStart(2, '0')}-xxxxxxxxxxxxxxxxxxxxxxxxxxxx\n`));
+                    }
+                    controller.close();
+                  })().catch((err) => controller.error(err));
+                },
+              });
+
+              return new Response(stream, {
+                headers: { 'content-type': 'text/plain' },
+              });
+            });
+            "#,
+        )
+        .await;
+        let bundle = BundlePackage::eszip_only(stream_eszip);
+        let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+        registry
+            .deploy(
+                "stream-limit-gap-e2e".to_string(),
+                bytes::Bytes::from(bundle_data),
+                None,
+                None,
+            )
+            .await
+            .expect("failed to deploy streaming limit gap test function");
+
+        let tiny_limit = 512usize;
+        let server_config = DualServerConfig {
+            admin: AdminListenerConfig {
+                addr: admin_addr,
+                api_key: None,
+                tls: None,
+                body_limits: BodyLimitsConfig {
+                    max_request_body_bytes: 1024,
+                    max_response_body_bytes: tiny_limit,
+                },
+                bundle_signature: BundleSignatureConfig {
+                    required: false,
+                    public_key_path: None,
+                },
+            },
+            ingress: IngressListenerConfig {
+                listener_type: IngressListenerType::Tcp(ingress_addr),
+                tls: None,
+                rate_limit_rps: None,
+                body_limits: BodyLimitsConfig {
+                    max_request_body_bytes: 1024,
+                    max_response_body_bytes: tiny_limit,
+                },
+            },
+            graceful_exit_deadline_secs: 1,
+            max_connections: 128,
+        };
+
+        let server_shutdown = shutdown.clone();
+        let registry_for_server = registry.clone();
+        let server_handle = tokio::spawn(async move {
+            run_dual_server(server_config, registry_for_server, server_shutdown).await
+        });
+
+        wait_for_tcp_listener(admin_addr).await;
+        wait_for_tcp_listener(ingress_addr).await;
+
+        let response = send_plain_http(
+            ingress_addr,
+            "GET /stream-limit-gap-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "expected stream response to bypass size rejection and return 200: {response}"
+        );
+        assert!(
+            !response.contains("response body too large"),
+            "did not expect full-body size check error on streaming path: {response}"
+        );
+        assert!(
+            response.to_ascii_lowercase().contains("transfer-encoding: chunked"),
+            "expected chunked transfer in streaming response: {response}"
+        );
+        assert!(
+            response.len() > tiny_limit,
+            "expected full HTTP payload to exceed configured max_response_body_bytes ({}), got {}",
+            tiny_limit,
+            response.len()
+        );
+        assert!(
+            response.contains("chunk-63"),
+            "expected late-stream marker proving long streamed body completed: {response}"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
+    }
+
+    #[tokio::test]
     async fn e2e_ingress_preserves_http_header_semantics_on_rewrite() {
         init_deno_platform();
 

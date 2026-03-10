@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Once;
 
 use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use functions::registry::FunctionRegistry;
@@ -21,6 +22,13 @@ use runtime_core::permissions::create_permissions_container;
 use tokio_util::sync::CancellationToken;
 
 static PANIC_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
+static DENO_INIT: Once = Once::new();
+
+fn init_deno_platform() {
+    DENO_INIT.call_once(|| {
+        deno_core::JsRuntime::init_platform(None);
+    });
+}
 
 /// Helper: create a JsRuntime with the same config as production isolates.
 fn make_runtime_with_eszip(eszip: Arc<eszip::EszipV2>) -> JsRuntime {
@@ -136,7 +144,7 @@ async fn parse_eszip(bytes: &[u8]) -> eszip::EszipV2 {
 /// Test 1: V8 terminate_execution stops infinite loops.
 #[test]
 fn test_terminate_execution_stops_infinite_loop() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_infinite.js",
@@ -236,7 +244,7 @@ fn test_terminate_execution_stops_infinite_loop() {
 /// Test 1.1 roadmap requirement: isolate timeout returns HTTP 504.
 #[test]
 fn test_isolate_timeout_returns_504() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_timeout_504.js",
@@ -323,7 +331,7 @@ fn test_isolate_timeout_returns_504() {
 /// and mark the function as Error in registry.
 #[test]
 fn test_heap_limit_infinite_allocation_marks_function_error() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_heap_oom.js",
@@ -430,7 +438,7 @@ fn test_heap_limit_infinite_allocation_marks_function_error() {
 #[test]
 fn test_panic_followed_by_request_marks_error_and_fails_fast() {
     let _panic_env_lock = PANIC_PATH_ENV_LOCK.lock().expect("panic env lock poisoned");
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_panic_recovery.js",
@@ -530,7 +538,7 @@ fn test_panic_followed_by_request_marks_error_and_fails_fast() {
 #[test]
 fn test_panic_auto_restart_recovers_to_running() {
     let _panic_env_lock = PANIC_PATH_ENV_LOCK.lock().expect("panic env lock poisoned");
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_panic_auto_restart.js",
@@ -661,7 +669,7 @@ fn test_panic_auto_restart_recovers_to_running() {
 /// Test roadmap 2.2 requirement: graceful shutdown with request in-flight.
 #[test]
 fn test_graceful_shutdown_with_in_flight_request() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_shutdown_inflight.js",
@@ -757,7 +765,7 @@ fn test_graceful_shutdown_with_in_flight_request() {
 /// Test 2: Timer tracking registers timers by execution ID.
 #[test]
 fn test_timer_tracking_registration() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_timer_reg.js", "globalThis.__test = true;");
 
@@ -855,7 +863,7 @@ fn test_timer_tracking_registration() {
 /// Test 3: Interval tracking registers intervals by execution ID.
 #[test]
 fn test_interval_tracking_registration() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_interval_reg.js", "globalThis.__test = true;");
 
@@ -943,7 +951,7 @@ fn test_interval_tracking_registration() {
 /// Test 4: Timer isolation - timers from different executions don't interfere.
 #[test]
 fn test_timer_isolation_between_executions() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_isolation.js", "globalThis.__test = true;");
 
@@ -1055,7 +1063,7 @@ fn test_timer_isolation_between_executions() {
 /// Test 5: WebSocket is tracked and closed when clearExecutionTimers is triggered.
 #[test]
 fn test_websocket_closed_on_clear_execution_timers() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_ws_cleanup_clear.js",
@@ -1150,7 +1158,7 @@ fn test_websocket_closed_on_clear_execution_timers() {
 /// Test 6: WebSocket is tracked and closed on endExecution.
 #[test]
 fn test_websocket_closed_on_end_execution() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_ws_cleanup_end.js",
@@ -1245,7 +1253,7 @@ fn test_websocket_closed_on_end_execution() {
 #[test]
 fn test_websocket_unregisters_on_close_event() {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind websocket server");
     let addr = listener.local_addr().expect("read local address");
@@ -1371,7 +1379,7 @@ fn test_websocket_unregisters_on_close_event() {
 /// Test 8: Isolate remains functional after timeout + cleanup.
 #[test]
 fn test_isolate_reusable_after_timeout() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_reuse.js",
@@ -1520,7 +1528,7 @@ fn test_isolate_reusable_after_timeout() {
 /// Test 6: Fetch tracking with AbortController.
 #[test]
 fn test_fetch_abort_controller_tracking() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_fetch_track.js", "globalThis.__test = true;");
 
@@ -1612,7 +1620,7 @@ fn test_fetch_abort_controller_tracking() {
 /// Test 7: Promise tracking registration.
 #[test]
 fn test_promise_tracking_registration() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_promise_track.js", "globalThis.__test = true;");
 
@@ -1721,7 +1729,7 @@ fn test_promise_tracking_registration() {
 /// Test 8: Original functions are preserved.
 #[test]
 fn test_original_functions_preserved() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_originals.js", "globalThis.__test = true;");
 
@@ -1819,7 +1827,7 @@ fn test_original_functions_preserved() {
 /// tracking and cleanup by execution ID.
 #[test]
 fn test_async_hooks_import_preserves_bridge_timer_tracking() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_async_hooks_timer_bridge.js",
@@ -1942,7 +1950,7 @@ fn test_async_hooks_import_preserves_bridge_timer_tracking() {
 /// tracking/cleanup used by clearExecutionTimers.
 #[test]
 fn test_async_hooks_import_preserves_bridge_promise_tracking() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_async_hooks_promise_bridge.js",
@@ -2065,7 +2073,7 @@ fn test_async_hooks_import_preserves_bridge_promise_tracking() {
 /// Test 9: clearTimeout removes timer from registry.
 #[test]
 fn test_clear_timeout_removes_from_registry() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_clear_timeout.js", "globalThis.__test = true;");
 
@@ -2169,7 +2177,7 @@ fn test_clear_timeout_removes_from_registry() {
 /// Test 10: clearInterval removes interval from registry.
 #[test]
 fn test_clear_interval_removes_from_registry() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_clear_interval.js",
@@ -2262,7 +2270,7 @@ fn test_clear_interval_removes_from_registry() {
 /// Test 11: Multiple sequential requests after timeout recovery.
 #[test]
 fn test_multiple_requests_after_timeout() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_multi_req.js",
@@ -2415,7 +2423,7 @@ fn test_multiple_requests_after_timeout() {
 /// Test 12: Nested timers are tracked correctly.
 #[test]
 fn test_nested_timers_tracking() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_nested.js", "globalThis.__test = true;");
 
@@ -2510,7 +2518,7 @@ fn test_nested_timers_tracking() {
 /// Test 13: Timer callback execution removes from registry.
 #[test]
 fn test_timer_callback_removes_from_registry() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_callback.js", "globalThis.__test = true;");
 
@@ -2620,7 +2628,7 @@ fn test_timer_callback_removes_from_registry() {
 /// Test 14: setTimeout callback should not run after clearExecutionTimers finalizes execution.
 #[test]
 fn test_timer_callback_skipped_after_clear_execution() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip("file:///test_timer_skip.js", "globalThis.__test = true;");
 
@@ -2687,7 +2695,7 @@ fn test_timer_callback_skipped_after_clear_execution() {
 /// Test 15: queueMicrotask callback should not run after clearExecutionTimers finalizes execution.
 #[test]
 fn test_microtask_callback_skipped_after_clear_execution() {
-    deno_core::JsRuntime::init_platform(None);
+    init_deno_platform();
 
     let eszip_bytes = build_eszip(
         "file:///test_microtask_skip.js",

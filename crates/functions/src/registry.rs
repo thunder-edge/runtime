@@ -1170,6 +1170,13 @@ impl FunctionRegistry {
         self.functions.get(name).map(|entry| entry.config.clone())
     }
 
+    /// Get the resolved manifest policy currently attached to a function.
+    pub fn get_resolved_manifest(&self, name: &str) -> Option<ResolvedFunctionManifest> {
+        self.functions
+            .get(name)
+            .and_then(|entry| entry.manifest.clone())
+    }
+
     /// List all functions.
     pub fn list(&self) -> Vec<FunctionInfo> {
         let names: Vec<String> = self
