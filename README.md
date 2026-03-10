@@ -99,7 +99,8 @@ cargo build
 1. Start the server:
 
 ```bash
-cargo run -- start --host 0.0.0.0 --port 9000
+# Ingress: 8080 | Admin API: 9000
+cargo run -- start --host 0.0.0.0 --port 8080 --admin-port 9000
 ```
 
 2. Generate an ESZIP bundle:
@@ -119,18 +120,25 @@ cargo run -- bundle \
   --format snapshot
 ```
 
-3. Deploy the function:
+3. Deploy the function (admin listener):
 
 ```bash
 curl -X POST http://localhost:9000/_internal/functions \
   -H "x-function-name: hello" \
+  -H "content-type: application/octet-stream" \
   --data-binary @./hello.eszip
+```
+
+If you started the runtime with `--api-key`, include:
+
+```bash
+-H "X-API-Key: <your-key>"
 ```
 
 4. Invoke the function:
 
 ```bash
-curl http://localhost:9000/hello
+curl http://localhost:8080/hello
 ```
 
 5. Check metrics:
