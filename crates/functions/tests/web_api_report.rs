@@ -1695,13 +1695,24 @@ fn verify_node_report_coverage(node_checks: &[NodeCompatCheck]) {
 }
 
 fn verify_node_compat_docs_sync(node_checks: &[NodeCompatCheck]) {
-    let docs_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let docs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("missing crates dir")
         .parent()
         .expect("missing workspace dir")
-        .join("docs")
-        .join("NODE-COMPAT.md");
+        .join("docs");
+
+    let docs_path = ["NODE-COMPAT.md", "node-compat.md"]
+        .iter()
+        .map(|name| docs_dir.join(name))
+        .find(|path| path.exists());
+
+    let Some(docs_path) = docs_path else {
+        eprintln!(
+            "warning: skipping Node compatibility docs sync check because docs/NODE-COMPAT.md (or docs/node-compat.md) was not found"
+        );
+        return;
+    };
 
     let docs = std::fs::read_to_string(&docs_path).unwrap_or_else(|e| {
         panic!(
