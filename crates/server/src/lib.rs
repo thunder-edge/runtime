@@ -1233,6 +1233,34 @@ mod tests {
         panic!("listener did not become ready in time: {addr}");
     }
 
+    async fn reserve_dual_listener_addrs() -> (SocketAddr, SocketAddr) {
+        // Keep both probe listeners alive simultaneously so the OS cannot recycle
+        // the same ephemeral port for admin and ingress.
+        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind admin probe listener");
+        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind ingress probe listener");
+
+        let admin_addr = admin_probe
+            .local_addr()
+            .expect("failed to get admin local addr");
+        let ingress_addr = ingress_probe
+            .local_addr()
+            .expect("failed to get ingress local addr");
+
+        assert_ne!(
+            admin_addr, ingress_addr,
+            "expected admin and ingress listeners to use distinct addresses"
+        );
+
+        drop(ingress_probe);
+        drop(admin_probe);
+
+        (admin_addr, ingress_addr)
+    }
+
     async fn wait_for_routing_saturation(addr: SocketAddr) {
         let mut last_metrics = String::new();
         for _ in 0..100 {
@@ -1503,21 +1531,7 @@ mod tests {
     async fn e2e_deploy_corrupted_bundle_returns_400_without_crash() {
         init_deno_platform();
 
-        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind admin probe listener");
-        let admin_addr = admin_probe
-            .local_addr()
-            .expect("failed to get admin local addr");
-        drop(admin_probe);
-
-        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind ingress probe listener");
-        let ingress_addr = ingress_probe
-            .local_addr()
-            .expect("failed to get ingress local addr");
-        drop(ingress_probe);
+        let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
 
         let registry = make_test_registry();
         let shutdown = CancellationToken::new();
@@ -1584,21 +1598,7 @@ mod tests {
     async fn e2e_admin_auth_and_public_ingress_behavior() {
         init_deno_platform();
 
-        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind admin probe listener");
-        let admin_addr = admin_probe
-            .local_addr()
-            .expect("failed to get admin local addr");
-        drop(admin_probe);
-
-        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind ingress probe listener");
-        let ingress_addr = ingress_probe
-            .local_addr()
-            .expect("failed to get ingress local addr");
-        drop(ingress_probe);
+        let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
 
         let registry = make_test_registry();
         let shutdown = CancellationToken::new();
@@ -1705,21 +1705,7 @@ mod tests {
     async fn e2e_host_based_routing_updates_via_put_and_routes_without_prefix() {
         init_deno_platform();
 
-        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind admin probe listener");
-        let admin_addr = admin_probe
-            .local_addr()
-            .expect("failed to get admin local addr");
-        drop(admin_probe);
-
-        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind ingress probe listener");
-        let ingress_addr = ingress_probe
-            .local_addr()
-            .expect("failed to get ingress local addr");
-        drop(ingress_probe);
+        let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
 
         let registry = make_test_registry();
         let shutdown = CancellationToken::new();
@@ -1830,21 +1816,7 @@ mod tests {
     async fn e2e_ingress_streaming_returns_progressive_chunked_body() {
         init_deno_platform();
 
-        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind admin probe listener");
-        let admin_addr = admin_probe
-            .local_addr()
-            .expect("failed to get admin local addr");
-        drop(admin_probe);
-
-        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind ingress probe listener");
-        let ingress_addr = ingress_probe
-            .local_addr()
-            .expect("failed to get ingress local addr");
-        drop(ingress_probe);
+        let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
 
         let registry = make_test_registry();
         let shutdown = CancellationToken::new();
@@ -1977,21 +1949,7 @@ mod tests {
     async fn e2e_ingress_streaming_long_chunked_body_completes() {
         init_deno_platform();
 
-        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind admin probe listener");
-        let admin_addr = admin_probe
-            .local_addr()
-            .expect("failed to get admin local addr");
-        drop(admin_probe);
-
-        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind ingress probe listener");
-        let ingress_addr = ingress_probe
-            .local_addr()
-            .expect("failed to get ingress local addr");
-        drop(ingress_probe);
+        let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
 
         let registry = make_test_registry();
         let shutdown = CancellationToken::new();
@@ -2125,21 +2083,7 @@ mod tests {
     async fn e2e_ingress_streaming_response_exceeds_limit_without_rejection() {
         init_deno_platform();
 
-        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind admin probe listener");
-        let admin_addr = admin_probe
-            .local_addr()
-            .expect("failed to get admin local addr");
-        drop(admin_probe);
-
-        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind ingress probe listener");
-        let ingress_addr = ingress_probe
-            .local_addr()
-            .expect("failed to get ingress local addr");
-        drop(ingress_probe);
+        let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
 
         let registry = make_test_registry();
         let shutdown = CancellationToken::new();
@@ -2258,21 +2202,7 @@ mod tests {
     async fn e2e_ingress_preserves_http_header_semantics_on_rewrite() {
         init_deno_platform();
 
-        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind admin probe listener");
-        let admin_addr = admin_probe
-            .local_addr()
-            .expect("failed to get admin local addr");
-        drop(admin_probe);
-
-        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind ingress probe listener");
-        let ingress_addr = ingress_probe
-            .local_addr()
-            .expect("failed to get ingress local addr");
-        drop(ingress_probe);
+        let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
 
         let registry = make_test_registry();
         let shutdown = CancellationToken::new();
@@ -2374,21 +2304,7 @@ mod tests {
     async fn e2e_async_local_storage_isolated_between_overlapping_requests() {
         init_deno_platform();
 
-        let admin_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind admin probe listener");
-        let admin_addr = admin_probe
-            .local_addr()
-            .expect("failed to get admin local addr");
-        drop(admin_probe);
-
-        let ingress_probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind ingress probe listener");
-        let ingress_addr = ingress_probe
-            .local_addr()
-            .expect("failed to get ingress local addr");
-        drop(ingress_probe);
+        let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
 
         let registry = make_test_registry();
         let shutdown = CancellationToken::new();
