@@ -146,10 +146,10 @@ jobs:
             label: macos-aarch64
             binary_name: thunder
             archive_name: thunder-macos-aarch64.tar.gz
-          # - os: windows-latest
-          #   label: windows-x86_64
-          #   binary_name: thunder.exe
-          #   archive_name: thunder-windows-x86_64.zip
+          - os: windows-latest
+            label: windows-x86_64
+            binary_name: thunder.exe
+            archive_name: thunder-windows-x86_64.zip
 
     permissions:
       contents: read
@@ -179,13 +179,13 @@ jobs:
           chmod +x dist/${{ matrix.binary_name }}
           tar -czf dist/${{ matrix.archive_name }} -C dist ${{ matrix.binary_name }}
 
-      # - name: Package artifact (Windows)
-      #   if: runner.os == 'Windows'
-      #   shell: pwsh
-      #   run: |
-      #     New-Item -Path dist -ItemType Directory -Force | Out-Null
-      #     Copy-Item "${env:CARGO_TARGET_DIR}/release/${{ matrix.binary_name }}" "dist/${{ matrix.binary_name }}" -Force
-      #     Compress-Archive -Path "dist/${{ matrix.binary_name }}" -DestinationPath "dist/${{ matrix.archive_name }}" -Force
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -Path dist -ItemType Directory -Force | Out-Null
+          Copy-Item "${env:CARGO_TARGET_DIR}/release/${{ matrix.binary_name }}" "dist/${{ matrix.binary_name }}" -Force
+          Compress-Archive -Path "dist/${{ matrix.binary_name }}" -DestinationPath "dist/${{ matrix.archive_name }}" -Force
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
