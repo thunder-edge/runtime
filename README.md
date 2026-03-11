@@ -88,6 +88,44 @@ HTTP ingress server and control API:
 - Optional: `deno` in `PATH` for TS semantic typecheck in `bundle` and `check`
 - Optional: `k6` for load testing (see [load_testing.md](docs/load_testing.md))
 
+## Install (GitHub Releases)
+
+Install latest stable:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thunder-edge/runtime/main/install.sh | bash
+# or
+wget -qO- https://raw.githubusercontent.com/thunder-edge/runtime/main/install.sh | bash
+```
+
+Install latest unstable:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thunder-edge/runtime/main/install.sh | bash -s -- --channel unstable
+```
+
+Install from a specific tag or commit:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thunder-edge/runtime/main/install.sh | bash -s -- --tag v1.2.3
+curl -fsSL https://raw.githubusercontent.com/thunder-edge/runtime/main/install.sh | bash -s -- --commit <sha>
+```
+
+Print only latest resolved tag (for remote auto-update checks):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thunder-edge/runtime/main/install.sh | bash -s -- --latest-tag
+curl -fsSL https://raw.githubusercontent.com/thunder-edge/runtime/main/install.sh | bash -s -- --latest-tag --channel unstable
+```
+
+By default, the installer targets a user-local bin directory (no root required):
+
+- macOS: `~/bin` (if present/in `PATH`) or `~/.local/bin`
+- Linux: `~/.local/bin`
+
+You can override with `--install-dir <dir>`.
+If the directory is not in `PATH`, the installer updates your shell rc file (`.zshrc`, `.bashrc`, or `.profile`) and prints an immediate `export PATH=...` command for the current session.
+
 ## Quick Build
 
 ```bash
@@ -190,19 +228,6 @@ Function execution route:
 
 - `/{function_name}/...`
 
-## Snapshot Compatibility Note
-
-If you deploy snapshot-formatted bundles, snapshots are tied to the V8 version that produced them.
-
-- On V8/runtime upgrades, existing snapshots may become incompatible.
-- Runtime automatically falls back to ESZIP startup when mismatch is detected.
-- Regenerate and redeploy snapshots after V8 changes to restore optimal cold-start performance.
-
-Use `GET /_internal/functions` or `GET /_internal/functions/{name}` to inspect:
-
-- `package_v8_version`
-- `runtime_v8_version`
-- `requires_snapshot_regeneration`
 
 ## Development Mode with Watch
 
