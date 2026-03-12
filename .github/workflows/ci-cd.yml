@@ -165,7 +165,10 @@ jobs:
         with:
           workspaces: |
             . -> target/ci
-          shared-key: release-${{ runner.os }}
+          # Isolate cache per release target to avoid cross-arch conflicts
+          # (notably macos-latest vs macos-14) and avoid concurrent save races.
+          shared-key: release-${{ runner.os }}-${{ matrix.label }}
+          save-if: false
 
       - name: Build release binary
         run: cargo build -p edge-cli --release --locked
