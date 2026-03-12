@@ -5,8 +5,11 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+
+static CLI_TEST_RUN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -18,6 +21,13 @@ fn workspace_root() -> PathBuf {
 }
 
 fn run_cli_test(path: &str) -> (i32, String, String) {
+    // These tests spawn nested cargo commands; serialize them to avoid
+    // package/artifact lock contention across parallel test threads.
+    let guard = CLI_TEST_RUN_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("failed to lock CLI test run mutex");
+
     let mut child = Command::new("cargo")
         .args([
             "run",
@@ -36,7 +46,7 @@ fn run_cli_test(path: &str) -> (i32, String, String) {
         .expect("failed to execute cargo run -- test");
 
     // Prevent indefinite hangs if a nested cargo process gets stuck.
-    let timeout = Duration::from_secs(120);
+    let timeout = Duration::from_secs(300);
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -78,6 +88,7 @@ fn run_cli_test(path: &str) -> (i32, String, String) {
     let code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    drop(guard);
     (code, stdout, stderr)
 }
 
