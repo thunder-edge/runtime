@@ -128,7 +128,6 @@ jobs:
   build_release_artifacts:
     name: Build Release Artifacts (${{ matrix.label }})
     needs: [test_rust_crates, test_js, verify_web_standards_report]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
