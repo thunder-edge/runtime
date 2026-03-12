@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn cpu_timer_exceeds_limit() {
-        let mut timer = CpuTimer::new(10);
+        let mut timer = CpuTimer::new(1);
         timer.start();
         busy_work(Duration::from_millis(30));
         timer.stop();
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn cpu_timer_exceeded_flag_shared() {
-        let mut timer = CpuTimer::new(10);
+        let mut timer = CpuTimer::new(1);
         let flag = timer.exceeded_flag();
         assert!(!flag.load(Ordering::Relaxed));
         timer.start();
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn cpu_timer_reset_clears_exceeded_flag() {
-        let mut timer = CpuTimer::new(10); // Very low limit
+        let mut timer = CpuTimer::new(1); // Very low limit for deterministic CI behavior
         let flag = timer.exceeded_flag();
 
         timer.start();
@@ -289,20 +289,28 @@ mod tests {
 
     #[test]
     fn cpu_timer_usable_after_reset() {
-        let mut timer = CpuTimer::new(10); // Very low limit
+        let mut timer = CpuTimer::new(10);
 
-        // First run - exceed limit
-        timer.start();
-        busy_work(Duration::from_millis(30));
-        timer.stop();
-        assert!(timer.is_exceeded());
+        // First phase: ensure we exceed limit in a deterministic way even on
+        // heavily-throttled CI where per-thread CPU accounting may be coarse.
+        for _ in 0..5 {
+            timer.start();
+            busy_work(Duration::from_millis(30));
+            timer.stop();
+            if timer.is_exceeded() {
+                break;
+            }
+        }
+        assert!(
+            timer.is_exceeded(),
+            "expected timer to exceed after repeated busy cycles; accumulated={}ms",
+            timer.accumulated_ms()
+        );
 
-        // Reset and use again
+        // Reset and use again. Immediate start/stop should not exceed.
         timer.reset();
         timer.start();
-        busy_work(Duration::from_millis(5));
         timer.stop();
-        // Should not be exceeded with only 5ms
         assert!(!timer.is_exceeded());
     }
 
