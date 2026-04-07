@@ -146,10 +146,10 @@ jobs:
             label: macos-aarch64
             binary_name: thunder
             archive_name: thunder-macos-aarch64.tar.gz
-          - os: windows-latest
-            label: windows-x86_64
-            binary_name: thunder.exe
-            archive_name: thunder-windows-x86_64.zip
+          # - os: windows-latest
+          #   label: windows-x86_64
+          #   binary_name: thunder.exe
+          #   archive_name: thunder-windows-x86_64.zip
 
     permissions:
       contents: read
