@@ -223,7 +223,7 @@ Status aplicado (08/03/2026):
 - Regressões de disponibilidade/semântica adicionadas:
     - `crates/functions/tests/cloudflare_networking.rs` valida construtor, constantes e metadados de guardrails;
     - `crates/functions/tests/web_api_compat.rs` valida presença e constantes da API WebSocket.
-- Documentação operacional de proxy externo adicionada em `docs/cli.md` com requisitos de forwarding `Upgrade` HTTP/1.1, headers obrigatórios e timeouts de conexão longa.
+- Documentação operacional de proxy externo adicionada em `docs/reference/cli.md` com requisitos de forwarding `Upgrade` HTTP/1.1, headers obrigatórios e timeouts de conexão longa.
 
 **Critério de aceite:** cliente `WebSocket` conecta e troca mensagens com estabilidade.
 
@@ -275,7 +275,7 @@ Status aplicado (07/03/2026):
 - Runtime `edge_node_compat` expandido para registrar matriz completa de módulos `node:*` suportados pelo perfil, incluindo módulos `Stub` importáveis (`node:test`, `node:sqlite` e demais stubs) em `crates/runtime-core/src/extensions.rs`.
 - Erro determinístico de métodos stub padronizado para o formato `[thunder] <api> is not implemented in this runtime profile` nos módulos compat em `crates/runtime-core/src/node_compat/*`.
 - Cobertura de regressão atualizada para validar prefixo `[thunder]` e importabilidade de módulos `Stub` em `crates/functions/tests/node_module_imports.rs` e `crates/functions/tests/node_process_compat.rs`.
-- Matriz publicada em `docs/NODE-COMPAT.md` e refletida no relatório automático (`crates/functions/tests/web_api_report.rs` -> `docs/web_standards_api_report.md`).
+- Matriz publicada em `docs/reference/NODE-COMPAT.md` e refletida no relatório automático (`crates/functions/tests/web_api_report.rs` -> `docs/reports/web_standards_api_report.md`).
 
 **Critério de aceite:** qualquer pacote que apenas importa módulo Node não falha na carga por ausência de módulo.
 
@@ -503,9 +503,9 @@ Não implementar flag de compatibilidade, node compat será ativo por padrão.
     - Status aplicado: regressão adicionada em `crates/functions/tests/node_fs_compat.rs` (`node_fs_detects_vfs_integrity_corruption`).
     - Referência: `ROADMAP-NODE-COMPAT.md §4.4` (Security checklist TODO: VFS integrity checking).
 - [x] Publicar matriz de compatibilidade Node em formato consultável por humanos e CI:
-    - Status aplicado: validação automática da matriz em `docs/NODE-COMPAT.md` no teste `crates/functions/tests/web_api_report.rs`, com verificação de níveis oficiais e cobertura de módulos esperados.
-    - Status aplicado: CI atualizado para executar geração do relatório e falhar quando `docs/web_standards_api_report.md` estiver desatualizado.
-    - Documento `docs/NODE-COMPAT.md` + gate de regressão no CI para níveis `Full/Partial/Stub/None`.
+    - Status aplicado: validação automática da matriz em `docs/reference/NODE-COMPAT.md` no teste `crates/functions/tests/web_api_report.rs`, com verificação de níveis oficiais e cobertura de módulos esperados.
+    - Status aplicado: CI atualizado para executar geração do relatório e falhar quando `docs/reports/web_standards_api_report.md` estiver desatualizado.
+    - Documento `docs/reference/NODE-COMPAT.md` + gate de regressão no CI para níveis `Full/Partial/Stub/None`.
     - Referência: `ROADMAP-NODE-COMPAT.md §8`, `§9 Issue #8`, `§10 Phase 5`.
 - [x] Adicionar stub explícito para `node:worker_threads` com erro determinístico orientando limitações de sandbox.
     - Status aplicado: módulo `node:worker_threads` agora é importável no perfil compat, com `Worker` e APIs relacionadas falhando de forma determinística sob política de sandbox.
@@ -547,7 +547,7 @@ Status aplicado (10/03/2026):
 - `crates/runtime-core/src/manifest.rs` atualizado para aceitar apenas `manifestVersion: 2`.
 - Semântica de `v2` adicionada: `single` não aceita `routes`; `routed-app` exige `routes`; rotas `function` exigem `entrypoint`; rotas `asset` exigem `assetDir`.
 - Testes unitários de manifesto expandidos para cobrir cenários `v2` (`single`, `routed-app`, casos inválidos), com execução local verde em `cargo test -p runtime-core manifest::tests`.
-- Documentação de manifesto publicada em `docs/function-manifest.md` (v2-only), link corrigido em `docs/cli.md` e documentação de endpoint de introspecção `GET /_internal/functions/{name}/manifest`.
+- Documentação de manifesto publicada em `docs/reference/function-manifest.md` (v2-only), link corrigido em `docs/reference/cli.md` e documentação de endpoint de introspecção `GET /_internal/functions/{name}/manifest`.
 
 **Referência:** `ROADMAP_ROUTING.md` seções 5, 6, 7 e 15.
 
@@ -586,7 +586,7 @@ Status aplicado (10/03/2026):
 - `crates/functions/src/types.rs` e `crates/functions/src/lifecycle.rs` passaram a persistir `embedded_route_metadata` no `FunctionEntry` durante deploy/update.
 - `crates/functions/src/registry.rs` agora expõe `get_route_metadata(...)` para introspecção/uso de roteamento.
 - Rotas `asset` são short-circuitadas no ingress sem encaminhamento para isolate (retorno determinístico no edge).
-- Mapeamento canônico de proxy reverso documentado em `docs/cli.md`: `{function_id}.my-edge-runtime.com/... -> localhost:8080/{function_id}/...` (admin separado em `:9000`).
+- Mapeamento canônico de proxy reverso documentado em `docs/reference/cli.md`: `{function_id}.my-edge-runtime.com/... -> localhost:8080/{function_id}/...` (admin separado em `:9000`).
 
 **Referência:** `ROADMAP_ROUTING.md` seções 2, 5, 8, 12 e 14.
 
@@ -618,7 +618,7 @@ Status aplicado (10/03/2026):
 
 Status parcial aplicado (10/03/2026):
 - Exemplos adicionados em `examples/all-methods-default/all-methods-default.ts` (`single` com `export default function`) e `examples/restful-default/restful-default.ts` (`routed-app` RESTful com `export default { GET, POST, DELETE }`).
-- Documentação de helpers e retorno genérico adicionada em `docs/http-response-helpers.md` (`thunder:http`) e referência do objeto `Request` adicionada em `docs/request-reference.md`.
+- Documentação de helpers e retorno genérico adicionada em `docs/reference/http-response-helpers.md` (`thunder:http`) e referência do objeto `Request` adicionada em `docs/reference/request-reference.md`.
 
 **Referência:** `ROADMAP_ROUTING.md` seções 10, 11, 12, 13 e 14.
 
@@ -738,7 +738,7 @@ Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#11-plano-de-atualizacao-de-documentacao-ex
 - `crates/cli/src/commands/start.rs`
 - `crates/functions/src/types.rs`
 - `crates/functions/src/registry.rs`
-- `docs/cli.md`
+- `docs/reference/cli.md`
 
 **Critério de aceite:**
 - [x] Nenhuma regressão na rota atual (`/{function_name}/*`).
@@ -781,7 +781,7 @@ Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#11-plano-de-atualizacao-de-documentacao-ex
 - `crates/functions/src/types.rs`
 - `crates/functions/src/metrics.rs`
 - `crates/server/src/router.rs`
-- `docs/external-scaling-recommendations.md`
+- `docs/guides/external-scaling-recommendations.md`
 
 **Critério de aceite:**
 - [x] Escala automática comprovada em teste (context lotado -> novo isolate).
@@ -800,12 +800,12 @@ Detalhes: [ROADMAP_CONTEXT_ISOLATE.md#11-plano-de-atualizacao-de-documentacao-ex
 
 **Arquivos-alvo (mínimo):**
 - `crates/server/src/lib.rs`
-- `docs/timeout-and-resource-tracking.md`
-- `docs/external-scaling-recommendations.md`
+- `docs/design/timeout-and-resource-tracking.md`
+- `docs/guides/external-scaling-recommendations.md`
 - `CURRENT_ARCHITECTURE_ANALYSIS.md`
 - `README.md`
-- `docs/cli.md`
-- `docs/NODE-COMPAT.md`
+- `docs/reference/cli.md`
+- `docs/reference/NODE-COMPAT.md`
 
 **Critério de aceite:**
 - [ ] Suite E2E cobrindo coexistência multi-funcao no mesmo isolate e isolamento por context.

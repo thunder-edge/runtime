@@ -527,7 +527,7 @@ When bundle signature verification is enabled, deploy/update must include:
 
 - Header: `x-bundle-signature-ed25519: <base64-signature>`
 
-See: [docs/bundle-signing.md](./bundle-signing.md)
+See: [bundle-signing.md](../guides/bundle-signing.md)
 
 ### Ingress Routing
 

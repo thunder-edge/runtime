@@ -5,7 +5,7 @@
 Load testing the Deno Edge Runtime helps understand performance characteristics, measure cold/warm start latency, and identify bottlenecks. This guide covers the k6-based load testing infrastructure.
 
 For deep operational tuning under sustained/high arrival rates, see:
-- `docs/high-load-capacity-fd-saturation.md`
+- `docs/design/high-load-capacity-fd-saturation.md`
 
 ## What is Load Testing?
 

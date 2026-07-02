@@ -86,7 +86,7 @@ HTTP ingress server and control API:
 - Rust toolchain (recommended via the project's `rust-toolchain.toml`)
 - Cargo
 - Optional: `deno` in `PATH` for TS semantic typecheck in `bundle` and `check`
-- Optional: `k6` for load testing (see [load_testing.md](docs/load_testing.md))
+- Optional: `k6` for load testing (see [load_testing.md](docs/guides/load_testing.md))
 
 ## Install (GitHub Releases)
 
@@ -196,20 +196,20 @@ cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**"
 cargo run -- check --path "./**/*.{ts,js,mts,mjs,tsx,jsx,cjs,cts}"
 ```
 
-Detailed CLI documentation: [docs/cli.md](docs/cli.md).
+Detailed CLI documentation: [docs/reference/cli.md](docs/reference/cli.md).
 
 ## `docs/` Folder Guide
 
-- [docs/cli.md](docs/cli.md): full reference for CLI commands (`start`, `bundle`, `watch`, `test`, `check`)
-- [docs/debugging.md](docs/debugging.md): debugging with the V8 inspector via VS Code, Chrome DevTools, and Neovim
-- [docs/testing-library.md](docs/testing-library.md): usage guide for the `edge://assert/*` library (assertions, suites, hooks, mocks, snapshots)
-- [docs/testing-api-reference.md](docs/testing-api-reference.md): detailed API reference for test functions
-- [docs/load_testing.md](docs/load_testing.md): methodology and interpretation of load tests with k6
-- [docs/streaming-response-body.md](docs/streaming-response-body.md): how to use `ReadableStream`, chunked transfer, and SSE in JS/TS handlers
-- [docs/external-scaling-recommendations.md](docs/external-scaling-recommendations.md): recommended metrics and guardrails for external autoscaling
-- [docs/bundle-signing.md](docs/bundle-signing.md): generate, store, rotate, and enforce Ed25519 bundle signatures for secure deploys
-- [docs/observability-stack.md](docs/observability-stack.md): docker compose stack with OTEL Collector, Tempo, Loki, Prometheus, and Grafana
-- [docs/web_standards_api_report.md](docs/web_standards_api_report.md): compatibility report for Web APIs supported by the runtime
+- [docs/reference/cli.md](docs/reference/cli.md): full reference for CLI commands (`start`, `bundle`, `watch`, `test`, `check`)
+- [docs/guides/debugging.md](docs/guides/debugging.md): debugging with the V8 inspector via VS Code, Chrome DevTools, and Neovim
+- [docs/guides/testing-library.md](docs/guides/testing-library.md): usage guide for the `edge://assert/*` library (assertions, suites, hooks, mocks, snapshots)
+- [docs/reference/testing-api-reference.md](docs/reference/testing-api-reference.md): detailed API reference for test functions
+- [docs/guides/load_testing.md](docs/guides/load_testing.md): methodology and interpretation of load tests with k6
+- [docs/guides/streaming-response-body.md](docs/guides/streaming-response-body.md): how to use `ReadableStream`, chunked transfer, and SSE in JS/TS handlers
+- [docs/guides/external-scaling-recommendations.md](docs/guides/external-scaling-recommendations.md): recommended metrics and guardrails for external autoscaling
+- [docs/guides/bundle-signing.md](docs/guides/bundle-signing.md): generate, store, rotate, and enforce Ed25519 bundle signatures for secure deploys
+- [docs/guides/observability-stack.md](docs/guides/observability-stack.md): docker compose stack with OTEL Collector, Tempo, Loki, Prometheus, and Grafana
+- [docs/reports/web_standards_api_report.md](docs/reports/web_standards_api_report.md): compatibility report for Web APIs supported by the runtime
 
 ## Internal Runtime API
 
@@ -239,7 +239,7 @@ cargo run -- watch --path ./examples --inspect 9229
 - performs automatic deploy/update
 - can expose a V8 inspector per function
 
-Debug guide: [docs/debugging.md](docs/debugging.md).
+Debug guide: [docs/guides/debugging.md](docs/guides/debugging.md).
 
 ## Tests
 
@@ -270,8 +270,8 @@ cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**"
 
 Testing library references:
 
-- [docs/testing-library.md](docs/testing-library.md)
-- [docs/testing-api-reference.md](docs/testing-api-reference.md)
+- [docs/guides/testing-library.md](docs/guides/testing-library.md)
+- [docs/reference/testing-api-reference.md](docs/reference/testing-api-reference.md)
 
 ## Benchmarks and Load Testing
 
@@ -286,12 +286,12 @@ Examples:
 
 See also:
 
-- [docs/load_testing.md](docs/load_testing.md)
+- [docs/guides/load_testing.md](docs/guides/load_testing.md)
 - [scripts/README.md](scripts/README.md)
 
 ## Web APIs Compatibility
 
-Current report: [docs/web_standards_api_report.md](docs/web_standards_api_report.md).
+Current report: [docs/reports/web_standards_api_report.md](docs/reports/web_standards_api_report.md).
 
 Reported summary:
 

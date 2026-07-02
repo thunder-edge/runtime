@@ -62,4 +62,4 @@ Stub error format:
 ## Validation
 
 - Source of truth for runtime assertions: `crates/functions/tests/web_api_report.rs` (`define_node_compat_checks`).
-- Generated runtime report: `docs/web_standards_api_report.md`.
+- Generated runtime report: `docs/reports/web_standards_api_report.md`.

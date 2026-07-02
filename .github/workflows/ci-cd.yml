@@ -123,7 +123,7 @@ jobs:
       - name: Verify web standards report is up to date
         run: |
           cargo test -p functions --test web_api_report generate_web_standards_report -- --nocapture
-          git diff --exit-code docs/web_standards_api_report.md
+          git diff --exit-code docs/reports/web_standards_api_report.md
 
   build_release_artifacts:
     name: Build Release Artifacts (${{ matrix.label }})

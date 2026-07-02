@@ -345,5 +345,5 @@ cargo test -p functions timeout_and_timers
 
 ## Related Documentation
 
-- [CLI Reference](./cli.md) - Command line options including `--wall-clock-timeout-ms`
-- [Load Testing](./load_testing.md) - Performance testing guidance
+- [CLI Reference](../reference/cli.md) - Command line options including `--wall-clock-timeout-ms`
+- [Load Testing](../guides/load_testing.md) - Performance testing guidance

@@ -1580,7 +1580,7 @@ Users need a complete reference for which Node.js APIs are supported. This docum
 
 **Scope:**
 
-- [ ] Create docs/NODE-COMPAT.md with detailed matrix
+- [ ] Create docs/reference/NODE-COMPAT.md with detailed matrix
 - [ ] Add badges to README
 - [ ] Create @edgeruntime/compat-check package for runtime detection
 

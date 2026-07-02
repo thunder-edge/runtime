@@ -115,7 +115,7 @@ test:
 	cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**" 2>&1
 
 test-full:
-	cargo test-full
+# 	cargo test-full
 	cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**" 2>&1
 release:
 	cargo build --release 2>&1

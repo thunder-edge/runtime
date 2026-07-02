@@ -1700,7 +1700,8 @@ fn verify_node_compat_docs_sync(node_checks: &[NodeCompatCheck]) {
         .expect("missing crates dir")
         .parent()
         .expect("missing workspace dir")
-        .join("docs");
+        .join("docs")
+        .join("reference");
 
     let docs_path = ["NODE-COMPAT.md", "node-compat.md"]
         .iter()
@@ -1709,7 +1710,7 @@ fn verify_node_compat_docs_sync(node_checks: &[NodeCompatCheck]) {
 
     let Some(docs_path) = docs_path else {
         eprintln!(
-            "warning: skipping Node compatibility docs sync check because docs/NODE-COMPAT.md (or docs/node-compat.md) was not found"
+            "warning: skipping Node compatibility docs sync check because docs/reference/NODE-COMPAT.md (or docs/reference/node-compat.md) was not found"
         );
         return;
     };
@@ -1737,7 +1738,7 @@ fn verify_node_compat_docs_sync(node_checks: &[NodeCompatCheck]) {
 
         assert!(
             ["Full", "Partial", "Stub"].contains(&level.as_str()),
-            "invalid level '{}' for module '{}' in docs/NODE-COMPAT.md",
+            "invalid level '{}' for module '{}' in docs/reference/NODE-COMPAT.md",
             level,
             module
         );
@@ -1758,17 +1759,17 @@ fn verify_node_compat_docs_sync(node_checks: &[NodeCompatCheck]) {
         .collect();
     assert!(
         missing_in_docs.is_empty(),
-        "modules missing in docs/NODE-COMPAT.md: {}",
+        "modules missing in docs/reference/NODE-COMPAT.md: {}",
         missing_in_docs.join(", ")
     );
 
     for check in node_checks {
         let documented_level = parsed_levels
             .get(check.api)
-            .unwrap_or_else(|| panic!("missing '{}' in docs/NODE-COMPAT.md", check.api));
+            .unwrap_or_else(|| panic!("missing '{}' in docs/reference/NODE-COMPAT.md", check.api));
         assert_eq!(
             documented_level, check.profile,
-            "docs/NODE-COMPAT.md level mismatch for '{}': expected '{}'",
+            "docs/reference/NODE-COMPAT.md level mismatch for '{}': expected '{}'",
             check.api, check.profile
         );
     }
@@ -1990,6 +1991,7 @@ fn generate_web_standards_report() {
         .parent()
         .unwrap()
         .join("docs")
+        .join("reports")
         .join("web_standards_api_report.md");
 
     std::fs::write(&report_path, &report).unwrap_or_else(|e| {
