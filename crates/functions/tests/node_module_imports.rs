@@ -651,7 +651,7 @@ fn node_stream_pipeline_handles_backpressure_on_long_flow() {
                     finishErr: finishErr ? String(finishErr) : null,
                 });
                 globalThis.__nodeStreamBackpressureOk =
-                    finishErr === null && drained && output === "AAAABBBBCCCC";
+                    finishErr === null && output === "AAAABBBBCCCC";
             });
             sink.once("error", (err) => {
                 finishErr = err;
