@@ -4,7 +4,7 @@
 > **Re-audit:** 06/03/2026
 > **Scope:** Complete analysis of the 4 crates (`runtime-core`, `functions`, `server`, `cli`), JS tests, scripts, schemas, and configuration.
 > **Objective:** Identify security vulnerabilities, breaking points, design flaws, and test gaps before production use.
-> **Method:** Full source code review of every file in each crate, cross-referenced against ROADMAP.md.
+> **Method:** Full source code review of every file in each crate, cross-referenced against the project roadmap.
 
 ---
 

@@ -1065,10 +1065,7 @@ Detection at isolate startup:
 | Path | Purpose |
 |------|---------|
 | `README.md` | Project overview |
-| `ROADMAP.md` | Security and feature roadmap |
-| `ROADMAP_ROUTING.md` | Detailed routing redesign spec |
 | `docs/reference/cli.md` | CLI command reference |
-| `docs/function-contract-design.md` | Function export patterns spec |
 | `AUDIT.md` | Security audit findings |
 
 ### Examples

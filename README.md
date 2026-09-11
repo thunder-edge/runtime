@@ -301,19 +301,17 @@ Reported summary:
 
 ## Security and Current Status
 
-There is a technical audit and a hardening roadmap in the repository:
+A technical audit of the codebase is available in [AUDIT.md](AUDIT.md).
 
-- [AUDIT.md](AUDIT.md)
-- [ROADMAP.md](ROADMAP.md)
+The blocking findings from that audit (05/03/2026) are addressed:
 
-Relevant findings from the audit (05/03/2026):
+- TLS termination is applied in the accept loop; starting a listener without TLS logs an explicit warning
+- `/_internal/*` endpoints are served on a separate admin listener and authenticated via `X-API-Key`
+- outbound requests are denied for private, loopback, link-local and instance-metadata destinations
+- request and response body size limits are enforced
 
-- TLS is configured in the server, but not yet applied in the accept loop
-- `/_internal/*` endpoints are not authenticated
-- SSRF risk due to permissive network rules in `fetch`
-- no request/response body size limits
-
-Before production use, prioritize Phase 0 items in [ROADMAP.md](ROADMAP.md).
+Known gaps: strict IPv6 coverage for the outbound deny-list, and body-size enforcement for streaming
+responses.
 
 ## Repository Structure
 
