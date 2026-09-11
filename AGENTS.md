@@ -321,6 +321,24 @@ See the CLI `--help` output or `crates/cli/src/commands/start.rs` for the full l
 
 ## Important Considerations for Agents
 
+### Vendor Neutrality (Open Source Boundary)
+
+This repository is open source (MIT). Everything committed here is public and must stay generic.
+
+Do **not** introduce, in code, tests, docs, examples, scripts, schemas, fixtures, comments or
+commit messages:
+
+- Business logic, rules or workflows specific to a single organization or product
+- Internal system, team or product names
+- Internal hostnames, URLs, private network ranges or infrastructure details
+- Credentials, tokens, account IDs, customer or production data
+- Issue-tracker keys or excerpts copied from internal tickets
+
+Organization-specific needs are expressed as **configuration** — `EDGE_RUNTIME_*` environment
+variables, CLI flags, function manifest fields, routing manifest entries — or live in the
+consuming project, never hardcoded in the runtime. If a request cannot be satisfied by an existing
+extension point, stop and propose the generic extension point instead of implementing it inline.
+
 ### V8 and `!Send` Constraints
 
 Deno's `JsRuntime` and V8 handles are **not `Send`**. All code that interacts with V8 must run on a `tokio::task::LocalSet` within a single-threaded Tokio runtime. This is the reason tests use `#[test]` with manual runtime construction instead of `#[tokio::test]`.
