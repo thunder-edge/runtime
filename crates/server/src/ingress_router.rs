@@ -19,12 +19,18 @@ use http::header::HOST;
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
-    payload_too_large_response, BodyLimitError, BodyLimitsConfig,
+    payload_too_large_response, prime_response_stream, response_body_too_large_response,
+    BodyLimitError, BodyLimitsConfig, ResponseStreamPrimeError,
 };
 use crate::function_route_matcher::{is_asset_route, match_suffix_route, RouteMatchDecision};
+use crate::global_routing::{
+    load_global_routing_table_from_env, GlobalRoutingState, GlobalRoutingTable,
+};
 use crate::middleware::{rate_limit_layer, rate_limited_response, RateLimitLayer};
-use crate::global_routing::{load_global_routing_table_from_env, GlobalRoutingState, GlobalRoutingTable};
-use crate::router::{is_valid_function_name, json_response, sanitize_internal_error};
+use crate::router::{
+    build_limited_stream, is_valid_function_name, json_response, sanitize_internal_error,
+    RouteTargetLease,
+};
 use crate::trace_context::{
     add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
 };
@@ -165,30 +171,6 @@ impl IngressRouter {
             }
         }
 
-        // Resolve isolate + logical context target
-        let route_target = match self
-            .registry
-            .get_route_target_with_status(function_name.as_str())
-            .await
-        {
-            Ok(target) => target,
-            Err(RouteTargetError::FunctionUnavailable) => {
-                return json_response(
-                    StatusCode::NOT_FOUND,
-                    &format!(
-                        r#"{{"error":"function '{}' not found or not running"}}"#,
-                        function_name
-                    ),
-                )
-            }
-            Err(RouteTargetError::CapacityExhausted) => {
-                return json_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    r#"{"error":"capacity exhausted"}"#,
-                )
-            }
-        };
-
         // Get function config for timeouts
         let config = self
             .registry
@@ -222,6 +204,30 @@ impl IngressRouter {
                     )
                 }
             };
+
+        // Resolve isolate + logical context target only after the request body is valid.
+        let route_target = match self
+            .registry
+            .get_route_target_with_status(function_name.as_str())
+            .await
+        {
+            Ok(target) => target,
+            Err(RouteTargetError::FunctionUnavailable) => {
+                return json_response(
+                    StatusCode::NOT_FOUND,
+                    &format!(
+                        r#"{{"error":"function '{}' not found or not running"}}"#,
+                        function_name
+                    ),
+                )
+            }
+            Err(RouteTargetError::CapacityExhausted) => {
+                return json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    r#"{"error":"capacity exhausted"}"#,
+                )
+            }
+        };
 
         let forwarded_method = parts.method.clone();
         let forwarded_headers = parts.headers.clone();
@@ -259,12 +265,13 @@ impl IngressRouter {
                 ),
             )
             .await;
-            self.registry.release_route_target(&route_target);
 
             let should_retry = matches!(&route_result, Ok(Err(err)) if attempt == 1 && err.to_string().contains("channel closed"));
             if !should_retry {
                 break;
             }
+
+            self.registry.release_route_target(&route_target);
 
             warn!(
                 function_name = %function_name,
@@ -296,11 +303,13 @@ impl IngressRouter {
             };
         }
 
+        let route_target_lease = RouteTargetLease::new(self.registry.clone(), route_target);
         let response = match route_result {
             Ok(Ok(resp)) => {
-                let (parts, body) = (resp.parts, resp.body);
+                let (mut parts, body) = (resp.parts, resp.body);
                 match body {
                     IsolateResponseBody::Full(bytes) => {
+                        drop(route_target_lease);
                         if let Some(error_resp) = check_response_body_size(
                             &bytes,
                             self.body_limits.max_response_body_bytes,
@@ -310,29 +319,35 @@ impl IngressRouter {
                         Response::from_parts(parts, Full::new(bytes).boxed())
                     }
                     IsolateResponseBody::Stream(receiver) => {
-                        let log_function_name = function_name.to_string();
-                        let log_request_id = trace_ctx.trace_id.clone();
-                        let stream = futures_util::stream::unfold(receiver, move |mut rx| {
-                            let log_function_name = log_function_name.clone();
-                            let log_request_id = log_request_id.clone();
-                            async move {
-                                match rx.recv().await {
-                                    Some(Ok(chunk)) => {
-                                        Some((Ok(http_body::Frame::data(chunk)), rx))
-                                    }
-                                    Some(Err(err)) => {
-                                        tracing::error!(
-                                            function_name = %log_function_name,
-                                            request_id = %log_request_id,
-                                            "streaming response chunk failed: {}",
-                                            err
-                                        );
-                                        None
-                                    }
-                                    None => None,
-                                }
+                        let primed = match prime_response_stream(
+                            receiver,
+                            self.body_limits.max_response_body_bytes,
+                        )
+                        .await
+                        {
+                            Ok(primed) => primed,
+                            Err(ResponseStreamPrimeError::LimitExceeded) => {
+                                drop(route_target_lease);
+                                return boxed_full_response(response_body_too_large_response(
+                                    self.body_limits.max_response_body_bytes,
+                                ));
                             }
-                        });
+                            Err(ResponseStreamPrimeError::Producer(err)) => {
+                                drop(route_target_lease);
+                                return sanitize_internal_error(
+                                    StatusCode::BAD_GATEWAY,
+                                    "streaming response failed before headers were sent",
+                                    &err,
+                                );
+                            }
+                        };
+                        parts.headers.remove(http::header::CONTENT_LENGTH);
+                        let stream = build_limited_stream(
+                            primed,
+                            route_target_lease,
+                            function_name.to_string(),
+                            trace_ctx.trace_id.clone(),
+                        );
                         Response::from_parts(parts, StreamBody::new(stream).boxed())
                     }
                 }

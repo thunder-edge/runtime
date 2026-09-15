@@ -1,11 +1,12 @@
 use anyhow::Error;
 use base64::Engine;
-use deno_core::{op2, Extension, JsRuntime, ModuleSpecifier, OpState};
+use deno_core::{op2, Extension, JsBuffer, JsRuntime, ModuleSpecifier, OpState};
 use runtime_core::isolate::{
     IsolateConfig, IsolateResponse, IsolateResponseBody, OutgoingProxyConfig,
     ResponseStreamCompletion,
 };
 use std::time::Duration;
+use std::{cell::RefCell, rc::Rc};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -17,21 +18,36 @@ struct ResponseStreamRegistry {
 }
 
 struct ResponseStreamEntry {
-    sender: mpsc::UnboundedSender<Result<bytes::Bytes, Error>>,
+    sender: mpsc::Sender<Result<bytes::Bytes, Error>>,
     completion: ResponseStreamCompletion,
 }
 
-#[op2(fast)]
-fn op_edge_stream_chunk(
-    state: &mut OpState,
+const RESPONSE_STREAM_CHANNEL_CAPACITY: usize = 16;
+
+#[op2(async(lazy))]
+async fn op_edge_stream_chunk(
+    state: Rc<RefCell<OpState>>,
     #[string] stream_id: String,
-    #[buffer] chunk: &[u8],
+    #[buffer] chunk: JsBuffer,
 ) -> Result<(), deno_error::JsErrorBox> {
-    let registry = state.borrow_mut::<ResponseStreamRegistry>();
-    if let Some(entry) = registry.streams.get(&stream_id) {
-        let _ = entry.sender.send(Ok(bytes::Bytes::copy_from_slice(chunk)));
+    let (sender, completion) = {
+        let state = state.borrow();
+        let registry = state.borrow::<ResponseStreamRegistry>();
+        let entry = registry
+            .streams
+            .get(&stream_id)
+            .ok_or_else(|| deno_error::JsErrorBox::generic("response stream is cancelled"))?;
+        (entry.sender.clone(), entry.completion.clone())
+    };
+    let chunk = bytes::Bytes::copy_from_slice(chunk.as_ref());
+
+    tokio::select! {
+        result = sender.send(Ok(chunk)) => result
+            .map_err(|_| deno_error::JsErrorBox::generic("response stream receiver dropped")),
+        _ = completion.wait_cancelled() => {
+            Err(deno_error::JsErrorBox::generic("response stream is cancelled"))
+        }
     }
-    Ok(())
 }
 
 #[op2(fast)]
@@ -54,7 +70,7 @@ fn op_edge_stream_error(
 ) -> Result<(), deno_error::JsErrorBox> {
     let registry = state.borrow_mut::<ResponseStreamRegistry>();
     if let Some(entry) = registry.streams.remove(&stream_id) {
-        let _ = entry.sender.send(Err(anyhow::anyhow!(message)));
+        let _ = entry.sender.try_send(Err(anyhow::anyhow!(message)));
         entry.completion.complete();
     }
     Ok(())
@@ -146,7 +162,7 @@ pub fn ensure_response_stream_registry(js_runtime: &mut JsRuntime) {
 fn register_response_stream(
     js_runtime: &mut JsRuntime,
     stream_id: String,
-    sender: mpsc::UnboundedSender<Result<bytes::Bytes, Error>>,
+    sender: mpsc::Sender<Result<bytes::Bytes, Error>>,
     completion: ResponseStreamCompletion,
 ) {
     let op_state = js_runtime.op_state();
@@ -1299,7 +1315,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                                         }
                                         break;
                                     }
-                                    Deno.core.ops.op_edge_stream_chunk(streamId, value);
+                                    await Deno.core.ops.op_edge_stream_chunk(streamId, value);
                                 }
                             } catch (streamErr) {
                                 Deno.core.ops.op_edge_stream_error(streamId, String(streamErr));
@@ -1394,7 +1410,8 @@ pub async fn dispatch_request_for_context(
 
     let body = request.into_body();
     let stream_id = Uuid::new_v4().to_string();
-    let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<Result<bytes::Bytes, Error>>();
+    let (chunk_tx, chunk_rx) =
+        mpsc::channel::<Result<bytes::Bytes, Error>>(RESPONSE_STREAM_CHANNEL_CAPACITY);
     let stream_completion = ResponseStreamCompletion::new();
     register_response_stream(
         js_runtime,
@@ -1483,15 +1500,16 @@ pub async fn dispatch_request_for_context(
     // The result is a Promise, we need to resolve it.
     let resolved = js_runtime.resolve(result_global);
 
-    // Run the event loop to resolve the promise
-    js_runtime
-        .run_event_loop(deno_core::PollEventLoopOptions {
-            wait_for_inspector: false,
-            pump_v8_message_loop: true,
-        })
+    // Resolve the handler promise without waiting for the background stream producer.
+    let resolved_value = js_runtime
+        .with_event_loop_promise(
+            resolved,
+            deno_core::PollEventLoopOptions {
+                wait_for_inspector: false,
+                pump_v8_message_loop: true,
+            },
+        )
         .await?;
-
-    let resolved_value = resolved.await?;
 
     // Extract the JSON string from the resolved value.
     let json_str = {

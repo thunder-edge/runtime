@@ -2080,7 +2080,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_ingress_streaming_response_exceeds_limit_without_rejection() {
+    async fn e2e_ingress_streaming_response_exceeds_limit_rejects_before_headers() {
         init_deno_platform();
 
         let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
@@ -2097,7 +2097,10 @@ mod tests {
                 start(controller) {
                   (async () => {
                     for (let i = 0; i < 64; i++) {
-                      controller.enqueue(encoder.encode(`chunk-${String(i).padStart(2, '0')}-xxxxxxxxxxxxxxxxxxxxxxxxxxxx\n`));
+                      const payload = i === 0
+                        ? `chunk-${String(i).padStart(2, '0')}-${'x'.repeat(600)}\n`
+                        : `chunk-${String(i).padStart(2, '0')}-xxxxxxxxxxxxxxxxxxxxxxxxxxxx\n`;
+                      controller.enqueue(encoder.encode(payload));
                     }
                     controller.close();
                   })().catch((err) => controller.error(err));
@@ -2168,26 +2171,139 @@ mod tests {
         .await;
 
         assert!(
+            response.starts_with("HTTP/1.1 413"),
+            "expected oversized first chunk to be rejected before headers: {response}"
+        );
+        assert!(
+            response.contains(r#""error":"response body too large""#),
+            "expected stable response body limit error: {response}"
+        );
+        assert!(
+            !response.contains("chunk-63"),
+            "expected oversized stream to stop before later chunks: {response}"
+        );
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+            .await
+            .expect("server task did not finish in time")
+            .expect("server join error");
+        server_result.expect("server returned error");
+    }
+
+    #[tokio::test]
+    async fn e2e_ingress_streaming_response_truncates_after_headers() {
+        init_deno_platform();
+
+        let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
+        let registry = make_test_registry();
+        let shutdown = CancellationToken::new();
+
+        let stream_eszip = build_eszip_async(
+            "file:///stream_limit_truncate_e2e.ts",
+            r#"
+            Deno.serve(() => {
+              const encoder = new TextEncoder();
+              const stream = new ReadableStream({
+                start(controller) {
+                  controller.enqueue(encoder.encode('abcdefghij'));
+                  controller.enqueue(encoder.encode('klmnopqrst'));
+                  controller.close();
+                },
+              });
+              return new Response(stream, {
+                headers: { 'content-type': 'text/plain', 'content-length': '20' },
+              });
+            });
+            "#,
+        )
+        .await;
+        let bundle = BundlePackage::eszip_only(stream_eszip);
+        let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+        registry
+            .deploy(
+                "stream-limit-truncate-e2e".to_string(),
+                bytes::Bytes::from(bundle_data),
+                None,
+                None,
+            )
+            .await
+            .expect("failed to deploy streaming truncation test function");
+
+        let tiny_limit = 15usize;
+        let server_config = DualServerConfig {
+            admin: AdminListenerConfig {
+                addr: admin_addr,
+                api_key: None,
+                tls: None,
+                body_limits: BodyLimitsConfig {
+                    max_request_body_bytes: 1024,
+                    max_response_body_bytes: tiny_limit,
+                },
+                bundle_signature: BundleSignatureConfig {
+                    required: false,
+                    public_key_path: None,
+                },
+            },
+            ingress: IngressListenerConfig {
+                listener_type: IngressListenerType::Tcp(ingress_addr),
+                tls: None,
+                rate_limit_rps: None,
+                body_limits: BodyLimitsConfig {
+                    max_request_body_bytes: 1024,
+                    max_response_body_bytes: tiny_limit,
+                },
+            },
+            graceful_exit_deadline_secs: 1,
+            max_connections: 128,
+        };
+
+        let server_handle = tokio::spawn({
+            let registry = registry.clone();
+            let shutdown = shutdown.clone();
+            async move { run_dual_server(server_config, registry, shutdown).await }
+        });
+
+        wait_for_tcp_listener(admin_addr).await;
+        wait_for_tcp_listener(ingress_addr).await;
+
+        let response = send_plain_http(
+            ingress_addr,
+            "GET /stream-limit-truncate-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+
+        assert!(
             response.starts_with("HTTP/1.1 200"),
-            "expected stream response to bypass size rejection and return 200: {response}"
+            "expected original status after header commit: {response}"
+        );
+        let response_lower = response.to_ascii_lowercase();
+        assert!(
+            response_lower.contains("transfer-encoding: chunked"),
+            "expected chunked response after content-length removal: {response}"
         );
         assert!(
-            !response.contains("response body too large"),
-            "did not expect full-body size check error on streaming path: {response}"
+            !response_lower.contains("content-length: 20"),
+            "expected stale content-length to be removed: {response}"
         );
         assert!(
-            response.to_ascii_lowercase().contains("transfer-encoding: chunked"),
-            "expected chunked transfer in streaming response: {response}"
+            response.contains("abcdefghij") && response.contains("klmno"),
+            "expected the allowed prefix to be forwarded: {response}"
         );
         assert!(
-            response.len() > tiny_limit,
-            "expected full HTTP payload to exceed configured max_response_body_bytes ({}), got {}",
-            tiny_limit,
-            response.len()
+            !response.contains("klmnop"),
+            "expected bytes after the configured limit to be truncated: {response}"
         );
+
+        let second_response = send_plain_http(
+            ingress_addr,
+            "GET /stream-limit-truncate-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
         assert!(
-            response.contains("chunk-63"),
-            "expected late-stream marker proving long streamed body completed: {response}"
+            second_response.starts_with("HTTP/1.1 200"),
+            "expected a subsequent request after stream cleanup: {second_response}"
         );
 
         shutdown.cancel();

@@ -1636,6 +1636,14 @@ fn test_isolate_reusable_after_timeout() {
             .map_err(|e| format!("dispatch_request 2: {e}"))?;
 
         js_runtime
+            .run_event_loop(PollEventLoopOptions {
+                wait_for_inspector: false,
+                pump_v8_message_loop: true,
+            })
+            .await
+            .map_err(|e| format!("stream event loop 2: {e}"))?;
+
+        js_runtime
             .execute_script(
                 "<end_exec2>",
                 deno_core::ascii_str!(r#"globalThis.__edgeRuntime.endExecution("req-2");"#),
@@ -2538,6 +2546,14 @@ fn test_multiple_requests_after_timeout() {
             let result = functions::handler::dispatch_request(&mut js_runtime, request)
                 .await
                 .map_err(|e| format!("dispatch_request {}: {e}", i))?;
+
+            js_runtime
+                .run_event_loop(PollEventLoopOptions {
+                    wait_for_inspector: false,
+                    pump_v8_message_loop: true,
+                })
+                .await
+                .map_err(|e| format!("stream event loop {}: {e}", i))?;
 
             js_runtime
                 .execute_script(

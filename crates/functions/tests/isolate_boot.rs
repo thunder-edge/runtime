@@ -278,6 +278,16 @@ fn test_full_request_cycle() {
             .await
             .map_err(|e| format!("dispatch_request: {e}"))?;
 
+        // The stream producer runs in the isolate event loop after the handler
+        // promise resolves; pump it before draining this short test stream.
+        js_runtime
+            .run_event_loop(PollEventLoopOptions {
+                wait_for_inspector: false,
+                pump_v8_message_loop: true,
+            })
+            .await
+            .map_err(|e| format!("stream event loop: {e}"))?;
+
         let body = match response.body {
             runtime_core::isolate::IsolateResponseBody::Full(bytes) => {
                 String::from_utf8_lossy(&bytes).to_string()

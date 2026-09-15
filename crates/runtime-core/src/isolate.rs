@@ -269,6 +269,19 @@ impl ResponseStreamCompletion {
         }
         self.state.notify.notified().await;
     }
+
+    pub async fn wait_cancelled(&self) {
+        loop {
+            let notified = self.state.notify.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+            if self.is_cancelled() {
+                return;
+            }
+        }
+    }
 }
 
 impl Default for ResponseStreamCompletion {
@@ -278,24 +291,45 @@ impl Default for ResponseStreamCompletion {
 }
 
 /// Streaming body receiver returned by an isolate.
+#[doc(hidden)]
+pub enum ResponseChunkReceiverChannel {
+    Bounded(mpsc::Receiver<Result<bytes::Bytes, Error>>),
+    Unbounded(mpsc::UnboundedReceiver<Result<bytes::Bytes, Error>>),
+}
+
+impl From<mpsc::Receiver<Result<bytes::Bytes, Error>>> for ResponseChunkReceiverChannel {
+    fn from(receiver: mpsc::Receiver<Result<bytes::Bytes, Error>>) -> Self {
+        Self::Bounded(receiver)
+    }
+}
+
+impl From<mpsc::UnboundedReceiver<Result<bytes::Bytes, Error>>> for ResponseChunkReceiverChannel {
+    fn from(receiver: mpsc::UnboundedReceiver<Result<bytes::Bytes, Error>>) -> Self {
+        Self::Unbounded(receiver)
+    }
+}
+
 pub struct ResponseChunkReceiver {
-    receiver: mpsc::UnboundedReceiver<Result<bytes::Bytes, Error>>,
+    receiver: ResponseChunkReceiverChannel,
     completion: ResponseStreamCompletion,
 }
 
 impl ResponseChunkReceiver {
-    pub fn new(
-        receiver: mpsc::UnboundedReceiver<Result<bytes::Bytes, Error>>,
-        completion: ResponseStreamCompletion,
-    ) -> Self {
+    pub fn new<R>(receiver: R, completion: ResponseStreamCompletion) -> Self
+    where
+        R: Into<ResponseChunkReceiverChannel>,
+    {
         Self {
-            receiver,
+            receiver: receiver.into(),
             completion,
         }
     }
 
     pub async fn recv(&mut self) -> Option<Result<bytes::Bytes, Error>> {
-        self.receiver.recv().await
+        match &mut self.receiver {
+            ResponseChunkReceiverChannel::Bounded(receiver) => receiver.recv().await,
+            ResponseChunkReceiverChannel::Unbounded(receiver) => receiver.recv().await,
+        }
     }
 }
 
@@ -536,5 +570,26 @@ mod tests {
     fn default_entrypoint_is_index_ts() {
         let spec = default_entrypoint();
         assert_eq!(spec.as_str(), "file:///src/index.ts");
+    }
+
+    #[test]
+    fn response_stream_cancellation_wakes_waiters() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let completion = ResponseStreamCompletion::new();
+        let waiter = completion.clone();
+
+        runtime.block_on(async {
+            let task = tokio::spawn(async move {
+                waiter.wait_cancelled().await;
+            });
+            completion.cancel();
+            tokio::time::timeout(std::time::Duration::from_millis(100), task)
+                .await
+                .expect("cancellation waiter did not wake")
+                .expect("cancellation waiter task failed");
+        });
     }
 }

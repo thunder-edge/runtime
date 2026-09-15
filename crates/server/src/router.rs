@@ -19,7 +19,9 @@ use crate::current_listener_connection_capacity;
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
-    payload_too_large_response, BodyLimitError, BodyLimitsConfig,
+    payload_too_large_response, prime_response_stream, response_body_too_large_response,
+    BodyLimitError, BodyLimitsConfig, PrimedResponseStream, ResponseBodyChunk, ResponseBodyLimiter,
+    ResponseStreamPrimeError,
 };
 use crate::function_route_matcher::{is_asset_route, match_suffix_route, RouteMatchDecision};
 use crate::middleware::{rate_limit_layer, rate_limited_response, RateLimitLayer};
@@ -148,6 +150,99 @@ fn log_truncated_error(context: &str, err: &impl std::fmt::Display) {
 fn boxed_full_response(response: Response<Full<Bytes>>) -> Response<BoxBody> {
     let (parts, body) = response.into_parts();
     Response::from_parts(parts, body.boxed())
+}
+
+pub(crate) struct RouteTargetLease {
+    registry: Arc<FunctionRegistry>,
+    target: Option<functions::registry::RouteTarget>,
+}
+
+impl RouteTargetLease {
+    pub(crate) fn new(
+        registry: Arc<FunctionRegistry>,
+        target: functions::registry::RouteTarget,
+    ) -> Self {
+        Self {
+            registry,
+            target: Some(target),
+        }
+    }
+}
+
+impl Drop for RouteTargetLease {
+    fn drop(&mut self) {
+        if let Some(target) = self.target.take() {
+            self.registry.release_route_target(&target);
+        }
+    }
+}
+
+struct LimitedStreamState {
+    receiver: runtime_core::isolate::ResponseChunkReceiver,
+    first_chunk: Option<Bytes>,
+    limiter: ResponseBodyLimiter,
+    _route_target: RouteTargetLease,
+    terminal: bool,
+    function_name: String,
+    request_id: String,
+}
+
+pub(crate) fn build_limited_stream(
+    primed: PrimedResponseStream,
+    route_target: RouteTargetLease,
+    function_name: String,
+    request_id: String,
+) -> impl futures_util::Stream<Item = Result<http_body::Frame<Bytes>, Infallible>> {
+    futures_util::stream::unfold(
+        LimitedStreamState {
+            receiver: primed.receiver,
+            first_chunk: primed.first_chunk,
+            limiter: primed.limiter,
+            _route_target: route_target,
+            terminal: false,
+            function_name,
+            request_id,
+        },
+        |mut state| async move {
+            if state.terminal {
+                return None;
+            }
+
+            if let Some(first_chunk) = state.first_chunk.take() {
+                return Some((Ok(http_body::Frame::data(first_chunk)), state));
+            }
+
+            loop {
+                match state.receiver.recv().await {
+                    Some(Ok(chunk)) => match state.limiter.consume(chunk) {
+                        ResponseBodyChunk::Forward(chunk) if chunk.is_empty() => continue,
+                        ResponseBodyChunk::Forward(chunk) => {
+                            return Some((Ok(http_body::Frame::data(chunk)), state));
+                        }
+                        ResponseBodyChunk::LimitExceeded(prefix) => {
+                            state.terminal = true;
+                            if prefix.is_empty() {
+                                return None;
+                            }
+                            return Some((Ok(http_body::Frame::data(prefix)), state));
+                        }
+                    },
+                    Some(Err(err)) => {
+                        error!(
+                            function_name = %state.function_name,
+                            request_id = %state.request_id,
+                            "streaming response chunk failed: {}",
+                            err
+                        );
+                        return None;
+                    }
+                    None => {
+                        return None;
+                    }
+                }
+            }
+        },
+    )
 }
 
 pub fn sanitize_internal_error<E>(status: StatusCode, context: &str, err: &E) -> Response<BoxBody>
@@ -306,30 +401,6 @@ impl Router {
             );
         }
 
-        // Resolve isolate + logical context target
-        let route_target = match self
-            .registry
-            .get_route_target_with_status(function_name)
-            .await
-        {
-            Ok(target) => target,
-            Err(RouteTargetError::FunctionUnavailable) => {
-                return json_response(
-                    StatusCode::NOT_FOUND,
-                    &format!(
-                        r#"{{"error":"function '{}' not found or not running"}}"#,
-                        function_name
-                    ),
-                )
-            }
-            Err(RouteTargetError::CapacityExhausted) => {
-                return json_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    r#"{"error":"capacity exhausted"}"#,
-                )
-            }
-        };
-
         // Get function config for timeouts
         let config = self.registry.get_config(function_name).unwrap_or_default();
 
@@ -368,6 +439,30 @@ impl Router {
                 }
             }
         }
+
+        // Resolve isolate + logical context target after route validation.
+        let route_target = match self
+            .registry
+            .get_route_target_with_status(function_name)
+            .await
+        {
+            Ok(target) => target,
+            Err(RouteTargetError::FunctionUnavailable) => {
+                return json_response(
+                    StatusCode::NOT_FOUND,
+                    &format!(
+                        r#"{{"error":"function '{}' not found or not running"}}"#,
+                        function_name
+                    ),
+                )
+            }
+            Err(RouteTargetError::CapacityExhausted) => {
+                return json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    r#"{"error":"capacity exhausted"}"#,
+                )
+            }
+        };
 
         // Check Content-Length header for fast rejection
         if let Err(BodyLimitError::ContentLengthExceeded { .. }) =
@@ -424,13 +519,14 @@ impl Router {
             ),
         )
         .await;
-        self.registry.release_route_target(&route_target);
+        let route_target_lease = RouteTargetLease::new(self.registry.clone(), route_target);
 
         let response = match route_result {
             Ok(Ok(resp)) => {
-                let (parts, body) = (resp.parts, resp.body);
+                let (mut parts, body) = (resp.parts, resp.body);
                 match body {
                     IsolateResponseBody::Full(bytes) => {
+                        drop(route_target_lease);
                         if let Some(error_resp) = check_response_body_size(
                             &bytes,
                             self.body_limits.max_response_body_bytes,
@@ -440,29 +536,35 @@ impl Router {
                         Response::from_parts(parts, Full::new(bytes).boxed())
                     }
                     IsolateResponseBody::Stream(receiver) => {
-                        let log_function_name = function_name.to_string();
-                        let log_request_id = trace_ctx.trace_id.clone();
-                        let stream = futures_util::stream::unfold(receiver, move |mut rx| {
-                            let log_function_name = log_function_name.clone();
-                            let log_request_id = log_request_id.clone();
-                            async move {
-                                match rx.recv().await {
-                                    Some(Ok(chunk)) => {
-                                        Some((Ok(http_body::Frame::data(chunk)), rx))
-                                    }
-                                    Some(Err(err)) => {
-                                        error!(
-                                            function_name = %log_function_name,
-                                            request_id = %log_request_id,
-                                            "streaming response chunk failed: {}",
-                                            err
-                                        );
-                                        None
-                                    }
-                                    None => None,
-                                }
+                        let primed = match prime_response_stream(
+                            receiver,
+                            self.body_limits.max_response_body_bytes,
+                        )
+                        .await
+                        {
+                            Ok(primed) => primed,
+                            Err(ResponseStreamPrimeError::LimitExceeded) => {
+                                drop(route_target_lease);
+                                return boxed_full_response(response_body_too_large_response(
+                                    self.body_limits.max_response_body_bytes,
+                                ));
                             }
-                        });
+                            Err(ResponseStreamPrimeError::Producer(err)) => {
+                                drop(route_target_lease);
+                                return sanitize_internal_error(
+                                    StatusCode::BAD_GATEWAY,
+                                    "streaming response failed before headers were sent",
+                                    &err,
+                                );
+                            }
+                        };
+                        parts.headers.remove(http::header::CONTENT_LENGTH);
+                        let stream = build_limited_stream(
+                            primed,
+                            route_target_lease,
+                            function_name.to_string(),
+                            trace_ctx.trace_id.clone(),
+                        );
                         Response::from_parts(parts, StreamBody::new(stream).boxed())
                     }
                 }

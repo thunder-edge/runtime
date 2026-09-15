@@ -6,6 +6,7 @@
 use bytes::Bytes;
 use http::{header::CONTENT_LENGTH, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full, Limited};
+use runtime_core::isolate::ResponseChunkReceiver;
 
 /// Body size limits configuration.
 #[derive(Debug, Clone, Copy)]
@@ -14,6 +15,89 @@ pub struct BodyLimitsConfig {
     pub max_request_body_bytes: usize,
     /// Maximum response body size in bytes (default: 10 MiB).
     pub max_response_body_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponseBodyChunk {
+    Forward(Bytes),
+    LimitExceeded(Bytes),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ResponseBodyLimiter {
+    max_bytes: usize,
+    bytes_seen: usize,
+    exceeded: bool,
+}
+
+impl ResponseBodyLimiter {
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            bytes_seen: 0,
+            exceeded: false,
+        }
+    }
+
+    pub fn bytes_seen(&self) -> usize {
+        self.bytes_seen
+    }
+
+    pub fn consume(&mut self, chunk: Bytes) -> ResponseBodyChunk {
+        if self.exceeded {
+            return ResponseBodyChunk::LimitExceeded(Bytes::new());
+        }
+
+        let remaining = self.max_bytes.saturating_sub(self.bytes_seen);
+        if chunk.len() <= remaining {
+            self.bytes_seen += chunk.len();
+            ResponseBodyChunk::Forward(chunk)
+        } else {
+            self.bytes_seen = self.max_bytes;
+            self.exceeded = true;
+            ResponseBodyChunk::LimitExceeded(chunk.slice(..remaining))
+        }
+    }
+}
+
+pub struct PrimedResponseStream {
+    pub receiver: ResponseChunkReceiver,
+    pub first_chunk: Option<Bytes>,
+    pub limiter: ResponseBodyLimiter,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResponseStreamPrimeError {
+    LimitExceeded,
+    Producer(String),
+}
+
+pub async fn prime_response_stream(
+    mut receiver: ResponseChunkReceiver,
+    max_bytes: usize,
+) -> Result<PrimedResponseStream, ResponseStreamPrimeError> {
+    let mut limiter = ResponseBodyLimiter::new(max_bytes);
+    while let Some(result) = receiver.recv().await {
+        let chunk = result.map_err(|err| ResponseStreamPrimeError::Producer(err.to_string()))?;
+        if chunk.is_empty() {
+            continue;
+        }
+
+        return match limiter.consume(chunk) {
+            ResponseBodyChunk::Forward(first_chunk) => Ok(PrimedResponseStream {
+                receiver,
+                first_chunk: Some(first_chunk),
+                limiter,
+            }),
+            ResponseBodyChunk::LimitExceeded(_) => Err(ResponseStreamPrimeError::LimitExceeded),
+        };
+    }
+
+    Ok(PrimedResponseStream {
+        receiver,
+        first_chunk: None,
+        limiter,
+    })
 }
 
 impl Default for BodyLimitsConfig {
@@ -114,6 +198,20 @@ pub fn payload_too_large_response(limit_bytes: usize) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
+pub fn response_body_too_large_response(limit_bytes: usize) -> Response<Full<Bytes>> {
+    let limit_mib = limit_bytes as f64 / (1024.0 * 1024.0);
+    let body = format!(
+        r#"{{"error":"response body too large","max_size_bytes":{},"max_size_mib":{:.2}}}"#,
+        limit_bytes, limit_mib
+    );
+
+    Response::builder()
+        .status(StatusCode::PAYLOAD_TOO_LARGE)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap()
+}
+
 /// Check response body size and return error response if exceeded.
 pub fn check_response_body_size(body: &Bytes, max_bytes: usize) -> Option<Response<Full<Bytes>>> {
     if body.len() > max_bytes {
@@ -190,5 +288,54 @@ mod tests {
     fn check_response_body_exceeds_limit() {
         let body = Bytes::from(vec![0u8; 10000]);
         assert!(check_response_body_size(&body, 5000).is_some());
+    }
+
+    #[test]
+    fn response_body_limiter_handles_exact_and_excess_chunks() {
+        let mut limiter = ResponseBodyLimiter::new(5);
+        assert_eq!(
+            limiter.consume(Bytes::from_static(b"abcde")),
+            ResponseBodyChunk::Forward(Bytes::from_static(b"abcde"))
+        );
+        assert_eq!(
+            limiter.consume(Bytes::from_static(b"f")),
+            ResponseBodyChunk::LimitExceeded(Bytes::new())
+        );
+        assert_eq!(limiter.bytes_seen(), 5);
+    }
+
+    #[test]
+    fn response_body_limiter_returns_only_remaining_prefix() {
+        let mut limiter = ResponseBodyLimiter::new(5);
+        assert_eq!(
+            limiter.consume(Bytes::from_static(b"abc")),
+            ResponseBodyChunk::Forward(Bytes::from_static(b"abc"))
+        );
+        assert_eq!(
+            limiter.consume(Bytes::from_static(b"def")),
+            ResponseBodyChunk::LimitExceeded(Bytes::from_static(b"de"))
+        );
+    }
+
+    #[test]
+    fn response_body_limiter_rejects_first_chunk_when_limit_is_zero() {
+        let mut limiter = ResponseBodyLimiter::new(0);
+        assert_eq!(
+            limiter.consume(Bytes::from_static(b"a")),
+            ResponseBodyChunk::LimitExceeded(Bytes::new())
+        );
+    }
+
+    #[test]
+    fn response_body_too_large_response_is_stable() {
+        let response = response_body_too_large_response(5 * 1024 * 1024);
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
     }
 }
