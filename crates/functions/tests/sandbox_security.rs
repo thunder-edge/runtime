@@ -1,6 +1,7 @@
 use functions::registry::FunctionRegistry;
 use functions::types::BundlePackage;
 use runtime_core::isolate::{IsolateConfig, IsolateResponseBody};
+use runtime_core::ssrf::SsrfConfig;
 use tokio_util::sync::CancellationToken;
 
 static INIT: std::sync::Once = std::sync::Once::new();
@@ -83,11 +84,19 @@ async fn build_eszip_async(specifier: &str, source: &str) -> Vec<u8> {
 }
 
 async fn deploy_inline_function(name: &str, source: &str) -> Result<FunctionRegistry, String> {
+    deploy_inline_function_with_config(name, source, IsolateConfig::default()).await
+}
+
+async fn deploy_inline_function_with_config(
+    name: &str,
+    source: &str,
+    config: IsolateConfig,
+) -> Result<FunctionRegistry, String> {
     let eszip_bytes = build_eszip_async("file:///sandbox_test.ts", source).await;
     let bundle = BundlePackage::eszip_only(eszip_bytes);
     let bundle_data = bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
 
-    let registry = FunctionRegistry::new(CancellationToken::new(), IsolateConfig::default());
+    let registry = FunctionRegistry::new(CancellationToken::new(), config);
     registry
         .deploy(
             name.to_string(),
@@ -148,10 +157,14 @@ fn sandbox_blocks_private_fetch_targets() {
 
     let result: Result<(), String> = rt.block_on(async {
         let source = r#"
+            let streamFinished = false;
+
             Deno.serve(async (req) => {
               const target = req.url.endsWith('/local')
                 ? 'http://127.0.0.1:65535/ping'
-                : 'http://169.254.169.254/latest/meta-data';
+                                : req.url.endsWith('/localhost')
+                                    ? 'http://localhost:65535/ping'
+                                    : 'http://169.254.169.254/latest/meta-data';
               try {
                 await fetch(target);
                 return new Response('unexpected-allow', { status: 200 });
@@ -176,6 +189,17 @@ fn sandbox_blocks_private_fetch_targets() {
         if status_meta != 500 || !body_meta.contains("Requires net access") {
             return Err(format!(
                 "expected metadata fetch to be blocked; status={status_meta}, body={body_meta}"
+            ));
+        }
+
+        let (status_localhost, body_localhost) =
+            invoke_text(&registry, "sandbox-ssrf-block", "/localhost").await?;
+        if status_localhost != 500
+            || (!body_localhost.contains("Requires net access")
+                && !body_localhost.contains("SSRF policy denied"))
+        {
+            return Err(format!(
+                "expected localhost hostname fetch to be blocked; status={status_localhost}, body={body_localhost}"
             ));
         }
 
@@ -596,7 +620,7 @@ fn sandbox_permissions_surface_has_no_escalation_path() {
 }
 
 #[test]
-fn sandbox_detects_ipv6_ssrf_bypass_vectors() {
+fn sandbox_denies_ipv6_ssrf_vectors_strictly() {
     init_runtime();
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -694,19 +718,6 @@ fn sandbox_detects_ipv6_ssrf_bypass_vectors() {
                     .unwrap_or(false)
         });
 
-        let bypass_detected = checks.iter().any(|entry| {
-            entry
-                .get("family")
-                .and_then(|v| v.as_str())
-                .map(|family| family.starts_with("ipv6"))
-                .unwrap_or(false)
-                && entry
-                    .get("state")
-                    .and_then(|v| v.as_str())
-                    .map(|state| state != "denied")
-                    .unwrap_or(true)
-        });
-
         if !ipv4_control_denied {
             return Err(format!(
                 "expected ipv4 control host to be denied in sandbox policy baseline: {}",
@@ -714,10 +725,16 @@ fn sandbox_detects_ipv6_ssrf_bypass_vectors() {
             ));
         }
 
-        if !bypass_detected {
+        if let Some(entry) = checks.iter().find(|entry| {
+            entry
+                .get("state")
+                .and_then(|v| v.as_str())
+                .map(|state| state != "denied")
+                .unwrap_or(true)
+        }) {
             return Err(format!(
-                "expected at least one IPv6 SSRF vector to remain non-denied for bypass detection: {}",
-                payload
+                "expected every SSRF vector to be denied, found non-denied entry: {}",
+                entry
             ));
         }
 
@@ -733,7 +750,7 @@ fn sandbox_detects_ipv6_ssrf_bypass_vectors() {
 }
 
 #[test]
-fn sandbox_detects_cross_request_monkey_patch_leak_on_non_frozen_globals() {
+fn sandbox_restores_mutable_globals_and_prototypes_between_requests() {
     init_runtime();
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -749,8 +766,16 @@ fn sandbox_detects_cross_request_monkey_patch_leak_on_non_frozen_globals() {
               if (path === '/patch') {
                 globalThis.__edgeLeakMarker = 'patched';
                                 globalThis.atob = () => 'patched-atob';
+                                Object.prototype.__edgeObjectLeak = 'patched-object';
+                                Array.prototype.__edgeArrayLeak = 'patched-array';
                 return new Response(JSON.stringify({ patched: true }));
               }
+
+                            if (path === '/error') {
+                                                                globalThis.__edgeErrorLeakMarker = 'patched-error';
+                                                                Object.prototype.__edgeErrorObjectLeak = 'patched-error-object';
+                                                                throw new Error('intentional sandbox cleanup failure');
+                            }
 
               if (path === '/check') {
                                 let patched = false;
@@ -763,6 +788,10 @@ fn sandbox_detects_cross_request_monkey_patch_leak_on_non_frozen_globals() {
                 return new Response(JSON.stringify({
                   marker: globalThis.__edgeLeakMarker ?? null,
                                     atobPatched: patched,
+                                    objectPrototypePatched: ({}).__edgeObjectLeak === 'patched-object',
+                                    arrayPrototypePatched: [].__edgeArrayLeak === 'patched-array',
+                                    errorMarker: globalThis.__edgeErrorLeakMarker ?? null,
+                                    errorObjectPrototypePatched: ({}).__edgeErrorObjectLeak === 'patched-error-object',
                 }));
               }
 
@@ -800,10 +829,64 @@ fn sandbox_detects_cross_request_monkey_patch_leak_on_non_frozen_globals() {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        if marker != "patched" || !atob_patched {
+        let object_prototype_patched = payload
+            .get("objectPrototypePatched")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let array_prototype_patched = payload
+            .get("arrayPrototypePatched")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let error_marker = payload
+            .get("errorMarker")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let error_object_prototype_patched = payload
+            .get("errorObjectPrototypePatched")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if !marker.is_empty()
+            || atob_patched
+            || object_prototype_patched
+            || array_prototype_patched
+            || !error_marker.is_empty()
+            || error_object_prototype_patched
+        {
             return Err(format!(
-                "expected monkey-patch leakage across requests for detection purposes: {}",
+                "expected mutable state to be restored between requests: {}",
                 payload
+            ));
+        }
+
+        let (error_status, error_body) =
+            invoke_text(&registry, "sandbox-monkey-patch-leak", "/error").await?;
+        if error_status != 500 || !error_body.contains("intentional sandbox cleanup failure") {
+            return Err(format!(
+                "expected handler error response; status={error_status}, body={error_body}"
+            ));
+        }
+
+        let (post_error_status, post_error_body) =
+            invoke_text(&registry, "sandbox-monkey-patch-leak", "/check").await?;
+        if post_error_status != 200 {
+            return Err(format!(
+                "post-error check request failed; status={post_error_status}, body={post_error_body}"
+            ));
+        }
+        let post_error_payload: serde_json::Value = serde_json::from_str(&post_error_body)
+            .map_err(|e| format!("parse post-error json: {e}; body={post_error_body}"))?;
+        let post_error_marker = post_error_payload
+            .get("errorMarker")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let post_error_object_prototype_patched = post_error_payload
+            .get("errorObjectPrototypePatched")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !post_error_marker.is_empty() || post_error_object_prototype_patched {
+            return Err(format!(
+                "expected mutable state to be restored after handler error: {post_error_payload}"
             ));
         }
 
@@ -812,6 +895,150 @@ fn sandbox_detects_cross_request_monkey_patch_leak_on_non_frozen_globals() {
             .await
             .map_err(|e| format!("delete failed: {e}"))?;
 
+        Ok(())
+    });
+
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
+#[test]
+fn sandbox_stream_defers_execution_cleanup_until_producer_finishes() {
+    init_runtime();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build runtime");
+
+    let result: Result<(), String> = rt.block_on(async {
+        let source = r#"
+            let streamFinished = false;
+            Deno.serve(async (req) => {
+              const path = new URL(req.url).pathname;
+              if (path === '/stream') {
+                return new Response(new ReadableStream({
+                  start(controller) {
+                    setTimeout(() => {
+                      streamFinished = true;
+                      controller.enqueue(new TextEncoder().encode('chunk'));
+                      controller.close();
+                    }, 10);
+                  },
+                }));
+              }
+
+              return new Response(JSON.stringify({ finished: streamFinished }));
+            });
+        "#;
+
+        let registry = deploy_inline_function("sandbox-stream-lifecycle", source).await?;
+        let stream_result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            invoke_text(&registry, "sandbox-stream-lifecycle", "/stream"),
+        )
+        .await
+        .map_err(|_| "stream producer did not finish before timeout".to_string())??;
+        if stream_result.0 != 200 || stream_result.1 != "chunk" {
+            return Err(format!(
+                "unexpected stream response: status={}, body={}",
+                stream_result.0, stream_result.1
+            ));
+        }
+
+        let (check_status, check_body) =
+            invoke_text(&registry, "sandbox-stream-lifecycle", "/check").await?;
+        if check_status != 200 || !check_body.contains("\"finished\":true") {
+            return Err(format!(
+                "stream execution did not finish cleanly: status={check_status}, body={check_body}"
+            ));
+        }
+
+        registry
+            .delete("sandbox-stream-lifecycle")
+            .await
+            .map_err(|e| format!("delete failed: {e}"))?;
+        Ok(())
+    });
+
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
+#[test]
+fn sandbox_private_subnet_exception_does_not_reopen_protected_targets() {
+    init_runtime();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build runtime");
+
+    let result: Result<(), String> = rt.block_on(async {
+        let source = r#"
+            Deno.serve(async () => {
+              const targets = [
+                ['10.1.2.3:8080', 'exception'],
+                ['10.2.2.3:8080', 'private'],
+                ['127.0.0.1:8080', 'loopback'],
+                ['169.254.169.254:80', 'metadata'],
+              ];
+              const checks = [];
+              const previousMock = globalThis.__edgeMockFetchHandler;
+              globalThis.__edgeMockFetchHandler = async () => new Response('mock');
+              for (const [host, family] of targets) {
+                try {
+                  const response = await fetch(`http://${host}/`);
+                  checks.push({
+                    family,
+                    state: await response.text() === 'mock' ? 'granted' : 'other',
+                  });
+                } catch (err) {
+                  checks.push({
+                    family,
+                    state: String(err).includes('Requires net access') ||
+                      String(err).includes('SSRF policy denied') ? 'denied' : 'other',
+                  });
+                }
+              }
+              globalThis.__edgeMockFetchHandler = previousMock;
+              return new Response(JSON.stringify(checks));
+            });
+        "#;
+
+        let mut config = IsolateConfig::default();
+        config.ssrf_config = SsrfConfig::with_exceptions(vec!["10.1.0.0/16".to_string()]);
+        let registry =
+            deploy_inline_function_with_config("sandbox-private-exception", source, config).await?;
+        let (status, body) = invoke_text(&registry, "sandbox-private-exception", "/").await?;
+        if status != 200 {
+            return Err(format!("unexpected response status: {status}, body={body}"));
+        }
+
+        let checks: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("parse checks: {e}"))?;
+        let state_for = |family: &str| {
+            checks
+                .as_array()
+                .and_then(|items| {
+                    items.iter().find(|item| {
+                        item.get("family").and_then(|value| value.as_str()) == Some(family)
+                    })
+                })
+                .and_then(|item| item.get("state"))
+                .and_then(|value| value.as_str())
+        };
+
+        if state_for("exception") != Some("granted")
+            || state_for("private") != Some("denied")
+            || state_for("loopback") != Some("denied")
+            || state_for("metadata") != Some("denied")
+        {
+            return Err(format!("unexpected private exception states: {checks}"));
+        }
+
+        registry
+            .delete("sandbox-private-exception")
+            .await
+            .map_err(|e| format!("delete failed: {e}"))?;
         Ok(())
     });
 

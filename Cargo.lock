@@ -5056,6 +5056,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "http",
+ "hyper-util",
  "ipnet",
  "jsonschema",
  "libc",

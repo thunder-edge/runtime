@@ -8,7 +8,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ssrf::DEFAULT_DENY_RANGES;
+use crate::ssrf::{is_denied_ip, normalize_network_rule, DEFAULT_DENY_RANGES};
 
 const COMMON_SCHEMA_URI: &str = "https://thunder.dev/schemas/base/common.schema.json";
 const NETWORK_SCHEMA_URI: &str = "https://thunder.dev/schemas/base/network.schema.json";
@@ -181,7 +181,7 @@ static DENY_RULES: Lazy<Vec<DenyRule>> = Lazy::new(|| {
     DEFAULT_DENY_RANGES
         .iter()
         .filter_map(|raw| {
-            let normalized = raw.trim().trim_start_matches('[').trim_end_matches(']');
+            let normalized = normalize_network_rule(raw);
             if let Ok(ip) = normalized.parse::<IpAddr>() {
                 return Some(DenyRule::Ip(ip));
             }
@@ -668,10 +668,7 @@ fn validate_port(port_str: &str) -> Result<(), Error> {
 fn collides_with_denylist(target: &ParsedNetworkTarget) -> bool {
     match target {
         ParsedNetworkTarget::Host(host) => host == "localhost" || host == "localhost.",
-        ParsedNetworkTarget::Ip(ip) => DENY_RULES.iter().any(|rule| match rule {
-            DenyRule::Ip(deny_ip) => deny_ip == ip,
-            DenyRule::Cidr(deny_cidr) => deny_cidr.contains(ip),
-        }),
+        ParsedNetworkTarget::Ip(ip) => is_denied_ip(*ip),
         ParsedNetworkTarget::Cidr(cidr) => DENY_RULES.iter().any(|rule| match rule {
             DenyRule::Ip(deny_ip) => cidr.contains(deny_ip),
             DenyRule::Cidr(deny_cidr) => {
@@ -803,19 +800,31 @@ mod tests {
 
     #[test]
     fn rejects_manifest_with_denylisted_ip() {
-        let json = r#"{
+        for target in [
+            "127.0.0.1",
+            "[::ffff:169.254.169.254]",
+            "[fd00::1]",
+            "[fe80::1]",
+        ] {
+            let json = format!(
+                r#"{{
                     "manifestVersion": 2,
                     "name": "hello",
                     "entrypoint": "./index.ts",
                     "flavor": "single",
-                    "network": {
+                    "network": {{
                         "mode": "allowlist",
-                        "allow": ["127.0.0.1"]
-                    }
-                }"#;
+                        "allow": ["{target}"]
+                    }}
+                }}"#
+            );
 
-        let err = validate_manifest_json(json).expect_err("denylisted target must fail");
-        assert!(err.to_string().contains("collides with internal denylist"));
+            let err = validate_manifest_json(&json).expect_err("denylisted target must fail");
+            assert!(
+                err.to_string().contains("collides with internal denylist"),
+                "target {target} returned unexpected error: {err}"
+            );
+        }
     }
 
     #[test]

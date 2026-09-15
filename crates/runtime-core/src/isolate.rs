@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use anyhow::Error;
 use deno_core::ModuleSpecifier;
 use http::response::Parts;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -222,8 +222,90 @@ pub struct IsolateRequest {
     pub response_tx: oneshot::Sender<Result<IsolateResponse, Error>>,
 }
 
-/// Streaming body channel returned by an isolate.
-pub type ResponseChunkReceiver = mpsc::UnboundedReceiver<Result<bytes::Bytes, Error>>;
+/// Completion state for a response stream owned by an execution.
+#[derive(Clone)]
+pub struct ResponseStreamCompletion {
+    state: Arc<ResponseStreamCompletionState>,
+}
+
+struct ResponseStreamCompletionState {
+    done: AtomicBool,
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+impl ResponseStreamCompletion {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(ResponseStreamCompletionState {
+                done: AtomicBool::new(false),
+                cancelled: AtomicBool::new(false),
+                notify: Notify::new(),
+            }),
+        }
+    }
+
+    pub fn complete(&self) {
+        self.state.done.store(true, Ordering::Release);
+        self.state.notify.notify_waiters();
+    }
+
+    pub fn cancel(&self) {
+        self.state.cancelled.store(true, Ordering::Release);
+        self.complete();
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.state.done.load(Ordering::Acquire)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::Acquire)
+    }
+
+    pub async fn wait(&self) {
+        if self.is_done() {
+            return;
+        }
+        self.state.notify.notified().await;
+    }
+}
+
+impl Default for ResponseStreamCompletion {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Streaming body receiver returned by an isolate.
+pub struct ResponseChunkReceiver {
+    receiver: mpsc::UnboundedReceiver<Result<bytes::Bytes, Error>>,
+    completion: ResponseStreamCompletion,
+}
+
+impl ResponseChunkReceiver {
+    pub fn new(
+        receiver: mpsc::UnboundedReceiver<Result<bytes::Bytes, Error>>,
+        completion: ResponseStreamCompletion,
+    ) -> Self {
+        Self {
+            receiver,
+            completion,
+        }
+    }
+
+    pub async fn recv(&mut self) -> Option<Result<bytes::Bytes, Error>> {
+        self.receiver.recv().await
+    }
+}
+
+impl Drop for ResponseChunkReceiver {
+    fn drop(&mut self) {
+        if !self.completion.is_done() {
+            self.completion.cancel();
+        }
+    }
+}
 
 /// Response body variants produced by an isolate.
 pub enum IsolateResponseBody {

@@ -1,5 +1,8 @@
 use std::borrow::Cow;
+use std::io;
 use std::io::{Read, Write};
+use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -8,11 +11,11 @@ use std::time::{Duration, Instant};
 use deno_ast::{EmitOptions, MediaType, ParseParams, TranspileModuleOptions, TranspileOptions};
 use deno_core::url::Url;
 use deno_core::{
-    op2, Extension, ModuleCodeString, ModuleName, OpState, RuntimeOptions, SourceMapData,
-};
-use deno_core::{
     error::CoreError,
     snapshot::{create_snapshot, CreateSnapshotOptions, CreateSnapshotOutput},
+};
+use deno_core::{
+    op2, Extension, ModuleCodeString, ModuleName, OpState, RuntimeOptions, SourceMapData,
 };
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::write::{DeflateEncoder, GzEncoder, ZlibEncoder};
@@ -26,6 +29,7 @@ use sha2::{Digest, Sha256, Sha512};
 use tracing::{error, info, warn};
 
 use crate::isolate_logs::{push_collected_log, IsolateConsoleLog, IsolateLogConfig};
+use crate::ssrf::{is_denied_ip_with_exceptions, SsrfConfig};
 
 // Bootstrap extension: imports all extension ESM modules so they get evaluated.
 //
@@ -466,6 +470,77 @@ fn op_edge_runtime_console_log(
 
 deno_core::extension!(edge_runtime_logging, ops = [op_edge_runtime_console_log],);
 
+fn parse_ip_target(target: &str) -> Option<IpAddr> {
+    let target = target.trim();
+    let host = Url::parse(target)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| target.to_string());
+    let host = host.trim();
+
+    let candidate = if let Some(rest) = host.strip_prefix('[') {
+        rest.find(']').map(|close| &rest[..close])
+    } else if let Some((maybe_host, maybe_port)) = host.rsplit_once(':') {
+        if !maybe_host.contains(':') && maybe_port.parse::<u16>().is_ok() {
+            Some(maybe_host)
+        } else {
+            Some(host)
+        }
+    } else {
+        Some(host)
+    }?;
+
+    candidate.parse().ok()
+}
+
+#[op2(fast)]
+fn op_edge_runtime_ssrf_denied(
+    #[string] target: String,
+    #[string] exceptions_json: String,
+) -> bool {
+    let exceptions = serde_json::from_str::<Vec<String>>(&exceptions_json).unwrap_or_default();
+    parse_ip_target(&target)
+        .map(|ip| is_denied_ip_with_exceptions(ip, &exceptions))
+        .unwrap_or(false)
+}
+
+deno_core::extension!(edge_runtime_security, ops = [op_edge_runtime_ssrf_denied],);
+
+#[derive(Debug)]
+struct SsrfDnsResolver {
+    enabled: bool,
+    exceptions: Vec<String>,
+}
+
+impl deno_fetch::dns::Resolve for SsrfDnsResolver {
+    fn resolve(
+        &self,
+        name: hyper_util::client::legacy::connect::dns::Name,
+    ) -> deno_fetch::dns::Resolving {
+        let host = name.as_str().to_string();
+        let enabled = self.enabled;
+        let exceptions = self.exceptions.clone();
+
+        Box::pin(async move {
+            let addresses: Vec<SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+
+            if enabled
+                && addresses
+                    .iter()
+                    .any(|address| is_denied_ip_with_exceptions(address.ip(), &exceptions))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("SSRF policy denied resolved host '{host}'"),
+                ));
+            }
+
+            Ok(addresses.into_iter())
+        })
+    }
+}
+
 // === Stub types for deno_node (no npm support in edge runtime) ===
 
 /// Stub npm package checker - always returns false (no npm packages).
@@ -523,11 +598,40 @@ pub type EdgeNodeSys = sys_traits::impls::RealSys;
 ///
 /// The `edge_bootstrap` extension is registered last — its entry point imports
 /// all other extension ESM modules, causing them to be evaluated.
-pub fn get_extensions_with_edge_assert(include_edge_assert: bool) -> Vec<Extension> {
+pub fn get_extensions_with_ssrf_protection(
+    include_edge_assert: bool,
+    ssrf_enabled: bool,
+) -> Vec<Extension> {
+    get_extensions_with_ssrf_config(
+        include_edge_assert,
+        &SsrfConfig {
+            enabled: ssrf_enabled,
+            allow_private_subnets: Vec::new(),
+        },
+    )
+}
+
+pub fn get_extensions_with_ssrf_config(
+    include_edge_assert: bool,
+    ssrf_config: &SsrfConfig,
+) -> Vec<Extension> {
     // Shared filesystem - use Rc (deno_fs expects Rc not Arc by default)
     let fs: deno_fs::FileSystemRc = Rc::new(deno_fs::RealFs);
 
+    let fetch_options = if ssrf_config.enabled {
+        deno_fetch::Options {
+            resolver: deno_fetch::dns::Resolver::Custom(Arc::new(SsrfDnsResolver {
+                enabled: true,
+                exceptions: ssrf_config.build_allow_net(),
+            })),
+            ..Default::default()
+        }
+    } else {
+        deno_fetch::Options::default()
+    };
+
     let mut extensions = vec![
+        edge_runtime_security::init(),
         // Runtime log routing for isolate console output.
         edge_runtime_logging::init(),
         // 0. Stub ops for edge runtime (TTY ops not needed in serverless)
@@ -554,7 +658,7 @@ pub fn get_extensions_with_edge_assert(include_edge_assert: bool) -> Vec<Extensi
         // 7. Telemetry
         deno_telemetry::deno_telemetry::init(),
         // 8. Fetch (depends on web, net, tls) - fetch API
-        deno_fetch::deno_fetch::init(deno_fetch::Options::default()),
+        deno_fetch::deno_fetch::init(fetch_options),
         // 9. WebSocket client API (depends on web, webidl)
         deno_websocket::deno_websocket::init(),
         // 10. Minimal Node compatibility modules with native crypto ops
@@ -574,6 +678,10 @@ pub fn get_extensions_with_edge_assert(include_edge_assert: bool) -> Vec<Extensi
     extensions.push(edge_bootstrap::init());
 
     extensions
+}
+
+pub fn get_extensions_with_edge_assert(include_edge_assert: bool) -> Vec<Extension> {
+    get_extensions_with_ssrf_protection(include_edge_assert, false)
 }
 
 pub fn get_extensions() -> Vec<Extension> {
@@ -632,9 +740,9 @@ pub fn set_extension_transpiler(opts: &mut RuntimeOptions) {
         }
 
         // Create a synthetic URL for parsing (required by deno_ast)
-        let url = if specifier_str.starts_with("node:") {
+        let url = if let Some(stripped) = specifier_str.strip_prefix("node:") {
             // Convert node: specifier to a parseable URL
-            deno_core::url::Url::parse(&format!("file:///{}.ts", &specifier_str[5..]))
+            deno_core::url::Url::parse(&format!("file:///{}.ts", stripped))
                 .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap())
         } else {
             deno_core::url::Url::parse(specifier_str)
@@ -688,8 +796,8 @@ mod tests {
     #[test]
     fn get_extensions_returns_expected_count() {
         let exts = get_extensions();
-        // 15 extensions by default (no edge_assert in production profile)
-        assert_eq!(exts.len(), 15, "expected 15 extensions, got {}", exts.len());
+        // 16 extensions by default (no edge_assert in production profile)
+        assert_eq!(exts.len(), 16, "expected 16 extensions, got {}", exts.len());
     }
 
     #[test]

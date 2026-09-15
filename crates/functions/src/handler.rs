@@ -3,6 +3,7 @@ use base64::Engine;
 use deno_core::{op2, Extension, JsRuntime, ModuleSpecifier, OpState};
 use runtime_core::isolate::{
     IsolateConfig, IsolateResponse, IsolateResponseBody, OutgoingProxyConfig,
+    ResponseStreamCompletion,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -12,7 +13,12 @@ use crate::connection_manager::{global_connection_manager, AcquireError};
 
 #[derive(Default)]
 struct ResponseStreamRegistry {
-    streams: std::collections::HashMap<String, mpsc::UnboundedSender<Result<bytes::Bytes, Error>>>,
+    streams: std::collections::HashMap<String, ResponseStreamEntry>,
+}
+
+struct ResponseStreamEntry {
+    sender: mpsc::UnboundedSender<Result<bytes::Bytes, Error>>,
+    completion: ResponseStreamCompletion,
 }
 
 #[op2(fast)]
@@ -22,8 +28,8 @@ fn op_edge_stream_chunk(
     #[buffer] chunk: &[u8],
 ) -> Result<(), deno_error::JsErrorBox> {
     let registry = state.borrow_mut::<ResponseStreamRegistry>();
-    if let Some(sender) = registry.streams.get(&stream_id) {
-        let _ = sender.send(Ok(bytes::Bytes::copy_from_slice(chunk)));
+    if let Some(entry) = registry.streams.get(&stream_id) {
+        let _ = entry.sender.send(Ok(bytes::Bytes::copy_from_slice(chunk)));
     }
     Ok(())
 }
@@ -34,7 +40,9 @@ fn op_edge_stream_end(
     #[string] stream_id: String,
 ) -> Result<(), deno_error::JsErrorBox> {
     let registry = state.borrow_mut::<ResponseStreamRegistry>();
-    registry.streams.remove(&stream_id);
+    if let Some(entry) = registry.streams.remove(&stream_id) {
+        entry.completion.complete();
+    }
     Ok(())
 }
 
@@ -45,10 +53,21 @@ fn op_edge_stream_error(
     #[string] message: String,
 ) -> Result<(), deno_error::JsErrorBox> {
     let registry = state.borrow_mut::<ResponseStreamRegistry>();
-    if let Some(sender) = registry.streams.remove(&stream_id) {
-        let _ = sender.send(Err(anyhow::anyhow!(message)));
+    if let Some(entry) = registry.streams.remove(&stream_id) {
+        let _ = entry.sender.send(Err(anyhow::anyhow!(message)));
+        entry.completion.complete();
     }
     Ok(())
+}
+
+#[op2(fast)]
+fn op_edge_stream_cancelled(state: &mut OpState, #[string] stream_id: String) -> bool {
+    let registry = state.borrow_mut::<ResponseStreamRegistry>();
+    registry
+        .streams
+        .get(&stream_id)
+        .map(|entry| entry.completion.is_cancelled())
+        .unwrap_or(true)
 }
 
 #[op2(async(lazy), fast)]
@@ -107,6 +126,7 @@ deno_core::extension!(
         op_edge_stream_chunk,
         op_edge_stream_end,
         op_edge_stream_error,
+        op_edge_stream_cancelled,
         op_edge_acquire_egress_lease,
         op_edge_release_egress_lease,
         op_edge_release_execution_egress_leases
@@ -127,18 +147,23 @@ fn register_response_stream(
     js_runtime: &mut JsRuntime,
     stream_id: String,
     sender: mpsc::UnboundedSender<Result<bytes::Bytes, Error>>,
+    completion: ResponseStreamCompletion,
 ) {
     let op_state = js_runtime.op_state();
     let mut state = op_state.borrow_mut();
     let registry = state.borrow_mut::<ResponseStreamRegistry>();
-    registry.streams.insert(stream_id, sender);
+    registry
+        .streams
+        .insert(stream_id, ResponseStreamEntry { sender, completion });
 }
 
 fn unregister_response_stream(js_runtime: &mut JsRuntime, stream_id: &str) {
     let op_state = js_runtime.op_state();
     let mut state = op_state.borrow_mut();
     let registry = state.borrow_mut::<ResponseStreamRegistry>();
-    registry.streams.remove(stream_id);
+    if let Some(entry) = registry.streams.remove(stream_id) {
+        entry.completion.cancel();
+    }
 }
 
 /// Inject the request/response bridge into the JS global scope.
@@ -198,6 +223,20 @@ pub fn inject_request_bridge_with_proxy_and_config(
         isolate_config.dns_timeout_ms,
     );
     js_runtime.execute_script("edge-internal:///runtime_dns_config.js", set_dns_config)?;
+
+    let ssrf_enabled = if isolate_config.ssrf_config.enabled {
+        "true"
+    } else {
+        "false"
+    };
+    let ssrf_exceptions_json = serde_json::to_string(&isolate_config.ssrf_config.build_allow_net())
+        .map_err(|e| anyhow::anyhow!("failed to serialize SSRF exceptions: {e}"))?;
+    js_runtime.execute_script(
+        "edge-internal:///runtime_ssrf_config.js",
+        format!(
+            "Object.defineProperty(globalThis, '__edgeRuntimeSsrfConfig', {{ value: Object.freeze({{ enabled: {ssrf_enabled}, allowPrivateSubnets: {ssrf_exceptions_json} }}), writable: false, configurable: false, enumerable: false }});"
+        ),
+    )?;
 
     let set_zlib_config = format!(
         "globalThis.__edgeRuntimeZlibConfig = {{ maxOutputLength: {}, maxInputLength: {}, operationTimeoutMs: {} }};",
@@ -429,6 +468,8 @@ pub fn inject_request_bridge_with_proxy_and_config(
                 _egressRegistry: new Map(),      // executionId -> number
                 _egressLeaseRegistry: new Map(), // executionId -> Set<leaseId>
                 _executionState: new Map(),      // executionId -> { active: boolean, token: number }
+                _streamExecutions: new Map(),    // executionId -> Set<streamId>
+                _deferredExecutionEnds: new Set(),
                 _nextExecutionToken: 1,
                 _lastBlockedNetworkLog: null,
                 _currentTenant: 'default',
@@ -442,6 +483,105 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     httpNoProxy: [],
                     httpsNoProxy: [],
                     tcpNoProxy: [],
+                },
+                _sandboxBaseline: null,
+
+                _captureSandboxDescriptors(target) {
+                    const descriptors = [];
+                    for (const key of Reflect.ownKeys(target)) {
+                        const descriptor = Object.getOwnPropertyDescriptor(target, key);
+                        if (descriptor) {
+                            descriptors.push(Object.freeze([
+                                key,
+                                Object.freeze(descriptor),
+                            ]));
+                        }
+                    }
+                    return Object.freeze(descriptors);
+                },
+
+                _restoreSandboxTarget(target, baseline) {
+                    let restored = true;
+                    const baselineKeys = new Set(baseline.map(([key]) => key));
+                    for (const key of Reflect.ownKeys(target)) {
+                        if (baselineKeys.has(key)) continue;
+                        const descriptor = Object.getOwnPropertyDescriptor(target, key);
+                        if (!descriptor?.configurable) {
+                            restored = false;
+                            continue;
+                        }
+                        try {
+                            delete target[key];
+                        } catch (_) {
+                            restored = false;
+                        }
+                    }
+
+                    for (const [key, descriptor] of baseline) {
+                        try {
+                            Object.defineProperty(target, key, descriptor);
+                        } catch (_) {
+                            restored = false;
+                        }
+                    }
+                    return restored;
+                },
+
+                captureSandboxBaseline() {
+                    if (this._sandboxBaseline) return;
+
+                    const targets = [
+                        globalThis,
+                        Object.prototype,
+                        Array.prototype,
+                        Function.prototype,
+                        Promise.prototype,
+                        Error.prototype,
+                        Map.prototype,
+                        Set.prototype,
+                        Date.prototype,
+                        RegExp.prototype,
+                        URL?.prototype,
+                        Request?.prototype,
+                        Response?.prototype,
+                        Headers?.prototype,
+                    ].filter(Boolean);
+
+                    const baseline = targets.map((target) => ({
+                        target,
+                        descriptors: this._captureSandboxDescriptors(target),
+                    }));
+
+                    Object.defineProperty(this, '_sandboxBaseline', {
+                        value: baseline,
+                        writable: false,
+                        configurable: false,
+                        enumerable: false,
+                    });
+                    baseline.push({
+                        target: this,
+                        descriptors: this._captureSandboxDescriptors(this),
+                    });
+                    for (const entry of baseline) Object.freeze(entry);
+                    Object.freeze(baseline);
+                },
+
+                restoreSandboxState() {
+                    const baseline = this._sandboxBaseline;
+                    if (!baseline) return true;
+
+                    let restored = true;
+                    for (const entry of baseline.slice(1)) {
+                        restored = this._restoreSandboxTarget(
+                            entry.target,
+                            entry.descriptors,
+                        ) && restored;
+                    }
+                    restored = this._restoreSandboxTarget(
+                        baseline[0].target,
+                        baseline[0].descriptors,
+                    ) && restored;
+                    return restored;
                 },
 
                 _clearAsyncHooksExecutionContext(executionId) {
@@ -545,6 +685,29 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     }
                 },
 
+                _registerResponseStream(executionId, streamId) {
+                    if (!executionId || !streamId) return;
+                    let streams = this._streamExecutions.get(executionId);
+                    if (!streams) {
+                        streams = new Set();
+                        this._streamExecutions.set(executionId, streams);
+                    }
+                    streams.add(streamId);
+                },
+
+                finishResponseStream(executionId, streamId) {
+                    if (!executionId || !streamId) return;
+                    const streams = this._streamExecutions.get(executionId);
+                    if (!streams) return;
+                    streams.delete(streamId);
+                    if (streams.size === 0) {
+                        this._streamExecutions.delete(executionId);
+                        if (this._deferredExecutionEnds.delete(executionId)) {
+                            this._finalizeExecution(executionId);
+                        }
+                    }
+                },
+
                 registerWebSocketForCurrentExecution(socket) {
                     const executionId = this._currentExecutionId;
                     if (!executionId || !socket) return null;
@@ -585,7 +748,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     this._wsRegistry.delete(executionId);
                 },
 
-                endExecution(executionId) {
+                _finalizeExecution(executionId) {
                     this._deactivateExecution(executionId);
                     this._closeExecutionWebSockets(executionId, 1001, 'Execution ended');
                     this._releaseExecutionEgressLeases(executionId);
@@ -601,6 +764,15 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     }
                     this._executionState.delete(executionId);
                     this._clearAsyncHooksExecutionContext(executionId);
+                },
+
+                endExecution(executionId) {
+                    const streams = this._streamExecutions.get(executionId);
+                    if (streams && streams.size > 0) {
+                        this._deferredExecutionEnds.add(executionId);
+                        return;
+                    }
+                    this._finalizeExecution(executionId);
                 },
 
                 clearExecutionTimers(executionId) {
@@ -1109,6 +1281,8 @@ pub fn inject_request_bridge_with_proxy_and_config(
 
                     if (hasBody) {
                         const reader = response.body.getReader();
+                        const streamExecutionId = globalThis.__edgeRuntime._currentExecutionId;
+                        globalThis.__edgeRuntime._registerResponseStream(streamExecutionId, streamId);
                         (async () => {
                             try {
                                 while (true) {
@@ -1117,10 +1291,23 @@ pub fn inject_request_bridge_with_proxy_and_config(
                                         Deno.core.ops.op_edge_stream_end(streamId);
                                         break;
                                     }
+                                    if (Deno.core.ops.op_edge_stream_cancelled(streamId)) {
+                                        try {
+                                            await reader.cancel('response consumer disconnected');
+                                        } catch (_) {
+                                            // Ignore cancellation races.
+                                        }
+                                        break;
+                                    }
                                     Deno.core.ops.op_edge_stream_chunk(streamId, value);
                                 }
                             } catch (streamErr) {
                                 Deno.core.ops.op_edge_stream_error(streamId, String(streamErr));
+                            } finally {
+                                globalThis.__edgeRuntime.finishResponseStream(
+                                    streamExecutionId,
+                                    streamId,
+                                );
                             }
                         })();
 
@@ -1149,6 +1336,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     globalThis.__edgeRuntime._currentTenant = previousTenant || 'default';
                 }
             };
+
             "#
         ),
     )?;
@@ -1207,7 +1395,13 @@ pub async fn dispatch_request_for_context(
     let body = request.into_body();
     let stream_id = Uuid::new_v4().to_string();
     let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<Result<bytes::Bytes, Error>>();
-    register_response_stream(js_runtime, stream_id.clone(), chunk_tx);
+    let stream_completion = ResponseStreamCompletion::new();
+    register_response_stream(
+        js_runtime,
+        stream_id.clone(),
+        chunk_tx,
+        stream_completion.clone(),
+    );
 
     // Call globalThis.__edgeRuntime.handleRequest(...) directly via V8 API,
     // avoiding dynamic execute_script frames on every request.
@@ -1350,7 +1544,9 @@ pub async fn dispatch_request_for_context(
 
             Ok(IsolateResponse {
                 parts: response_parts,
-                body: IsolateResponseBody::Stream(chunk_rx),
+                body: IsolateResponseBody::Stream(
+                    runtime_core::isolate::ResponseChunkReceiver::new(chunk_rx, stream_completion),
+                ),
             })
         }
         "inline" => {
@@ -1956,12 +2152,10 @@ mod tests {
                     .await;
 
                     let mut out = Vec::new();
-                    while let Some(chunk) = tokio::time::timeout(
-                        std::time::Duration::from_millis(100),
-                        body_rx.recv(),
-                    )
-                    .await
-                    .expect("timed out receiving 405 body")
+                    while let Some(chunk) =
+                        tokio::time::timeout(std::time::Duration::from_millis(100), body_rx.recv())
+                            .await
+                            .expect("timed out receiving 405 body")
                     {
                         let chunk = chunk.expect("chunk error");
                         out.extend_from_slice(&chunk);
@@ -2034,12 +2228,10 @@ mod tests {
                     .await;
 
                     let mut out = Vec::new();
-                    while let Some(chunk) = tokio::time::timeout(
-                        std::time::Duration::from_millis(100),
-                        body_rx.recv(),
-                    )
-                    .await
-                    .expect("timed out receiving normalized draft body")
+                    while let Some(chunk) =
+                        tokio::time::timeout(std::time::Duration::from_millis(100), body_rx.recv())
+                            .await
+                            .expect("timed out receiving normalized draft body")
                     {
                         let chunk = chunk.expect("chunk error");
                         out.extend_from_slice(&chunk);
@@ -2114,12 +2306,10 @@ mod tests {
                     .await;
 
                     let mut out = Vec::new();
-                    while let Some(chunk) = tokio::time::timeout(
-                        std::time::Duration::from_millis(100),
-                        body_rx.recv(),
-                    )
-                    .await
-                    .expect("timed out receiving normalized object body")
+                    while let Some(chunk) =
+                        tokio::time::timeout(std::time::Duration::from_millis(100), body_rx.recv())
+                            .await
+                            .expect("timed out receiving normalized object body")
                     {
                         let chunk = chunk.expect("chunk error");
                         out.extend_from_slice(&chunk);

@@ -242,6 +242,13 @@ Object.assign(globalThis, {
   EventSource,
 });
 
+function edgeSsrfTargetIsDenied(target) {
+  if (globalThis.__edgeRuntimeSsrfConfig?.enabled !== true) return false;
+  const op = globalThis.Deno?.core?.ops?.op_edge_runtime_ssrf_denied;
+  const exceptions = JSON.stringify(globalThis.__edgeRuntimeSsrfConfig.allowPrivateSubnets || []);
+  return typeof op === "function" && op(String(target), exceptions) === true;
+}
+
 // WebSocket
 const EDGE_WS_MAX_CONNECTIONS = 128;
 const EDGE_WS_CONNECT_TIMEOUT_MS = 30_000;
@@ -272,6 +279,10 @@ function edgeWsTrackConnection(socket) {
 
 class EdgeWebSocket extends NativeWebSocket {
   constructor(url, initOrProtocols) {
+    if (edgeSsrfTargetIsDenied(String(url))) {
+      throw new TypeError(`Requires net access to "${String(url)}"`);
+    }
+
     const runtimeBridge = globalThis.__edgeRuntime;
     if (runtimeBridge && typeof runtimeBridge.consumeEgressToken === "function") {
       runtimeBridge.consumeEgressToken("websocket", String(url));
@@ -486,17 +497,22 @@ if (typeof __edgeOriginalFetch === "function") {
 
   globalThis.fetch = function edgeFetchWithMockSupport(input, init) {
     const runtimeBridge = globalThis.__edgeRuntime;
+    const target = (() => {
+      try {
+        if (typeof input === "string") return input;
+        if (input instanceof URL) return input.toString();
+        if (input && typeof input.url === "string") return input.url;
+        return String(input);
+      } catch {
+        return "<unknown>";
+      }
+    })();
+
+    if (edgeSsrfTargetIsDenied(target)) {
+      return Promise.reject(new TypeError(`Requires net access to "${target}"`));
+    }
+
     if (runtimeBridge && typeof runtimeBridge.consumeEgressToken === "function") {
-      const target = (() => {
-        try {
-          if (typeof input === "string") return input;
-          if (input instanceof URL) return input.toString();
-          if (input && typeof input.url === "string") return input.url;
-          return String(input);
-        } catch {
-          return "<unknown>";
-        }
-      })();
       runtimeBridge.consumeEgressToken("fetch", target);
     }
 
@@ -777,6 +793,26 @@ if (globalThis.Deno) {
   delete globalThis.Deno.listenDatagram;
 
   // Permissions API - allow reading but not requesting
+  if (globalThis.Deno.permissions && typeof globalThis.Deno.permissions.query === "function") {
+    const originalPermissionsQuery = globalThis.Deno.permissions.query;
+    const edgePermissionsQuery = function edgePermissionsQuery(descriptor) {
+      if (
+        descriptor?.name === "net" &&
+        typeof descriptor.host === "string" &&
+        edgeSsrfTargetIsDenied(descriptor.host)
+      ) {
+        return Promise.resolve({ state: "denied" });
+      }
+      return originalPermissionsQuery.call(this, descriptor);
+    };
+    Object.defineProperty(globalThis.Deno.permissions, "query", {
+      value: edgePermissionsQuery,
+      writable: false,
+      configurable: false,
+      enumerable: true,
+    });
+  }
+
   delete globalThis.Deno.permissions?.request;
   delete globalThis.Deno.permissions?.revoke;
 }

@@ -285,7 +285,31 @@ pub async fn create_function(
                             break;
                         }
                         error!(function_name = %isolate_name, request_id = "system", "isolate '{}' exited with error: {}", isolate_name, e);
-                        break;
+
+                        if restart_count >= MAX_ISOLATE_RESTARTS {
+                            error!(
+                                function_name = %isolate_name,
+                                request_id = "system",
+                                "isolate '{}' exceeded max restart attempts ({}), giving up",
+                                isolate_name, MAX_ISOLATE_RESTARTS
+                            );
+                            break;
+                        }
+
+                        restart_count += 1;
+                        let backoff_secs = (1_u64 << (restart_count.saturating_sub(1))).min(60);
+                        warn!(
+                            function_name = %isolate_name,
+                            request_id = "system",
+                            "restarting isolate '{}' after controlled exit (attempt {}/{}), backoff={}s",
+                            isolate_name, restart_count, MAX_ISOLATE_RESTARTS, backoff_secs
+                        );
+
+                        std::thread::sleep(Duration::from_secs(backoff_secs));
+                        if shutdown.is_cancelled() {
+                            break;
+                        }
+
                     }
                     Err(e) => {
                         error!(function_name = %isolate_name, request_id = "system", "isolate '{}' panicked: {:?}", isolate_name, e);
@@ -568,6 +592,22 @@ async fn run_isolate(
                 // Generate unique execution ID for this request (for timer tracking)
                 let execution_id = uuid::Uuid::new_v4().to_string();
 
+                if let Err(e) = js_runtime.execute_script(
+                    "edge-internal:///restore_sandbox_state.js",
+                    deno_core::ascii_str!(
+                        "if (!globalThis.__edgeRuntime.restoreSandboxState()) { throw new Error('sandbox state restoration failed'); }"
+                    ),
+                ) {
+                    error!(
+                        "failed to restore sandbox state before execution '{}': {}",
+                        execution_id, e
+                    );
+                    return Err(anyhow::anyhow!(
+                        "sandbox state restoration failed before execution '{}': {}",
+                        execution_id, e
+                    ));
+                }
+
                 // Start execution context (track timers/intervals for this request)
                 if let Err(e) = js_runtime.execute_script(
                     "edge-internal:///start_execution.js",
@@ -582,6 +622,7 @@ async fn run_isolate(
                 let request_context_id = req.context_id;
                 let request_function_name = req.function_name;
                 let request_payload = req.request;
+                let mut recycle_after_request = false;
 
                 let result = if config.wall_clock_timeout_ms > 0 {
                     // Get thread-safe handle for the watchdog thread
@@ -652,6 +693,7 @@ async fn run_isolate(
                             name, config.wall_clock_timeout_ms
                         );
                         metrics.total_errors.fetch_add(1, Ordering::Relaxed);
+                        recycle_after_request = true;
                         Ok(timeout_response())
                     } else {
                         // End execution context normally (cleanup tracking, timers keep running)
@@ -709,6 +751,12 @@ async fn run_isolate(
 
                 // Send response back (ignore if receiver dropped)
                 let _ = req.response_tx.send(result);
+
+                if recycle_after_request {
+                    return Err(anyhow::anyhow!(
+                        "isolate marked for recycle after request timeout"
+                    ));
+                }
 
                 // Pump the event loop to process any pending async work
                 let _ = js_runtime
@@ -832,7 +880,8 @@ async fn load_from_eszip_with_init(
         code_cache,
     ));
 
-    let mut runtime_extensions = extensions::get_extensions();
+    let mut runtime_extensions =
+        extensions::get_extensions_with_ssrf_config(false, &config.ssrf_config);
     runtime_extensions.push(handler::response_stream_extension());
 
     let mut runtime_opts = RuntimeOptions {
@@ -941,6 +990,11 @@ async fn load_from_eszip_with_init(
     eval_result.await?;
 
     handler::register_handler_from_module_exports(&mut js_runtime, root_specifier).await?;
+
+    js_runtime.execute_script(
+        "edge-internal:///capture_sandbox_baseline.js",
+        deno_core::ascii_str!("globalThis.__edgeRuntime.captureSandboxBaseline();"),
+    )?;
 
     let module_eval_duration = module_eval_start.elapsed();
     let init_total_duration = init_total_start.elapsed();

@@ -336,6 +336,131 @@ fn test_isolate_timeout_returns_504() {
     assert!(result.is_ok(), "test failed: {:?}", result.err());
 }
 
+#[test]
+fn test_isolate_restores_sandbox_state_after_timeout() {
+    init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
+
+    let eszip_bytes = build_eszip(
+        "file:///test_timeout_sandbox_restore.js",
+        r#"
+        Deno.serve(async (req) => {
+            const path = new URL(req.url).pathname;
+            if (path === '/timeout') {
+                globalThis.__edgeTimeoutLeakMarker = 'patched';
+                Object.prototype.__edgeTimeoutObjectLeak = 'patched-object';
+                Array.prototype.__edgeTimeoutArrayLeak = 'patched-array';
+                while (true) {}
+            }
+
+            return new Response(JSON.stringify({
+                marker: globalThis.__edgeTimeoutLeakMarker ?? null,
+                objectPrototypePatched: ({}).__edgeTimeoutObjectLeak === 'patched-object',
+                arrayPrototypePatched: [].__edgeTimeoutArrayLeak === 'patched-array',
+            }));
+        });
+        "#,
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let result: Result<(), String> = rt.block_on(async {
+        let bundle = BundlePackage::eszip_only(eszip_bytes);
+        let bundle_data =
+            bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
+
+        let mut config = IsolateConfig::default();
+        config.wall_clock_timeout_ms = 100;
+
+        let entry = functions::lifecycle::create_function(
+            "timeout-sandbox-restore-test".to_string(),
+            bundle_data,
+            config,
+            runtime_core::isolate::OutgoingProxyConfig::default(),
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .map_err(|e| format!("create_function: {e}"))?;
+
+        let handle = entry
+            .isolate_handle
+            .clone()
+            .ok_or_else(|| "missing isolate handle".to_string())?;
+
+        let timeout_request = http::Request::builder()
+            .method("GET")
+            .uri("/timeout")
+            .header("host", "localhost:9000")
+            .body(bytes::Bytes::new())
+            .map_err(|e| format!("build timeout request: {e}"))?;
+        let timeout_response = handle
+            .send_request(timeout_request)
+            .await
+            .map_err(|e| format!("send timeout request: {e}"))?;
+        if timeout_response.parts.status != 504 {
+            return Err(format!(
+                "expected timeout response 504, got {}",
+                timeout_response.parts.status
+            ));
+        }
+
+        let check_request = http::Request::builder()
+            .method("GET")
+            .uri("/check")
+            .header("host", "localhost:9000")
+            .body(bytes::Bytes::new())
+            .map_err(|e| format!("build check request: {e}"))?;
+        let check_response = handle
+            .send_request(check_request)
+            .await
+            .map_err(|e| format!("send check request: {e}"))?;
+        if check_response.parts.status != 200 {
+            return Err(format!(
+                "expected check response 200, got {}",
+                check_response.parts.status
+            ));
+        }
+
+        let body = match check_response.body {
+            runtime_core::isolate::IsolateResponseBody::Full(bytes) => {
+                String::from_utf8_lossy(&bytes).to_string()
+            }
+            runtime_core::isolate::IsolateResponseBody::Stream(mut rx) => {
+                let mut buf = Vec::new();
+                while let Some(next) = rx.recv().await {
+                    let chunk = next.map_err(|e| format!("stream chunk error: {e}"))?;
+                    buf.extend_from_slice(&chunk);
+                }
+                String::from_utf8(buf).map_err(|e| format!("stream utf8 body: {e}"))?
+            }
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("parse check body: {e}"))?;
+        if payload.get("marker").and_then(|v| v.as_str()).is_some()
+            && payload.get("marker").and_then(|v| v.as_str()) != Some("")
+            || payload
+                .get("objectPrototypePatched")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            || payload
+                .get("arrayPrototypePatched")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
+            return Err(format!("sandbox state leaked after timeout: {payload}"));
+        }
+
+        functions::lifecycle::destroy_function(&entry).await;
+        Ok(())
+    });
+
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
 /// Test roadmap 1.2 requirement: infinite allocation should terminate isolate
 /// and mark the function as Error in registry.
 #[test]

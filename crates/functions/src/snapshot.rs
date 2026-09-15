@@ -5,6 +5,7 @@ use anyhow::Error;
 use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+
 use runtime_core::extensions;
 use runtime_core::isolate::{determine_root_specifier, IsolateConfig, OutgoingProxyConfig};
 use runtime_core::isolate_logs::IsolateLogConfig;
@@ -70,7 +71,8 @@ pub async fn create_function_bytecode_cache_from_eszip(
         Some(Default::default()),
     ));
 
-    let mut runtime_extensions = extensions::get_extensions();
+    let mut runtime_extensions =
+        extensions::get_extensions_with_ssrf_config(false, &config.ssrf_config);
     runtime_extensions.push(handler::response_stream_extension());
 
     let create_params = if config.max_heap_size_bytes > 0 {

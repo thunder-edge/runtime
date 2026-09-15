@@ -141,11 +141,7 @@ pub fn create_permissions_with_policy(
     // Build deny_net from SSRF config (None if disabled)
     let deny_net = ssrf_config.build_deny_net();
 
-    let allow_net = match network_allowlist {
-        Some(allowlist) if allowlist.is_empty() => None,
-        Some(allowlist) => Some(allowlist),
-        None => Some(vec![]),
-    };
+    let allow_net = Some(network_allowlist.unwrap_or_default());
 
     let allow_env = match env_allowlist {
         Some(allowlist) if allowlist.is_empty() => None,
@@ -242,5 +238,18 @@ mod tests {
 
         assert!(container.check_net_url(&allowed_url, "fetch()").is_ok());
         assert!(container.check_net_url(&blocked_url, "fetch()").is_err());
+    }
+
+    #[test]
+    fn ssrf_exception_allows_declared_private_subnet_only() {
+        let config = SsrfConfig::with_exceptions(vec!["10.1.0.0/16".to_string()]);
+        let mut container = create_permissions_with_ssrf_protection(&config);
+        let allowed_url = Url::parse("http://10.1.2.3:8080/").unwrap();
+
+        assert!(container.check_net_url(&allowed_url, "fetch()").is_ok());
+        assert!(crate::ssrf::is_denied_ip_with_exceptions(
+            "10.2.2.3".parse().unwrap(),
+            &config.allow_private_subnets
+        ));
     }
 }
