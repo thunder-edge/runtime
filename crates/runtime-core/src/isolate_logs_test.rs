@@ -11,7 +11,7 @@ fn collector_accepts_entries() {
         message: "hello".to_string(),
     });
     let after = collected_log_count();
-    assert!(after >= before + 1);
+    assert!(after > before);
 }
 
 #[test]

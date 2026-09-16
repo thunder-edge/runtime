@@ -351,7 +351,7 @@ pub fn run(args: WatchArgs) -> Result<(), anyhow::Error> {
             }
             _ = async {
                 loop {
-                    if let Some(_) = rx.recv().await {
+                    if rx.recv().await.is_some() {
                         let now = tokio::time::Instant::now();
                         if now.duration_since(last_update) >= debounce_duration {
                             println!("\n{}", "─".repeat(80));
@@ -618,13 +618,10 @@ fn path_to_function_name(path: &Path) -> String {
     let path_str = path.to_string_lossy();
 
     // Remove file extension
-    let path_str = if path_str.ends_with(".ts") {
-        &path_str[..path_str.len() - 3]
-    } else if path_str.ends_with(".js") {
-        &path_str[..path_str.len() - 3]
-    } else {
-        &path_str
-    };
+    let path_str = path_str
+        .strip_suffix(".ts")
+        .or_else(|| path_str.strip_suffix(".js"))
+        .unwrap_or(path_str.as_ref());
 
     // Split by path separator
     let parts: Vec<&str> = path_str.split('/').filter(|p| !p.is_empty()).collect();

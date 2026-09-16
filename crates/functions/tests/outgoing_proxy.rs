@@ -194,9 +194,10 @@ async fn start_one_shot_http_server(
 }
 
 fn base_config() -> IsolateConfig {
-    let mut cfg = IsolateConfig::default();
-    cfg.ssrf_config = SsrfConfig::disabled();
-    cfg
+    IsolateConfig {
+        ssrf_config: SsrfConfig::disabled(),
+        ..Default::default()
+    }
 }
 
 #[test]

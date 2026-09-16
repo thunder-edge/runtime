@@ -7,17 +7,17 @@ use std::time::Duration;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use bytes::Bytes;
+use functions::registry::FunctionRegistry;
 use http::header::HeaderMap;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
-use functions::registry::FunctionRegistry;
 
 use crate::body_limits::{
     check_content_length, collect_body_with_limit, payload_too_large_response, BodyLimitError,
     BodyLimitsConfig,
 };
-use crate::global_routing::{load_global_routing_table_from_env, GlobalRoutingState};
 use crate::bundle_signature::BundleSignatureVerifier;
+use crate::global_routing::{load_global_routing_table_from_env, GlobalRoutingState};
 use crate::router::{
     build_metrics_body, is_metrics_fresh_query, is_valid_function_name, json_response,
     normalize_function_name, sanitize_internal_error, MetricsCache, METRICS_CACHE_TTL_SECS,
@@ -49,7 +49,7 @@ fn boxed_full_response(response: Response<Full<Bytes>>) -> Response<BoxBody> {
 
 fn parse_manifest_from_headers(
     headers: &HeaderMap,
-) -> Result<Option<runtime_core::manifest::ResolvedFunctionManifest>, Response<BoxBody>> {
+) -> Result<Option<runtime_core::manifest::ResolvedFunctionManifest>, Box<Response<BoxBody>>> {
     let encoded_manifest = headers
         .get("x-function-manifest-b64")
         .and_then(|v| v.to_str().ok());
@@ -63,29 +63,29 @@ fn parse_manifest_from_headers(
     };
 
     let manifest_bytes = STANDARD.decode(encoded_manifest).map_err(|_| {
-        json_response(
+        Box::new(json_response(
             StatusCode::BAD_REQUEST,
             r#"{"error":"invalid x-function-manifest-b64: expected base64"}"#,
-        )
+        ))
     })?;
 
     let manifest_json = std::str::from_utf8(&manifest_bytes).map_err(|_| {
-        json_response(
+        Box::new(json_response(
             StatusCode::BAD_REQUEST,
             r#"{"error":"invalid x-function-manifest-b64: decoded payload is not UTF-8 JSON"}"#,
-        )
+        ))
     })?;
 
     runtime_core::manifest::parse_validate_and_resolve_manifest(manifest_json, profile)
         .map(Some)
         .map_err(|e| {
-            json_response(
+            Box::new(json_response(
                 StatusCode::BAD_REQUEST,
                 &format!(
                     r#"{{"error":"invalid function manifest","details":{:?}}}"#,
                     e.to_string()
                 ),
-            )
+            ))
         })
 }
 
@@ -171,7 +171,7 @@ impl AdminRouter {
         let method = req.method().clone();
         // Check authentication
         if let Err(resp) = self.check_auth(&req) {
-            return Ok(resp);
+            return Ok(*resp);
         }
 
         Ok(self.route_internal(req, &path, method).await)
@@ -181,7 +181,10 @@ impl AdminRouter {
     ///
     /// Returns `Ok(())` if authentication is disabled or key matches.
     /// Returns `Err(Response)` with 401 status if authentication fails.
-    fn check_auth(&self, req: &Request<hyper::body::Incoming>) -> Result<(), Response<BoxBody>> {
+    fn check_auth(
+        &self,
+        req: &Request<hyper::body::Incoming>,
+    ) -> Result<(), Box<Response<BoxBody>>> {
         let Some(expected) = &self.api_key else {
             // Auth disabled (dev mode)
             return Ok(());
@@ -191,14 +194,14 @@ impl AdminRouter {
 
         match provided {
             Some(key) if key == expected => Ok(()),
-            Some(_) => Err(json_response(
+            Some(_) => Err(Box::new(json_response(
                 StatusCode::UNAUTHORIZED,
                 r#"{"error":"invalid API key"}"#,
-            )),
-            None => Err(json_response(
+            ))),
+            None => Err(Box::new(json_response(
                 StatusCode::UNAUTHORIZED,
                 r#"{"error":"missing X-API-Key header"}"#,
-            )),
+            ))),
         }
     }
 
@@ -301,21 +304,22 @@ impl AdminRouter {
         }
 
         let (_, body) = req.into_parts();
-        let body_bytes = match collect_body_with_limit(body, self.body_limits.max_request_body_bytes).await {
-            Ok(bytes) => bytes,
-            Err(BodyLimitError::LimitExceeded)
-            | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                return boxed_full_response(payload_too_large_response(
-                    self.body_limits.max_request_body_bytes,
-                ));
-            }
-            Err(_) => {
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    r#"{"error":"failed to read request body"}"#,
-                )
-            }
-        };
+        let body_bytes =
+            match collect_body_with_limit(body, self.body_limits.max_request_body_bytes).await {
+                Ok(bytes) => bytes,
+                Err(BodyLimitError::LimitExceeded)
+                | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
+                    return boxed_full_response(payload_too_large_response(
+                        self.body_limits.max_request_body_bytes,
+                    ));
+                }
+                Err(_) => {
+                    return json_response(
+                        StatusCode::BAD_REQUEST,
+                        r#"{"error":"failed to read request body"}"#,
+                    )
+                }
+            };
 
         if body_bytes.is_empty() {
             return json_response(
@@ -372,21 +376,22 @@ impl AdminRouter {
         }
 
         let (_, body) = req.into_parts();
-        let body_bytes = match collect_body_with_limit(body, self.body_limits.max_request_body_bytes).await {
-            Ok(bytes) => bytes,
-            Err(BodyLimitError::LimitExceeded)
-            | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
-                return boxed_full_response(payload_too_large_response(
-                    self.body_limits.max_request_body_bytes,
-                ));
-            }
-            Err(_) => {
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    r#"{"error":"failed to read request body"}"#,
-                )
-            }
-        };
+        let body_bytes =
+            match collect_body_with_limit(body, self.body_limits.max_request_body_bytes).await {
+                Ok(bytes) => bytes,
+                Err(BodyLimitError::LimitExceeded)
+                | Err(BodyLimitError::ContentLengthExceeded { .. }) => {
+                    return boxed_full_response(payload_too_large_response(
+                        self.body_limits.max_request_body_bytes,
+                    ));
+                }
+                Err(_) => {
+                    return json_response(
+                        StatusCode::BAD_REQUEST,
+                        r#"{"error":"failed to read request body"}"#,
+                    )
+                }
+            };
 
         if body_bytes.is_empty() {
             return json_response(
@@ -462,7 +467,7 @@ impl AdminRouter {
 
         let resolved_manifest = match parse_manifest_from_headers(&parts.headers) {
             Ok(value) => value,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
 
         if let Some(policy) = &resolved_manifest {
@@ -597,7 +602,7 @@ impl AdminRouter {
                 let (parts, body) = req.into_parts();
                 let resolved_manifest = match parse_manifest_from_headers(&parts.headers) {
                     Ok(value) => value,
-                    Err(response) => return response,
+                    Err(response) => return *response,
                 };
                 if let Some(policy) = &resolved_manifest {
                     if policy.name != name {
@@ -691,15 +696,15 @@ impl AdminRouter {
                     self.registry.get_context_pool_limits(name),
                 ) {
                     (Some(limits), Some(context_limits)) => {
-                    let body = serde_json::to_string(&PoolLimitsResponse {
-                        min: limits.min,
-                        max: limits.max,
-                        context_min: context_limits.min,
-                        context_max: context_limits.max,
-                    })
-                    .unwrap_or_else(|_| "{}".to_string());
-                    json_response(StatusCode::OK, &body)
-                }
+                        let body = serde_json::to_string(&PoolLimitsResponse {
+                            min: limits.min,
+                            max: limits.max,
+                            context_min: context_limits.min,
+                            context_max: context_limits.max,
+                        })
+                        .unwrap_or_else(|_| "{}".to_string());
+                        json_response(StatusCode::OK, &body)
+                    }
                     _ => json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#),
                 }
             }

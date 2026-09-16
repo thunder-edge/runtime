@@ -1004,8 +1004,10 @@ fn sandbox_private_subnet_exception_does_not_reopen_protected_targets() {
             });
         "#;
 
-        let mut config = IsolateConfig::default();
-        config.ssrf_config = SsrfConfig::with_exceptions(vec!["10.1.0.0/16".to_string()]);
+        let config = IsolateConfig {
+            ssrf_config: SsrfConfig::with_exceptions(vec!["10.1.0.0/16".to_string()]),
+            ..Default::default()
+        };
         let registry =
             deploy_inline_function_with_config("sandbox-private-exception", source, config).await?;
         let (status, body) = invoke_text(&registry, "sandbox-private-exception", "/").await?;

@@ -146,7 +146,7 @@ fn parse_verifying_key(value: &str) -> Result<VerifyingKey, Error> {
 }
 
 fn hex_decode(input: &str) -> Result<Vec<u8>, Error> {
-    if input.len() % 2 != 0 {
+    if !input.len().is_multiple_of(2) {
         return Err(anyhow::anyhow!("invalid hex length"));
     }
 

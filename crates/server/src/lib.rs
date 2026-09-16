@@ -2,8 +2,8 @@ pub mod admin_router;
 pub mod body_limits;
 pub mod bundle_signature;
 pub mod function_route_matcher;
-pub mod graceful;
 pub mod global_routing;
+pub mod graceful;
 pub mod ingress_router;
 pub mod middleware;
 pub mod router;
@@ -14,8 +14,8 @@ pub mod trace_context;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::Error;
@@ -79,7 +79,8 @@ impl ListenerConnectionCapacityState {
             .store(snapshot.configured_max_connections, Ordering::Relaxed);
         self.effective_max_connections
             .store(snapshot.effective_max_connections, Ordering::Relaxed);
-        self.soft_limit.store(snapshot.soft_limit, Ordering::Relaxed);
+        self.soft_limit
+            .store(snapshot.soft_limit, Ordering::Relaxed);
         self.reserved_fd
             .store(snapshot.reserved_fd, Ordering::Relaxed);
         self.fd_budget.store(snapshot.fd_budget, Ordering::Relaxed);

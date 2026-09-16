@@ -12,10 +12,10 @@ use tokio::sync::RwLock;
 use tracing::{error, info};
 use uuid::Uuid;
 
+use crate::current_listener_connection_capacity;
 use crate::service::BoxBody;
 use functions::connection_manager::global_connection_manager;
 use functions::registry::{FunctionRegistry, RouteTargetError};
-use crate::current_listener_connection_capacity;
 
 use crate::body_limits::{
     check_content_length, check_response_body_size, collect_body_with_limit,
@@ -262,7 +262,7 @@ where
 
 fn parse_manifest_from_headers(
     headers: &http::header::HeaderMap,
-) -> Result<Option<runtime_core::manifest::ResolvedFunctionManifest>, Response<BoxBody>> {
+) -> Result<Option<runtime_core::manifest::ResolvedFunctionManifest>, Box<Response<BoxBody>>> {
     let encoded_manifest = headers
         .get("x-function-manifest-b64")
         .and_then(|v| v.to_str().ok());
@@ -276,29 +276,29 @@ fn parse_manifest_from_headers(
     };
 
     let manifest_bytes = STANDARD.decode(encoded_manifest).map_err(|_| {
-        json_response(
+        Box::new(json_response(
             StatusCode::BAD_REQUEST,
             r#"{"error":"invalid x-function-manifest-b64: expected base64"}"#,
-        )
+        ))
     })?;
 
     let manifest_json = std::str::from_utf8(&manifest_bytes).map_err(|_| {
-        json_response(
+        Box::new(json_response(
             StatusCode::BAD_REQUEST,
             r#"{"error":"invalid x-function-manifest-b64: decoded payload is not UTF-8 JSON"}"#,
-        )
+        ))
     })?;
 
     runtime_core::manifest::parse_validate_and_resolve_manifest(manifest_json, profile)
         .map(Some)
         .map_err(|e| {
-            json_response(
+            Box::new(json_response(
                 StatusCode::BAD_REQUEST,
                 &format!(
                     r#"{{"error":"invalid function manifest","details":{:?}}}"#,
                     e.to_string()
                 ),
-            )
+            ))
         })
 }
 
@@ -356,13 +356,12 @@ impl Router {
         let path = req.uri().path().to_string();
         let trace_ctx = trace_context_from_headers(req.headers());
 
-        let mut resp = if path == "/metrics" {
-            self.handle_internal(req).await
-        } else if path.starts_with("/_internal/") || path == "/_internal" {
-            self.handle_internal(req).await
-        } else {
-            self.handle_ingress(req, &trace_ctx).await
-        };
+        let mut resp =
+            if path == "/metrics" || path.starts_with("/_internal/") || path == "/_internal" {
+                self.handle_internal(req).await
+            } else {
+                self.handle_ingress(req, &trace_ctx).await
+            };
 
         add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
         Ok(resp)
@@ -682,7 +681,7 @@ impl Router {
 
         let resolved_manifest = match parse_manifest_from_headers(&parts.headers) {
             Ok(value) => value,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
 
         if let Some(policy) = &resolved_manifest {
@@ -810,7 +809,7 @@ impl Router {
                 let (parts, body) = req.into_parts();
                 let resolved_manifest = match parse_manifest_from_headers(&parts.headers) {
                     Ok(value) => value,
-                    Err(response) => return response,
+                    Err(response) => return *response,
                 };
                 if let Some(policy) = &resolved_manifest {
                     if policy.name != name {
@@ -1005,7 +1004,8 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
         .map(|p| p.memory() as f64 / (1024.0 * 1024.0))
         .unwrap_or(0.0);
     let total_memory_mib = (sys.total_memory() / (1024 * 1024)) as f64;
-    let available_memory_mib = (sys.available_memory().max(sys.free_memory()) / (1024 * 1024)) as f64;
+    let available_memory_mib =
+        (sys.available_memory().max(sys.free_memory()) / (1024 * 1024)) as f64;
 
     let function_count = registry.count();
     let estimated_memory_per_function_mb = if function_count > 0 {
@@ -1026,7 +1026,8 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
     };
     // Avoid false positive "critical" at idle when host reports low available memory
     // but this process is still using a tiny memory share.
-    let memory_pressure = memory_pressure_process.max(memory_pressure_host * memory_pressure_process);
+    let memory_pressure =
+        memory_pressure_process.max(memory_pressure_host * memory_pressure_process);
 
     let total_cpu_time_ms: f64 = functions
         .iter()
@@ -1060,16 +1061,15 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
     } else {
         0.0
     };
-    let fd_pressure_listener_clamp =
-        if listener_connection_capacity.configured_max_connections > 0 {
-            clamp01(
-                1.0
-                    - (listener_connection_capacity.effective_max_connections as f64
-                        / listener_connection_capacity.configured_max_connections as f64),
-            )
-        } else {
-            0.0
-        };
+    let fd_pressure_listener_clamp = if listener_connection_capacity.configured_max_connections > 0
+    {
+        clamp01(
+            1.0 - (listener_connection_capacity.effective_max_connections as f64
+                / listener_connection_capacity.configured_max_connections as f64),
+        )
+    } else {
+        0.0
+    };
     let fd_pressure = fd_pressure_runtime.max(fd_pressure_listener_clamp);
 
     let global_saturation_score = [
@@ -1260,7 +1260,11 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
         .collect();
 
     let mut cpu_time_total: Vec<_> = functions.iter().collect();
-    cpu_time_total.sort_by(|a, b| b.metrics.total_cpu_time_ms.cmp(&a.metrics.total_cpu_time_ms));
+    cpu_time_total.sort_by(|a, b| {
+        b.metrics
+            .total_cpu_time_ms
+            .cmp(&a.metrics.total_cpu_time_ms)
+    });
     let cpu_time_total: Vec<_> = cpu_time_total
         .into_iter()
         .take(10)

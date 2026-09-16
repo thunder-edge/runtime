@@ -11,10 +11,12 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set");
     let manifest_dir_static: &'static str = Box::leak(manifest_dir.into_boxed_str());
 
-    let snapshot_output = runtime_core::extensions::create_runtime_base_snapshot(manifest_dir_static)
-        .expect("failed to create runtime base snapshot");
+    let snapshot_output =
+        runtime_core::extensions::create_runtime_base_snapshot(manifest_dir_static)
+            .expect("failed to create runtime base snapshot");
 
-    fs::write(&snapshot_path, &snapshot_output.output).expect("failed to write runtime base snapshot");
+    fs::write(&snapshot_path, &snapshot_output.output)
+        .expect("failed to write runtime base snapshot");
 
     for file in snapshot_output.files_loaded_during_snapshot {
         println!("cargo:rerun-if-changed={}", file.display());

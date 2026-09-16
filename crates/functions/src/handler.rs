@@ -8,6 +8,7 @@ use runtime_core::isolate::{
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 use tokio::sync::mpsc;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::connection_manager::{global_connection_manager, AcquireError};
@@ -44,7 +45,7 @@ async fn op_edge_stream_chunk(
     tokio::select! {
         result = sender.send(Ok(chunk)) => result
             .map_err(|_| deno_error::JsErrorBox::generic("response stream receiver dropped")),
-        _ = completion.wait_cancelled() => {
+        _ = completion.wait_terminal() => {
             Err(deno_error::JsErrorBox::generic("response stream is cancelled"))
         }
     }
@@ -175,11 +176,73 @@ fn register_response_stream(
 
 fn unregister_response_stream(js_runtime: &mut JsRuntime, stream_id: &str) {
     let op_state = js_runtime.op_state();
-    let mut state = op_state.borrow_mut();
-    let registry = state.borrow_mut::<ResponseStreamRegistry>();
-    if let Some(entry) = registry.streams.remove(stream_id) {
-        entry.completion.cancel();
+    let removed = {
+        let mut state = op_state.borrow_mut();
+        let registry = state.borrow_mut::<ResponseStreamRegistry>();
+        registry.streams.remove(stream_id).is_some_and(|entry| {
+            entry.completion.cancel();
+            true
+        })
+    };
+    if removed {
+        if let Err(err) = cancel_response_streams_in_js(js_runtime, &[stream_id.to_string()]) {
+            warn!(stream_id, %err, "failed to cancel response stream in JavaScript");
+        }
     }
+}
+
+fn response_stream_ids(js_runtime: &mut JsRuntime, only_cancelled: bool) -> Vec<String> {
+    let op_state = js_runtime.op_state();
+    let state = op_state.borrow();
+    let registry = state.borrow::<ResponseStreamRegistry>();
+    registry
+        .streams
+        .iter()
+        .filter(|(_, entry)| !only_cancelled || entry.completion.is_cancelled())
+        .map(|(stream_id, _)| stream_id.clone())
+        .collect()
+}
+
+fn cancel_response_streams_in_js(
+    js_runtime: &mut JsRuntime,
+    stream_ids: &[String],
+) -> Result<(), Error> {
+    if stream_ids.is_empty() {
+        return Ok(());
+    }
+
+    let stream_ids_json = serde_json::to_string(stream_ids)?;
+    js_runtime.execute_script(
+        "edge-internal:///cancel_response_streams.js",
+        deno_core::FastString::from(format!(
+            r#"for (const streamId of {stream_ids_json}) {{
+                globalThis.__edgeRuntime?.cancelResponseStream?.(
+                    streamId,
+                    'response consumer disconnected',
+                );
+            }}"#
+        )),
+    )?;
+    Ok(())
+}
+
+pub fn cancel_cancelled_response_streams(js_runtime: &mut JsRuntime) -> Result<(), Error> {
+    let stream_ids = response_stream_ids(js_runtime, true);
+    cancel_response_streams_in_js(js_runtime, &stream_ids)
+}
+
+pub fn cancel_all_response_streams(js_runtime: &mut JsRuntime) -> Result<(), Error> {
+    let stream_ids = {
+        let op_state = js_runtime.op_state();
+        let state = op_state.borrow();
+        let registry = state.borrow::<ResponseStreamRegistry>();
+        for entry in registry.streams.values() {
+            entry.completion.cancel();
+        }
+        registry.streams.keys().cloned().collect::<Vec<_>>()
+    };
+
+    cancel_response_streams_in_js(js_runtime, &stream_ids)
 }
 
 /// Inject the request/response bridge into the JS global scope.
@@ -485,6 +548,7 @@ pub fn inject_request_bridge_with_proxy_and_config(
                 _egressLeaseRegistry: new Map(), // executionId -> Set<leaseId>
                 _executionState: new Map(),      // executionId -> { active: boolean, token: number }
                 _streamExecutions: new Map(),    // executionId -> Set<streamId>
+                _responseStreamCancels: new Map(), // streamId -> () => Promise<void>
                 _deferredExecutionEnds: new Set(),
                 _nextExecutionToken: 1,
                 _lastBlockedNetworkLog: null,
@@ -711,7 +775,26 @@ pub fn inject_request_bridge_with_proxy_and_config(
                     streams.add(streamId);
                 },
 
+                registerResponseStreamCancel(streamId, cancel) {
+                    if (!streamId || typeof cancel !== 'function') return;
+                    this._responseStreamCancels.set(streamId, cancel);
+                },
+
+                cancelResponseStream(streamId, reason = 'response consumer disconnected') {
+                    const cancel = this._responseStreamCancels.get(streamId);
+                    this._responseStreamCancels.delete(streamId);
+                    if (!cancel) return false;
+
+                    try {
+                        Promise.resolve(cancel(reason)).catch(() => {});
+                    } catch (_) {
+                        // Cancellation is best effort; the Rust completion state is authoritative.
+                    }
+                    return true;
+                },
+
                 finishResponseStream(executionId, streamId) {
+                    this._responseStreamCancels.delete(streamId);
                     if (!executionId || !streamId) return;
                     const streams = this._streamExecutions.get(executionId);
                     if (!streams) return;
@@ -1299,6 +1382,10 @@ pub fn inject_request_bridge_with_proxy_and_config(
                         const reader = response.body.getReader();
                         const streamExecutionId = globalThis.__edgeRuntime._currentExecutionId;
                         globalThis.__edgeRuntime._registerResponseStream(streamExecutionId, streamId);
+                        globalThis.__edgeRuntime.registerResponseStreamCancel(
+                            streamId,
+                            (reason) => reader.cancel(reason),
+                        );
                         (async () => {
                             try {
                                 while (true) {
@@ -1385,6 +1472,30 @@ pub async fn dispatch_request_for_context(
     context_id: Option<&str>,
     function_name: Option<&str>,
 ) -> Result<IsolateResponse, Error> {
+    let stream_id = Uuid::new_v4().to_string();
+    let result = dispatch_request_for_context_inner(
+        js_runtime,
+        request,
+        context_id,
+        function_name,
+        stream_id.clone(),
+    )
+    .await;
+
+    if result.is_err() {
+        unregister_response_stream(js_runtime, &stream_id);
+    }
+
+    result
+}
+
+async fn dispatch_request_for_context_inner(
+    js_runtime: &mut JsRuntime,
+    request: http::Request<bytes::Bytes>,
+    context_id: Option<&str>,
+    function_name: Option<&str>,
+    stream_id: String,
+) -> Result<IsolateResponse, Error> {
     let method = request.method().to_string();
 
     // Build an absolute URL — `new Request(url)` in JS requires one.
@@ -1409,7 +1520,6 @@ pub async fn dispatch_request_for_context(
     let function_name = function_name.unwrap_or("<unknown>");
 
     let body = request.into_body();
-    let stream_id = Uuid::new_v4().to_string();
     let (chunk_tx, chunk_rx) =
         mpsc::channel::<Result<bytes::Bytes, Error>>(RESPONSE_STREAM_CHANNEL_CAPACITY);
     let stream_completion = ResponseStreamCompletion::new();

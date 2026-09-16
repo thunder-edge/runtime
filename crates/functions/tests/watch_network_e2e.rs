@@ -133,8 +133,10 @@ fn watch_mode_allows_fetch_to_private_localhost() {
         let bundle_data =
             bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
 
-        let mut watch_like_config = IsolateConfig::default();
-        watch_like_config.ssrf_config = SsrfConfig::disabled();
+        let watch_like_config = IsolateConfig {
+            ssrf_config: SsrfConfig::disabled(),
+            ..Default::default()
+        };
 
         let registry = FunctionRegistry::new(CancellationToken::new(), IsolateConfig::default());
         registry

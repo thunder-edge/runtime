@@ -200,9 +200,10 @@ static MANIFEST_V2_VALIDATOR: Lazy<Validator> = Lazy::new(|| {
     let network_schema: Value =
         serde_json::from_str(include_str!("../../../schemas/base/network.schema.json"))
             .expect("valid network schema JSON");
-    let manifest_schema: Value =
-        serde_json::from_str(include_str!("../../../schemas/function-manifest.v2.schema.json"))
-            .expect("valid manifest schema JSON");
+    let manifest_schema: Value = serde_json::from_str(include_str!(
+        "../../../schemas/function-manifest.v2.schema.json"
+    ))
+    .expect("valid manifest schema JSON");
 
     let mut options = jsonschema::options().with_draft(Draft::Draft202012);
     options = options.with_resource(
@@ -552,10 +553,9 @@ fn validate_manifest_routes(routes: &[ManifestRoute]) -> Result<(), Error> {
                     ));
                 }
                 if !route.methods.is_empty()
-                    && route
-                        .methods
-                        .iter()
-                        .any(|method| !matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD"))
+                    && route.methods.iter().any(|method| {
+                        !matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD")
+                    })
                 {
                     return Err(anyhow::anyhow!(
                         "asset route '{}' only supports GET/HEAD methods",

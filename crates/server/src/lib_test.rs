@@ -145,6 +145,39 @@ async fn send_plain_http(addr: SocketAddr, request: &str) -> String {
     String::from_utf8_lossy(&response).to_string()
 }
 
+async fn send_plain_http_and_abort_after_body_prefix(addr: SocketAddr, request: &str) -> String {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .expect("failed to connect to server");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("failed to write request");
+
+    let mut response = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buffer))
+            .await
+            .expect("timed out waiting for streaming response")
+            .expect("failed to read streaming response");
+        if read == 0 {
+            break;
+        }
+        response.extend_from_slice(&buffer[..read]);
+
+        let has_headers = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .is_some_and(|header_end| response.len() > header_end + 4);
+        if has_headers {
+            break;
+        }
+    }
+
+    String::from_utf8_lossy(&response).to_string()
+}
+
 async fn send_plain_http_bytes(addr: SocketAddr, head: &str, body: &[u8]) -> String {
     let mut stream = TcpStream::connect(addr)
         .await
@@ -899,6 +932,126 @@ async fn e2e_ingress_streaming_returns_progressive_chunked_body() {
 }
 
 #[tokio::test]
+async fn e2e_ingress_sse_streams_events_progressively() {
+    init_deno_platform();
+
+    let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
+    let registry = make_test_registry();
+    let shutdown = CancellationToken::new();
+
+    let sse_eszip = build_eszip_async(
+        "file:///sse_stream_e2e.ts",
+        r#"
+        Deno.serve(() => {
+          const encoder = new TextEncoder();
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode('event: message\ndata: first\n\n'));
+              setTimeout(() => controller.enqueue(
+                encoder.encode('event: message\ndata: second\n\n'),
+              ), 80);
+              setTimeout(() => controller.close(), 120);
+            },
+          });
+          return new Response(stream, {
+            headers: {
+              'cache-control': 'no-cache',
+              'content-type': 'text/event-stream',
+            },
+          });
+        });
+        "#,
+    )
+    .await;
+    let bundle = BundlePackage::eszip_only(sse_eszip);
+    let bundle_data = bincode::serialize(&bundle).expect("failed to serialize SSE bundle");
+    registry
+        .deploy(
+            "sse-stream-e2e".to_string(),
+            bytes::Bytes::from(bundle_data),
+            None,
+            None,
+        )
+        .await
+        .expect("failed to deploy SSE test function");
+
+    let server_config = DualServerConfig {
+        admin: AdminListenerConfig {
+            addr: admin_addr,
+            api_key: None,
+            tls: None,
+            body_limits: BodyLimitsConfig::default(),
+            bundle_signature: BundleSignatureConfig {
+                required: false,
+                public_key_path: None,
+            },
+        },
+        ingress: IngressListenerConfig {
+            listener_type: IngressListenerType::Tcp(ingress_addr),
+            tls: None,
+            rate_limit_rps: None,
+            body_limits: BodyLimitsConfig::default(),
+        },
+        graceful_exit_deadline_secs: 1,
+        max_connections: 128,
+    };
+    let server_handle = tokio::spawn({
+        let registry = registry.clone();
+        let shutdown = shutdown.clone();
+        async move { run_dual_server(server_config, registry, shutdown).await }
+    });
+
+    wait_for_tcp_listener(admin_addr).await;
+    wait_for_tcp_listener(ingress_addr).await;
+
+    let mut stream = TcpStream::connect(ingress_addr)
+        .await
+        .expect("failed to connect to SSE ingress");
+    stream
+        .write_all(b"GET /sse-stream-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("failed to write SSE request");
+
+    let mut first_buf = [0_u8; 4096];
+    let first_n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut first_buf))
+        .await
+        .expect("timed out waiting for first SSE event")
+        .expect("failed to read first SSE event");
+    let first_text = String::from_utf8_lossy(&first_buf[..first_n]).to_string();
+    let first_lower = first_text.to_ascii_lowercase();
+    assert!(
+        first_text.starts_with("HTTP/1.1 200"),
+        "expected SSE 200: {first_text}"
+    );
+    assert!(
+        first_lower.contains("content-type: text/event-stream"),
+        "expected SSE content type: {first_text}"
+    );
+    assert!(
+        first_text.contains("data: first"),
+        "expected first SSE event before the delayed event: {first_text}"
+    );
+
+    let mut tail = Vec::new();
+    tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut tail))
+        .await
+        .expect("timed out waiting for SSE completion")
+        .expect("failed to read SSE tail");
+    let full_text = format!("{first_text}{}", String::from_utf8_lossy(&tail));
+    assert!(
+        full_text.contains("data: second"),
+        "expected delayed second SSE event: {full_text}"
+    );
+
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+        .await
+        .expect("server task did not finish in time")
+        .expect("server join error");
+    server_result.expect("server returned error");
+}
+
+#[tokio::test]
 async fn e2e_ingress_streaming_long_chunked_body_completes() {
     init_deno_platform();
 
@@ -1153,17 +1306,32 @@ async fn e2e_ingress_streaming_response_truncates_after_headers() {
     let stream_eszip = build_eszip_async(
         "file:///stream_limit_truncate_e2e.ts",
         r#"
-        Deno.serve(() => {
+        let cancelCount = 0;
+        Deno.serve((req) => {
+          if (new URL(req.url).pathname === '/check') {
+            return new Response(JSON.stringify({
+              cancelCount,
+              activeStreams: globalThis.__edgeRuntime._streamExecutions.size,
+              pendingCancels: globalThis.__edgeRuntime._responseStreamCancels.size,
+            }), {
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+
           const encoder = new TextEncoder();
           const stream = new ReadableStream({
             start(controller) {
               controller.enqueue(encoder.encode('abcdefghij'));
-              controller.enqueue(encoder.encode('klmnopqrst'));
-              controller.close();
+              controller.enqueue(encoder.encode(
+                'klmnopqrst' + 'z'.repeat(400) + 'tail-marker',
+              ));
+            },
+            cancel() {
+              cancelCount += 1;
             },
           });
           return new Response(stream, {
-            headers: { 'content-type': 'text/plain', 'content-length': '20' },
+            headers: { 'content-type': 'text/plain', 'content-length': '431' },
           });
         });
         "#,
@@ -1182,7 +1350,7 @@ async fn e2e_ingress_streaming_response_truncates_after_headers() {
         .await
         .expect("failed to deploy streaming truncation test function");
 
-    let tiny_limit = 15usize;
+    let tiny_limit = 128usize;
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
             addr: admin_addr,
@@ -1235,7 +1403,7 @@ async fn e2e_ingress_streaming_response_truncates_after_headers() {
         "expected chunked response after content-length removal: {response}"
     );
     assert!(
-        !response_lower.contains("content-length: 20"),
+        !response_lower.contains("content-length: 431"),
         "expected stale content-length to be removed: {response}"
     );
     assert!(
@@ -1243,18 +1411,556 @@ async fn e2e_ingress_streaming_response_truncates_after_headers() {
         "expected the allowed prefix to be forwarded: {response}"
     );
     assert!(
-        !response.contains("klmnop"),
+        !response.contains("tail-marker"),
         "expected bytes after the configured limit to be truncated: {response}"
     );
 
-    let second_response = send_plain_http(
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let check_response = loop {
+        let check_response = send_plain_http(
+            ingress_addr,
+            "GET /stream-limit-truncate-e2e/check HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        if check_response.contains(r#""cancelCount":1"#) || tokio::time::Instant::now() >= deadline
+        {
+            break check_response;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        check_response.starts_with("HTTP/1.1 200"),
+        "expected a subsequent request after stream cleanup: {check_response}"
+    );
+    assert!(
+        check_response.contains(r#""cancelCount":1"#)
+            && check_response.contains(r#""activeStreams":0"#)
+            && check_response.contains(r#""pendingCancels":0"#),
+        "expected limit cancellation exactly once with empty registries: {check_response}"
+    );
+
+    for expected_cancel_count in 2..=4 {
+        let repeated_response = send_plain_http(
+            ingress_addr,
+            "GET /stream-limit-truncate-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            repeated_response.starts_with("HTTP/1.1 200"),
+            "expected repeated limited stream to return 200: {repeated_response}"
+        );
+
+        let expected_count = format!(r#""cancelCount":{expected_cancel_count}"#);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let repeated_check = loop {
+            let repeated_check = send_plain_http(
+                ingress_addr,
+                "GET /stream-limit-truncate-e2e/check HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await;
+            if repeated_check.contains(&expected_count) || tokio::time::Instant::now() >= deadline {
+                break repeated_check;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert!(
+            repeated_check.contains(&expected_count)
+                && repeated_check.contains(r#""activeStreams":0"#)
+                && repeated_check.contains(r#""pendingCancels":0"#),
+            "expected repeated limit cleanup at count {expected_cancel_count}: {repeated_check}"
+        );
+    }
+
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+        .await
+        .expect("server task did not finish in time")
+        .expect("server join error");
+    server_result.expect("server returned error");
+}
+
+#[tokio::test]
+async fn e2e_ingress_streaming_producer_error_cleans_up_without_appending_json() {
+    init_deno_platform();
+
+    let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
+    let registry = make_test_registry();
+    let shutdown = CancellationToken::new();
+
+    let stream_eszip = build_eszip_async(
+        "file:///stream_error_cleanup_e2e.ts",
+        r#"
+        let errorCount = 0;
+        Deno.serve((req) => {
+          if (new URL(req.url).pathname === '/check') {
+            return new Response(JSON.stringify({
+              errorCount,
+              activeStreams: globalThis.__edgeRuntime._streamExecutions.size,
+              pendingCancels: globalThis.__edgeRuntime._responseStreamCancels.size,
+            }), {
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+
+          const encoder = new TextEncoder();
+          return new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode('before-error'));
+              setTimeout(() => {
+                errorCount += 1;
+                controller.error(new Error('producer boom'));
+              }, 25);
+            },
+          }), {
+            headers: { 'content-type': 'text/plain' },
+          });
+        });
+        "#,
+    )
+    .await;
+    let bundle = BundlePackage::eszip_only(stream_eszip);
+    let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+    registry
+        .deploy(
+            "stream-error-cleanup-e2e".to_string(),
+            bytes::Bytes::from(bundle_data),
+            None,
+            None,
+        )
+        .await
+        .expect("failed to deploy streaming error test function");
+
+    let server_config = DualServerConfig {
+        admin: AdminListenerConfig {
+            addr: admin_addr,
+            api_key: None,
+            tls: None,
+            body_limits: BodyLimitsConfig::default(),
+            bundle_signature: BundleSignatureConfig {
+                required: false,
+                public_key_path: None,
+            },
+        },
+        ingress: IngressListenerConfig {
+            listener_type: IngressListenerType::Tcp(ingress_addr),
+            tls: None,
+            rate_limit_rps: None,
+            body_limits: BodyLimitsConfig::default(),
+        },
+        graceful_exit_deadline_secs: 1,
+        max_connections: 128,
+    };
+
+    let server_handle = tokio::spawn({
+        let registry = registry.clone();
+        let shutdown = shutdown.clone();
+        async move { run_dual_server(server_config, registry, shutdown).await }
+    });
+
+    wait_for_tcp_listener(admin_addr).await;
+    wait_for_tcp_listener(ingress_addr).await;
+
+    let response = send_plain_http(
         ingress_addr,
-        "GET /stream-limit-truncate-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        "GET /stream-error-cleanup-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     )
     .await;
     assert!(
-        second_response.starts_with("HTTP/1.1 200"),
-        "expected a subsequent request after stream cleanup: {second_response}"
+        response.starts_with("HTTP/1.1 200"),
+        "expected original status for partial producer error: {response}"
+    );
+    assert!(
+        response.contains("before-error"),
+        "expected bytes emitted before producer error: {response}"
+    );
+    assert!(
+        !response.contains("producer boom") && !response.contains(r#""error":"#),
+        "expected no JSON error appended to partial body: {response}"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let check_response = loop {
+        let check_response = send_plain_http(
+            ingress_addr,
+            "GET /stream-error-cleanup-e2e/check HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        if check_response.contains(r#""errorCount":1"#) || tokio::time::Instant::now() >= deadline {
+            break check_response;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        check_response.contains(r#""errorCount":1"#)
+            && check_response.contains(r#""activeStreams":0"#)
+            && check_response.contains(r#""pendingCancels":0"#),
+        "expected producer error cleanup to clear stream registries: {check_response}"
+    );
+
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+        .await
+        .expect("server task did not finish in time")
+        .expect("server join error");
+    server_result.expect("server returned error");
+}
+
+#[tokio::test]
+async fn e2e_ingress_streaming_client_abort_cancels_producer_and_releases_route() {
+    init_deno_platform();
+
+    let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
+    let registry = make_test_registry();
+    let shutdown = CancellationToken::new();
+
+    let stream_eszip = build_eszip_async(
+        "file:///stream_abort_cleanup_e2e.ts",
+        r#"
+        let cancelCount = 0;
+        Deno.serve((req) => {
+          const path = new URL(req.url).pathname;
+          if (path === '/stream') {
+            const encoder = new TextEncoder();
+            return new Response(new ReadableStream({
+              start(controller) {
+                controller.enqueue(encoder.encode('first-chunk'));
+              },
+              cancel() {
+                cancelCount += 1;
+              },
+            }), {
+              headers: { 'content-type': 'text/plain' },
+            });
+          }
+
+          return new Response(JSON.stringify({
+            cancelCount,
+            activeStreams: globalThis.__edgeRuntime._streamExecutions.size,
+            pendingCancels: globalThis.__edgeRuntime._responseStreamCancels.size,
+          }), {
+            headers: { 'content-type': 'application/json' },
+          });
+        });
+        "#,
+    )
+    .await;
+    let bundle = BundlePackage::eszip_only(stream_eszip);
+    let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+
+    registry
+        .deploy(
+            "stream-abort-cleanup-e2e".to_string(),
+            bytes::Bytes::from(bundle_data),
+            None,
+            None,
+        )
+        .await
+        .expect("failed to deploy streaming abort test function");
+
+    let server_config = DualServerConfig {
+        admin: AdminListenerConfig {
+            addr: admin_addr,
+            api_key: None,
+            tls: None,
+            body_limits: BodyLimitsConfig::default(),
+            bundle_signature: BundleSignatureConfig {
+                required: false,
+                public_key_path: None,
+            },
+        },
+        ingress: IngressListenerConfig {
+            listener_type: IngressListenerType::Tcp(ingress_addr),
+            tls: None,
+            rate_limit_rps: None,
+            body_limits: BodyLimitsConfig::default(),
+        },
+        graceful_exit_deadline_secs: 1,
+        max_connections: 128,
+    };
+
+    let server_handle = tokio::spawn({
+        let registry = registry.clone();
+        let shutdown = shutdown.clone();
+        async move { run_dual_server(server_config, registry, shutdown).await }
+    });
+
+    wait_for_tcp_listener(admin_addr).await;
+    wait_for_tcp_listener(ingress_addr).await;
+
+    for expected_cancel_count in 1..=8 {
+        let partial_response = send_plain_http_and_abort_after_body_prefix(
+            ingress_addr,
+            "GET /stream-abort-cleanup-e2e/stream HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            partial_response.starts_with("HTTP/1.1 200"),
+            "expected streaming response before client abort: {partial_response}"
+        );
+        assert!(
+            partial_response.contains("first-chunk"),
+            "expected first chunk before client abort: {partial_response}"
+        );
+
+        let expected_count = format!(r#""cancelCount":{expected_cancel_count}"#);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let check_response = loop {
+            let check_response = send_plain_http(
+                ingress_addr,
+                "GET /stream-abort-cleanup-e2e/check HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await;
+            if check_response.contains(&expected_count) || tokio::time::Instant::now() >= deadline {
+                break check_response;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+
+        assert!(
+            check_response.starts_with("HTTP/1.1 200"),
+            "expected route target to be released after abort: {check_response}"
+        );
+        assert!(
+            check_response.contains(&expected_count),
+            "expected producer cancellation count {expected_cancel_count}: {check_response}"
+        );
+        assert!(
+            check_response.contains(r#""activeStreams":0"#)
+                && check_response.contains(r#""pendingCancels":0"#),
+            "expected execution stream registries to be empty after abort: {check_response}"
+        );
+    }
+
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+        .await
+        .expect("server task did not finish in time")
+        .expect("server join error");
+    server_result.expect("server returned error");
+}
+
+#[tokio::test]
+async fn e2e_legacy_router_streaming_abort_cleans_up_once() {
+    init_deno_platform();
+
+    let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind probe listener");
+    let addr = probe_listener
+        .local_addr()
+        .expect("failed to get probe address");
+    drop(probe_listener);
+
+    let registry = make_test_registry();
+    let shutdown = CancellationToken::new();
+    let stream_eszip = build_eszip_async(
+        "file:///legacy_stream_abort_cleanup_e2e.ts",
+        r#"
+        let cancelCount = 0;
+        Deno.serve((req) => {
+          const path = new URL(req.url).pathname;
+          if (path === '/stream') {
+            const encoder = new TextEncoder();
+            return new Response(new ReadableStream({
+              start(controller) {
+                controller.enqueue(encoder.encode('legacy-first-chunk'));
+              },
+              cancel() {
+                cancelCount += 1;
+              },
+            }), {
+              headers: { 'content-type': 'text/plain' },
+            });
+          }
+
+          return new Response(JSON.stringify({
+            cancelCount,
+            activeStreams: globalThis.__edgeRuntime._streamExecutions.size,
+            pendingCancels: globalThis.__edgeRuntime._responseStreamCancels.size,
+          }), {
+            headers: { 'content-type': 'application/json' },
+          });
+        });
+        "#,
+    )
+    .await;
+    let bundle = BundlePackage::eszip_only(stream_eszip);
+    let bundle_data = bincode::serialize(&bundle).expect("failed to serialize bundle");
+    registry
+        .deploy(
+            "legacy-stream-abort-cleanup-e2e".to_string(),
+            bytes::Bytes::from(bundle_data),
+            None,
+            None,
+        )
+        .await
+        .expect("failed to deploy legacy streaming abort test function");
+
+    let server_config = ServerConfig {
+        addr,
+        tls: None,
+        rate_limit_rps: None,
+        graceful_exit_deadline_secs: 1,
+        body_limits: BodyLimitsConfig::default(),
+        max_connections: 128,
+    };
+    let server_handle = tokio::spawn({
+        let registry = registry.clone();
+        let shutdown = shutdown.clone();
+        async move { run_server(server_config, registry, shutdown).await }
+    });
+
+    wait_for_tcp_listener(addr).await;
+
+    let partial_response = send_plain_http_and_abort_after_body_prefix(
+        addr,
+        "GET /legacy-stream-abort-cleanup-e2e/stream HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        partial_response.starts_with("HTTP/1.1 200")
+            && partial_response.contains("legacy-first-chunk"),
+        "expected legacy router to send first chunk before abort: {partial_response}"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let check_response = loop {
+        let check_response = send_plain_http(
+            addr,
+            "GET /legacy-stream-abort-cleanup-e2e/check HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        if check_response.contains(r#""cancelCount":1"#) || tokio::time::Instant::now() >= deadline
+        {
+            break check_response;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        check_response.contains(r#""cancelCount":1"#)
+            && check_response.contains(r#""activeStreams":0"#)
+            && check_response.contains(r#""pendingCancels":0"#),
+        "expected legacy router abort cleanup exactly once: {check_response}"
+    );
+
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+        .await
+        .expect("server task did not finish in time")
+        .expect("server join error");
+    server_result.expect("server returned error");
+}
+
+#[tokio::test]
+async fn e2e_legacy_router_streaming_limit_cancels_producer() {
+    init_deno_platform();
+
+    let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind probe listener");
+    let addr = probe_listener
+        .local_addr()
+        .expect("failed to get probe address");
+    drop(probe_listener);
+
+    let registry = make_test_registry();
+    let shutdown = CancellationToken::new();
+    let stream_eszip = build_eszip_async(
+        "file:///legacy_stream_limit_e2e.ts",
+        r#"
+        let cancelCount = 0;
+        Deno.serve((req) => {
+          if (new URL(req.url).pathname === '/check') {
+            return new Response(cancelCount === 1 ? 'cancelled' : 'pending');
+          }
+
+          const encoder = new TextEncoder();
+          return new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode('abcdefghij'));
+              controller.enqueue(encoder.encode('klmnopqrst' + 'z'.repeat(100)));
+            },
+            cancel() {
+              cancelCount += 1;
+            },
+          }), {
+            headers: {
+              'content-length': '110',
+              'content-type': 'text/plain',
+            },
+          });
+        });
+        "#,
+    )
+    .await;
+    let bundle = BundlePackage::eszip_only(stream_eszip);
+    let bundle_data = bincode::serialize(&bundle).expect("failed to serialize legacy limit bundle");
+    registry
+        .deploy(
+            "legacy-stream-limit-e2e".to_string(),
+            bytes::Bytes::from(bundle_data),
+            None,
+            None,
+        )
+        .await
+        .expect("failed to deploy legacy stream limit function");
+
+    let server_config = ServerConfig {
+        addr,
+        tls: None,
+        rate_limit_rps: None,
+        graceful_exit_deadline_secs: 1,
+        body_limits: BodyLimitsConfig {
+            max_request_body_bytes: 1024,
+            max_response_body_bytes: 15,
+        },
+        max_connections: 128,
+    };
+    let server_handle = tokio::spawn({
+        let registry = registry.clone();
+        let shutdown = shutdown.clone();
+        async move { run_server(server_config, registry, shutdown).await }
+    });
+
+    wait_for_tcp_listener(addr).await;
+    let response = send_plain_http(
+        addr,
+        "GET /legacy-stream-limit-e2e/stream HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected legacy limited stream to preserve status: {response}"
+    );
+    assert!(
+        response.contains("abcdefghij") && response.contains("klmno"),
+        "expected legacy router to forward only the allowed prefix: {response}"
+    );
+    assert!(
+        !response.contains("klmnop")
+            && !response
+                .to_ascii_lowercase()
+                .contains("content-length: 110"),
+        "expected legacy router to truncate and remove stale content length: {response}"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let check_response = loop {
+        let check_response = send_plain_http(
+            addr,
+            "GET /legacy-stream-limit-e2e/check HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        if check_response.contains(r#""cancelCount":1"#) || tokio::time::Instant::now() >= deadline
+        {
+            break check_response;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        check_response.contains("cancelled"),
+        "expected legacy limit to cancel the producer exactly once: {check_response}"
     );
 
     shutdown.cancel();
@@ -1753,7 +2459,7 @@ async fn chaos_context_isolate_burst_keeps_statuses_deterministic() {
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     assert!(
-        total_isolates >= 1 && total_isolates <= 4,
+        (1..=4).contains(&total_isolates),
         "expected isolate count to stay within configured pool limits, got: {total_isolates}"
     );
 

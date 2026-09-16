@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -229,38 +229,62 @@ pub struct ResponseStreamCompletion {
 }
 
 struct ResponseStreamCompletionState {
-    done: AtomicBool,
-    cancelled: AtomicBool,
+    terminal: AtomicU8,
     notify: Notify,
 }
+
+const STREAM_ACTIVE: u8 = 0;
+const STREAM_COMPLETED: u8 = 1;
+const STREAM_CANCELLED: u8 = 2;
 
 impl ResponseStreamCompletion {
     pub fn new() -> Self {
         Self {
             state: Arc::new(ResponseStreamCompletionState {
-                done: AtomicBool::new(false),
-                cancelled: AtomicBool::new(false),
+                terminal: AtomicU8::new(STREAM_ACTIVE),
                 notify: Notify::new(),
             }),
         }
     }
 
     pub fn complete(&self) {
-        self.state.done.store(true, Ordering::Release);
-        self.state.notify.notify_waiters();
+        if self
+            .state
+            .terminal
+            .compare_exchange(
+                STREAM_ACTIVE,
+                STREAM_COMPLETED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.state.notify.notify_waiters();
+        }
     }
 
     pub fn cancel(&self) {
-        self.state.cancelled.store(true, Ordering::Release);
-        self.complete();
+        if self
+            .state
+            .terminal
+            .compare_exchange(
+                STREAM_ACTIVE,
+                STREAM_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.state.notify.notify_waiters();
+        }
     }
 
     pub fn is_done(&self) -> bool {
-        self.state.done.load(Ordering::Acquire)
+        self.state.terminal.load(Ordering::Acquire) != STREAM_ACTIVE
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.state.cancelled.load(Ordering::Acquire)
+        self.state.terminal.load(Ordering::Acquire) == STREAM_CANCELLED
     }
 
     pub async fn wait(&self) {
@@ -270,17 +294,21 @@ impl ResponseStreamCompletion {
         self.state.notify.notified().await;
     }
 
-    pub async fn wait_cancelled(&self) {
+    pub async fn wait_terminal(&self) {
         loop {
             let notified = self.state.notify.notified();
-            if self.is_cancelled() {
+            if self.is_done() {
                 return;
             }
             notified.await;
-            if self.is_cancelled() {
+            if self.is_done() {
                 return;
             }
         }
+    }
+
+    pub async fn wait_cancelled(&self) {
+        self.wait_terminal().await;
     }
 }
 

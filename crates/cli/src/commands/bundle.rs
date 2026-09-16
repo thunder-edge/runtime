@@ -8,11 +8,10 @@ use deno_graph::ast::CapturingModuleAnalyzer;
 use deno_graph::source::{LoadError, LoadOptions, LoadResponse, Loader};
 use deno_graph::{BuildOptions, GraphKind, ModuleGraph};
 use functions::types::{BundlePackage, BundleRouteMetadata, BundleRouteRecord};
-use runtime_core::manifest::{
-    validate_manifest_json, FunctionManifest, ManifestFlavor, ManifestRoute,
-    ManifestRouteKind,
-};
 use runtime_core::isolate::{IsolateConfig, OutgoingProxyConfig};
+use runtime_core::manifest::{
+    validate_manifest_json, FunctionManifest, ManifestFlavor, ManifestRoute, ManifestRouteKind,
+};
 use url::Url;
 
 use super::check::{
@@ -150,12 +149,12 @@ async fn run_async(args: BundleArgs) -> Result<(), anyhow::Error> {
         Some("ts") | Some("mts") | Some("cts") | Some("tsx")
     ) {
         if deno_binary_exists() {
-            run_deno_check_for_files(&[entrypoint.clone()])?;
+            run_deno_check_for_files(std::slice::from_ref(&entrypoint))?;
         } else {
             eprintln!(
                 "warning: 'deno' binary not found in PATH. Falling back to syntax/module validation only (no TS semantic typecheck)."
             );
-            run_syntax_check_for_files_async(&[entrypoint.clone()]).await?;
+            run_syntax_check_for_files_async(std::slice::from_ref(&entrypoint)).await?;
         }
     }
 
@@ -240,8 +239,9 @@ fn prepare_manifest_for_bundle(
     entrypoint: &Path,
 ) -> Result<PreparedManifest, anyhow::Error> {
     let manifest_path = Path::new(manifest_path);
-    let raw = std::fs::read_to_string(manifest_path)
-        .map_err(|e| anyhow::anyhow!("failed to read manifest '{}': {e}", manifest_path.display()))?;
+    let raw = std::fs::read_to_string(manifest_path).map_err(|e| {
+        anyhow::anyhow!("failed to read manifest '{}': {e}", manifest_path.display())
+    })?;
 
     let mut manifest = validate_manifest_json(&raw)
         .map_err(|e| anyhow::anyhow!("invalid manifest '{}': {e}", manifest_path.display()))?;
@@ -288,7 +288,10 @@ fn prepare_manifest_for_bundle(
     })?;
     if manifest_changed {
         std::fs::write(manifest_path, &serialized).map_err(|e| {
-            anyhow::anyhow!("failed to write manifest '{}': {e}", manifest_path.display())
+            anyhow::anyhow!(
+                "failed to write manifest '{}': {e}",
+                manifest_path.display()
+            )
         })?;
     }
 
@@ -335,10 +338,7 @@ fn discover_function_routes(functions_dir: &Path) -> Result<Vec<ManifestRoute>, 
     let mut routes = Vec::new();
     for file in files {
         let relative = file.strip_prefix(functions_dir).map_err(|e| {
-            anyhow::anyhow!(
-                "failed to build route path for '{}': {e}",
-                file.display()
-            )
+            anyhow::anyhow!("failed to build route path for '{}': {e}", file.display())
         })?;
 
         let route_path = file_path_to_route(relative)?;
@@ -346,7 +346,10 @@ fn discover_function_routes(functions_dir: &Path) -> Result<Vec<ManifestRoute>, 
             kind: ManifestRouteKind::Function,
             path: route_path,
             methods: Vec::new(),
-            entrypoint: Some(format!("./{}", relative.to_string_lossy().replace('\\', "/"))),
+            entrypoint: Some(format!(
+                "./{}",
+                relative.to_string_lossy().replace('\\', "/")
+            )),
             asset_dir: None,
         });
     }
@@ -403,8 +406,9 @@ fn collect_all_files(
     for entry in std::fs::read_dir(current)
         .map_err(|e| anyhow::anyhow!("failed to read '{}': {e}", current.display()))?
     {
-        let entry = entry
-            .map_err(|e| anyhow::anyhow!("failed to read dir entry in '{}': {e}", current.display()))?;
+        let entry = entry.map_err(|e| {
+            anyhow::anyhow!("failed to read dir entry in '{}': {e}", current.display())
+        })?;
         let path = entry.path();
         if path.is_dir() {
             collect_all_files(root, &path, acc)?;
@@ -516,7 +520,10 @@ fn build_route_metadata(manifest: &FunctionManifest) -> Result<BundleRouteMetada
 
 fn route_shape(route: &ManifestRoute) -> Result<RouteShape, anyhow::Error> {
     if !route.path.starts_with('/') {
-        return Err(anyhow::anyhow!("route path '{}' must start with '/'", route.path));
+        return Err(anyhow::anyhow!(
+            "route path '{}' must start with '/'",
+            route.path
+        ));
     }
 
     let raw_segments: Vec<&str> = route
@@ -610,8 +617,9 @@ fn collect_route_files(
     for entry in std::fs::read_dir(current)
         .map_err(|e| anyhow::anyhow!("failed to read '{}': {e}", current.display()))?
     {
-        let entry = entry
-            .map_err(|e| anyhow::anyhow!("failed to read dir entry in '{}': {e}", current.display()))?;
+        let entry = entry.map_err(|e| {
+            anyhow::anyhow!("failed to read dir entry in '{}': {e}", current.display())
+        })?;
         let path = entry.path();
         if path.is_dir() {
             collect_route_files(root, &path, acc)?;
@@ -622,8 +630,14 @@ fn collect_route_files(
             continue;
         }
 
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
-        if matches!(ext, "ts" | "tsx" | "js" | "jsx" | "mts" | "mjs" | "cts" | "cjs") {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        if matches!(
+            ext,
+            "ts" | "tsx" | "js" | "jsx" | "mts" | "mjs" | "cts" | "cjs"
+        ) {
             acc.push(path);
         }
     }
@@ -670,10 +684,7 @@ fn convert_route_segment(segment: &str) -> String {
         return format!(":{}", rest);
     }
 
-    if let Some(rest) = segment
-        .strip_prefix("[")
-        .and_then(|s| s.strip_suffix("]"))
-    {
+    if let Some(rest) = segment.strip_prefix("[").and_then(|s| s.strip_suffix("]")) {
         if rest.starts_with("...") {
             return "*".to_string();
         }

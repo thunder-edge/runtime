@@ -105,3 +105,35 @@ fn response_stream_cancellation_wakes_waiters() {
             .expect("cancellation waiter task failed");
     });
 }
+
+#[test]
+fn response_stream_completion_keeps_first_terminal_reason() {
+    let completed = ResponseStreamCompletion::new();
+    completed.complete();
+    completed.cancel();
+    assert!(completed.is_done());
+    assert!(!completed.is_cancelled());
+
+    let cancelled = ResponseStreamCompletion::new();
+    cancelled.cancel();
+    cancelled.complete();
+    assert!(cancelled.is_done());
+    assert!(cancelled.is_cancelled());
+}
+
+#[test]
+fn response_stream_completion_handles_concurrent_terminal_race() {
+    for _ in 0..256 {
+        let completion = std::sync::Arc::new(ResponseStreamCompletion::new());
+        let complete = completion.clone();
+        let cancel = completion.clone();
+
+        let complete_thread = std::thread::spawn(move || complete.complete());
+        let cancel_thread = std::thread::spawn(move || cancel.cancel());
+
+        complete_thread.join().expect("completion thread panicked");
+        cancel_thread.join().expect("cancellation thread panicked");
+
+        assert!(completion.is_done());
+    }
+}

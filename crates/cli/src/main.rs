@@ -43,6 +43,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Start the edge runtime server
     Start(commands::start::StartArgs),

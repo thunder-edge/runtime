@@ -8,10 +8,11 @@ use runtime_core::manifest::{ManifestRouteKind, ResolvedFunctionManifest};
 use serde::{Deserialize, Serialize};
 
 /// Bundle format for function deployment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BundleFormat {
     /// Traditional eszip bundle (modules loaded at startup).
+    #[default]
     Eszip,
     /// Snapshot-flavor bundle (bytecode cache envelope + ESZIP fallback).
     Snapshot,
@@ -23,12 +24,6 @@ impl std::fmt::Display for BundleFormat {
             BundleFormat::Eszip => write!(f, "eszip"),
             BundleFormat::Snapshot => write!(f, "snapshot"),
         }
-    }
-}
-
-impl Default for BundleFormat {
-    fn default() -> Self {
-        BundleFormat::Eszip
     }
 }
 
@@ -233,16 +228,16 @@ pub struct FunctionMetricsSnapshot {
     pub active_requests: u64,
     pub total_errors: u64,
     pub total_cpu_time_ms: u64,
-    pub cold_starts: u64,              // Total de cold starts
-    pub avg_cold_start_ms: u64,        // Média de cold start (ms)
-    pub total_cold_start_time_ms: u64, // Tempo total de cold start (ms)
-    pub total_cold_start_time_us: u64, // Tempo total de cold start (us)
-    pub avg_cold_start_us: u64,        // Média de cold start (us)
-    pub avg_cold_start_ms_precise: f64, // Média de cold start (ms, precisão sub-ms)
-    pub total_warm_start_time_ms: u64, // Tempo total de requisições após boot (ms)
-    pub total_warm_start_time_us: u64, // Tempo total de requisições após boot (us)
-    pub avg_warm_request_ms: u64,      // Média de requisição warm start (ms)
-    pub avg_warm_request_us: u64,      // Média de requisição warm start (us)
+    pub cold_starts: u64,                 // Total de cold starts
+    pub avg_cold_start_ms: u64,           // Média de cold start (ms)
+    pub total_cold_start_time_ms: u64,    // Tempo total de cold start (ms)
+    pub total_cold_start_time_us: u64,    // Tempo total de cold start (us)
+    pub avg_cold_start_us: u64,           // Média de cold start (us)
+    pub avg_cold_start_ms_precise: f64,   // Média de cold start (ms, precisão sub-ms)
+    pub total_warm_start_time_ms: u64,    // Tempo total de requisições após boot (ms)
+    pub total_warm_start_time_us: u64,    // Tempo total de requisições após boot (us)
+    pub avg_warm_request_ms: u64,         // Média de requisição warm start (ms)
+    pub avg_warm_request_us: u64,         // Média de requisição warm start (us)
     pub avg_warm_request_ms_precise: f64, // Média de requisição warm start (ms, precisão sub-ms)
     pub current_heap_used_bytes: u64,
     pub peak_heap_used_bytes: u64,

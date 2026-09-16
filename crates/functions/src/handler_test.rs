@@ -330,6 +330,85 @@ fn dispatch_for_context_uses_registered_context_handler() {
 }
 
 #[test]
+fn cancelled_response_stream_calls_reader_cancel_once() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, async {
+        let mut runtime = make_runtime();
+        inject_request_bridge(&mut runtime).expect("inject_request_bridge failed");
+
+        runtime
+            .execute_script(
+                "<test>",
+                deno_core::ascii_str!(
+                    r#"
+                    globalThis.__cancelCount = 0;
+                    Deno.serve(() => new Response(new ReadableStream({
+                      start() {},
+                      cancel(reason) {
+                        globalThis.__cancelCount += 1;
+                        globalThis.__cancelReason = String(reason);
+                      },
+                    })));
+                    "#
+                ),
+            )
+            .unwrap();
+
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("/stream")
+            .header("host", "localhost:9000")
+            .body(bytes::Bytes::new())
+            .unwrap();
+
+        let response = dispatch_request(&mut runtime, request)
+            .await
+            .expect("dispatch_request should succeed");
+        let receiver = match response.body {
+            IsolateResponseBody::Stream(receiver) => receiver,
+            IsolateResponseBody::Full(_) => panic!("expected stream body"),
+        };
+        drop(receiver);
+
+        cancel_cancelled_response_streams(&mut runtime)
+            .expect("cancelled stream should be dispatched to JavaScript");
+        cancel_cancelled_response_streams(&mut runtime)
+            .expect("repeated cancellation should remain safe");
+        runtime
+            .run_event_loop(deno_core::PollEventLoopOptions {
+                wait_for_inspector: false,
+                pump_v8_message_loop: true,
+            })
+            .await
+            .expect("stream cancellation event loop should complete");
+
+        let value = runtime
+            .execute_script(
+                "<test>",
+                deno_core::ascii_str!(
+                    "JSON.stringify({ count: globalThis.__cancelCount, pending: globalThis.__edgeRuntime._responseStreamCancels.size })"
+                ),
+            )
+            .unwrap();
+        deno_core::scope!(scope, runtime);
+        let payload = value
+            .open(scope)
+            .to_string(scope)
+            .expect("cancellation result should be a string")
+            .to_rust_string_lossy(scope);
+        let payload: serde_json::Value =
+            serde_json::from_str(&payload).expect("cancellation result should be JSON");
+        assert_eq!(payload["count"], 1);
+        assert_eq!(payload["pending"], 0);
+    });
+}
+
+#[test]
 fn dispatch_preserves_multiple_set_cookie_headers() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

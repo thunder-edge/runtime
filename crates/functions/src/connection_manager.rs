@@ -100,7 +100,9 @@ impl TokenBucketState {
     }
 
     fn refill(&mut self, now: Instant) {
-        let elapsed = now.saturating_duration_since(self.last_refill).as_secs_f64();
+        let elapsed = now
+            .saturating_duration_since(self.last_refill)
+            .as_secs_f64();
         if elapsed > 0.0 {
             self.tokens = (self.tokens + elapsed * self.refill_per_sec).min(self.capacity);
             self.last_refill = now;
@@ -165,14 +167,12 @@ impl ConnectionManager {
     fn start_reaper(manager: &Arc<Self>) {
         let weak = Arc::downgrade(manager);
         let lease_ttl = manager.config.lease_hard_ttl;
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_secs(30));
-                let Some(manager) = weak.upgrade() else {
-                    break;
-                };
-                manager.reap_stale_leases(lease_ttl);
-            }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(30));
+            let Some(manager) = weak.upgrade() else {
+                break;
+            };
+            manager.reap_stale_leases(lease_ttl);
         });
     }
 
@@ -203,7 +203,10 @@ impl ConnectionManager {
                     }
                     let remaining = deadline.saturating_duration_since(now);
                     let wait_for = remaining.min(Duration::from_millis(10));
-                    if tokio::time::timeout(wait_for, self.notify.notified()).await.is_err() {
+                    if tokio::time::timeout(wait_for, self.notify.notified())
+                        .await
+                        .is_err()
+                    {
                         continue;
                     }
                 }
@@ -359,7 +362,8 @@ impl ConnectionManager {
         let (soft_limit, open_fd_count) = fd_limits();
         let reserved_fd = self.reserved_fd(soft_limit);
         let outbound_fd_budget = soft_limit.saturating_sub(reserved_fd);
-        let adaptive_active_limit = self.adaptive_active_limit(soft_limit, open_fd_count, reserved_fd);
+        let adaptive_active_limit =
+            self.adaptive_active_limit(soft_limit, open_fd_count, reserved_fd);
 
         let mut top_tenants_by_active: Vec<TenantActiveSnapshot> = self
             .tenant_active
@@ -425,7 +429,12 @@ impl ConnectionManager {
         self.config.fd_reserved_absolute.max(ratio_reserved)
     }
 
-    fn adaptive_active_limit(&self, soft_limit: usize, open_fd_count: usize, reserved_fd: usize) -> usize {
+    fn adaptive_active_limit(
+        &self,
+        soft_limit: usize,
+        open_fd_count: usize,
+        reserved_fd: usize,
+    ) -> usize {
         if soft_limit == 0 {
             return 1_024;
         }
@@ -479,7 +488,11 @@ fn open_fd_count() -> Option<usize> {
     std::fs::read_dir("/proc/self/fd")
         .ok()
         .map(|entries| entries.count())
-        .or_else(|| std::fs::read_dir("/dev/fd").ok().map(|entries| entries.count()))
+        .or_else(|| {
+            std::fs::read_dir("/dev/fd")
+                .ok()
+                .map(|entries| entries.count())
+        })
 }
 
 static CONNECTION_MANAGER: OnceLock<Arc<ConnectionManager>> = OnceLock::new();

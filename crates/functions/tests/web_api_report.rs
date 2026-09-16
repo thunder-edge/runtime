@@ -1695,22 +1695,26 @@ fn verify_node_report_coverage(node_checks: &[NodeCompatCheck]) {
 }
 
 fn verify_node_compat_docs_sync(node_checks: &[NodeCompatCheck]) {
-    let docs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let runtime_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("missing crates dir")
         .parent()
         .expect("missing workspace dir")
-        .join("docs")
-        .join("reference");
+        .to_path_buf();
+    let workspace_dir = runtime_dir.parent().unwrap_or(&runtime_dir);
+    let docs_dirs = [
+        workspace_dir.join("sdd/runtime/reference"),
+        runtime_dir.join("docs/reference"),
+    ];
 
     let docs_path = ["NODE-COMPAT.md", "node-compat.md"]
         .iter()
-        .map(|name| docs_dir.join(name))
+        .flat_map(|name| docs_dirs.iter().map(move |dir| dir.join(name)))
         .find(|path| path.exists());
 
     let Some(docs_path) = docs_path else {
         eprintln!(
-            "warning: skipping Node compatibility docs sync check because docs/reference/NODE-COMPAT.md (or docs/reference/node-compat.md) was not found"
+            "warning: skipping Node compatibility docs sync check because no canonical Node compatibility matrix was found"
         );
         return;
     };
@@ -1985,14 +1989,28 @@ fn generate_web_standards_report() {
     writeln!(report).unwrap();
 
     // write to file
-    let report_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let runtime_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
-        .unwrap()
-        .join("docs")
-        .join("reports")
-        .join("web_standards_api_report.md");
+        .unwrap();
+    let workspace_dir = runtime_dir.parent().unwrap_or(runtime_dir);
+    let canonical_report_dir = workspace_dir.join("sdd/runtime/reports");
+    let legacy_report_dir = runtime_dir.join("docs/reports");
+    let report_dir = if canonical_report_dir.exists() {
+        canonical_report_dir
+    } else if legacy_report_dir.exists() {
+        legacy_report_dir
+    } else {
+        std::env::temp_dir().join("thunder-runtime-reports")
+    };
+    std::fs::create_dir_all(&report_dir).unwrap_or_else(|e| {
+        panic!(
+            "failed to create report directory {}: {e}",
+            report_dir.display()
+        )
+    });
+    let report_path = report_dir.join("web_standards_api_report.md");
 
     std::fs::write(&report_path, &report).unwrap_or_else(|e| {
         panic!("Failed to write report to {}: {e}", report_path.display());

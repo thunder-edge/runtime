@@ -253,12 +253,17 @@ impl PathPattern {
     }
 
     fn has_catch_all(&self) -> bool {
-        self.segments.iter().any(|s| matches!(s, PathSegment::CatchAll))
+        self.segments
+            .iter()
+            .any(|s| matches!(s, PathSegment::CatchAll))
     }
 }
 
 fn has_invalid_catch_all(segments: &[PathSegment]) -> bool {
-    let Some(pos) = segments.iter().position(|s| matches!(s, PathSegment::CatchAll)) else {
+    let Some(pos) = segments
+        .iter()
+        .position(|s| matches!(s, PathSegment::CatchAll))
+    else {
         return false;
     };
     pos + 1 != segments.len()
@@ -337,10 +342,16 @@ fn parse_global_routing_manifest(raw: &str, source: &str) -> anyhow::Result<Glob
 
     for route in parsed.routes {
         let host = HostPattern::parse(&route.host).ok_or_else(|| {
-            anyhow::anyhow!("invalid host pattern in global routing manifest: {}", route.host)
+            anyhow::anyhow!(
+                "invalid host pattern in global routing manifest: {}",
+                route.host
+            )
         })?;
         let path = PathPattern::parse(&route.path).ok_or_else(|| {
-            anyhow::anyhow!("invalid path pattern in global routing manifest: {}", route.path)
+            anyhow::anyhow!(
+                "invalid path pattern in global routing manifest: {}",
+                route.path
+            )
         })?;
 
         view_rules.push(GlobalRouteView {

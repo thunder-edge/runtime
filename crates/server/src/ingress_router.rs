@@ -136,11 +136,10 @@ impl IngressRouter {
             .get(HOST)
             .and_then(|value| value.to_str().ok());
 
-        let (function_name, forwarded_path) =
-            match self.resolve_route_target(path.as_str(), host) {
-                Ok(value) => value,
-                Err(response) => return response,
-            };
+        let (function_name, forwarded_path) = match self.resolve_route_target(path.as_str(), host) {
+            Ok(value) => value,
+            Err(response) => return *response,
+        };
 
         if let Some(route_metadata) = self.registry.get_route_metadata(function_name.as_str()) {
             match match_suffix_route(&route_metadata, &forwarded_path, req.method()) {
@@ -380,7 +379,7 @@ impl IngressRouter {
         &self,
         path: &str,
         host: Option<&str>,
-    ) -> Result<(String, String), Response<BoxBody>> {
+    ) -> Result<(String, String), Box<Response<BoxBody>>> {
         if let Some(table) = self.global_routing.get() {
             if let Some(matched) = table.resolve(host, path) {
                 return Ok((matched.target_function, path.to_string()));
@@ -392,17 +391,17 @@ impl IngressRouter {
         let function_name = if segments.len() >= 2 { segments[1] } else { "" };
 
         if function_name.is_empty() {
-            return Err(json_response(
+            return Err(Box::new(json_response(
                 StatusCode::NOT_FOUND,
                 r#"{"error":"no function specified"}"#,
-            ));
+            )));
         }
 
         if !is_valid_function_name(function_name) {
-            return Err(json_response(
+            return Err(Box::new(json_response(
                 StatusCode::BAD_REQUEST,
                 r#"{"error":"invalid function name"}"#,
-            ));
+            )));
         }
 
         let forwarded_path = if segments.len() >= 3 {

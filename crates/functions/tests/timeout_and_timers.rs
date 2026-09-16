@@ -16,9 +16,10 @@ use deno_core::{JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use functions::registry::FunctionRegistry;
 use functions::types::{BundlePackage, FunctionStatus};
 use runtime_core::extensions;
-use runtime_core::isolate::IsolateConfig;
+use runtime_core::isolate::{IsolateConfig, OutgoingProxyConfig};
 use runtime_core::module_loader::EszipModuleLoader;
 use runtime_core::permissions::create_permissions_container;
+use runtime_core::ssrf::SsrfConfig;
 use tokio_util::sync::CancellationToken;
 
 static PANIC_PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -274,8 +275,10 @@ fn test_isolate_timeout_returns_504() {
         let bundle_data =
             bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
 
-        let mut config = IsolateConfig::default();
-        config.wall_clock_timeout_ms = 100;
+        let config = IsolateConfig {
+            wall_clock_timeout_ms: 100,
+            ..Default::default()
+        };
 
         let entry = functions::lifecycle::create_function(
             "timeout-504-test".to_string(),
@@ -337,6 +340,92 @@ fn test_isolate_timeout_returns_504() {
 }
 
 #[test]
+fn test_fast_request_does_not_wait_for_watchdog_poll_interval() {
+    init_deno_platform();
+    let _test_guard = lock_timeout_and_timers_test();
+
+    let eszip_bytes = build_eszip(
+        "file:///test_watchdog_latency.js",
+        r#"
+        Deno.serve(() => new Response("ok"));
+        "#,
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let result: Result<(), String> = rt.block_on(async {
+        let bundle = BundlePackage::eszip_only(eszip_bytes);
+        let bundle_data =
+            bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
+
+        let config = IsolateConfig {
+            wall_clock_timeout_ms: 500,
+            ..Default::default()
+        };
+
+        let entry = functions::lifecycle::create_function(
+            "watchdog-latency-test".to_string(),
+            bundle_data,
+            config,
+            runtime_core::isolate::OutgoingProxyConfig::default(),
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .map_err(|e| format!("create_function: {e}"))?;
+        let handle = entry
+            .isolate_handle
+            .clone()
+            .ok_or_else(|| "missing isolate handle".to_string())?;
+
+        let build_request = || {
+            http::Request::builder()
+                .method("GET")
+                .uri("/watchdog-latency")
+                .header("host", "localhost:9000")
+                .body(bytes::Bytes::new())
+                .map_err(|e| format!("build request: {e}"))
+        };
+
+        handle
+            .send_request(build_request()?)
+            .await
+            .map_err(|e| format!("warmup request: {e}"))?;
+
+        let mut total_micros = 0_u128;
+        for _ in 0..10 {
+            let started = std::time::Instant::now();
+            let response = handle
+                .send_request(build_request()?)
+                .await
+                .map_err(|e| format!("timed request: {e}"))?;
+            if response.parts.status != 200 {
+                return Err(format!(
+                    "expected fast request status 200, got {}",
+                    response.parts.status
+                ));
+            }
+            total_micros += started.elapsed().as_micros();
+        }
+
+        let average_micros = total_micros / 10;
+        assert!(
+            average_micros < 20_000,
+            "fast requests waited for watchdog polling: average={}us",
+            average_micros
+        );
+
+        functions::lifecycle::destroy_function(&entry).await;
+        Ok(())
+    });
+
+    assert!(result.is_ok(), "test failed: {:?}", result.err());
+}
+
+#[test]
 fn test_isolate_restores_sandbox_state_after_timeout() {
     init_deno_platform();
     let _test_guard = lock_timeout_and_timers_test();
@@ -372,8 +461,10 @@ fn test_isolate_restores_sandbox_state_after_timeout() {
         let bundle_data =
             bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
 
-        let mut config = IsolateConfig::default();
-        config.wall_clock_timeout_ms = 100;
+        let config = IsolateConfig {
+            wall_clock_timeout_ms: 100,
+            ..Default::default()
+        };
 
         let entry = functions::lifecycle::create_function(
             "timeout-sandbox-restore-test".to_string(),
@@ -490,9 +581,11 @@ fn test_heap_limit_infinite_allocation_marks_function_error() {
         let bundle_data =
             bincode::serialize(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
 
-        let mut config = IsolateConfig::default();
-        config.max_heap_size_bytes = 32 * 1024 * 1024;
-        config.wall_clock_timeout_ms = 0;
+        let config = IsolateConfig {
+            max_heap_size_bytes: 32 * 1024 * 1024,
+            wall_clock_timeout_ms: 0,
+            ..Default::default()
+        };
 
         let registry = FunctionRegistry::new(CancellationToken::new(), IsolateConfig::default());
         let _ = registry
@@ -741,7 +834,7 @@ fn test_panic_auto_restart_recovers_to_running() {
 
         while std::time::Instant::now() < deadline {
             if let Some(info) = registry.get_info("panic-auto-restart-test") {
-                last_status = Some(info.status.clone());
+                last_status = Some(info.status);
                 if info.status == FunctionStatus::Error {
                     saw_error = true;
                 }
@@ -1404,8 +1497,10 @@ fn test_websocket_unregisters_on_close_event() {
 
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept websocket client");
-        let mut socket = tungstenite::accept(stream).expect("upgrade websocket handshake");
-        let _ = socket.read();
+        let Ok(mut socket) = tungstenite::accept(stream) else {
+            return;
+        };
+        let _ = socket.close(None);
     });
 
     let eszip_bytes = build_eszip(
@@ -1423,8 +1518,16 @@ fn test_websocket_unregisters_on_close_event() {
         let eszip = Arc::new(parse_eszip(&eszip_bytes).await);
         let mut js_runtime = make_runtime_with_eszip(eszip);
 
-        functions::handler::inject_request_bridge(&mut js_runtime)
-            .map_err(|e| format!("inject_request_bridge: {e}"))?;
+        let isolate_config = IsolateConfig {
+            ssrf_config: SsrfConfig::disabled(),
+            ..Default::default()
+        };
+        functions::handler::inject_request_bridge_with_proxy_and_config(
+            &mut js_runtime,
+            &OutgoingProxyConfig::default(),
+            &isolate_config,
+        )
+        .map_err(|e| format!("inject_request_bridge: {e}"))?;
 
         let setup = format!(
             r#"
@@ -1516,6 +1619,9 @@ fn test_websocket_unregisters_on_close_event() {
         Ok(())
     });
 
+    if result.is_err() {
+        let _ = std::net::TcpStream::connect(addr);
+    }
     server.join().expect("join websocket server");
     assert!(result.is_ok(), "test failed: {:?}", result.err());
 }

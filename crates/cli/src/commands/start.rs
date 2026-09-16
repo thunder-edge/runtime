@@ -148,19 +148,11 @@ pub struct StartArgs {
     pool_global_max_isolates: usize,
 
     /// Default minimum isolates kept warm per function pool.
-    #[arg(
-        long,
-        default_value_t = 5,
-        env = "EDGE_RUNTIME_POOL_MIN_ISOLATES"
-    )]
+    #[arg(long, default_value_t = 5, env = "EDGE_RUNTIME_POOL_MIN_ISOLATES")]
     pool_min_isolates: usize,
 
     /// Default maximum isolates allowed per function pool.
-    #[arg(
-        long,
-        default_value_t = 10,
-        env = "EDGE_RUNTIME_POOL_MAX_ISOLATES"
-    )]
+    #[arg(long, default_value_t = 10, env = "EDGE_RUNTIME_POOL_MAX_ISOLATES")]
     pool_max_isolates: usize,
 
     /// Minimum free memory required (MiB) to allow pool scale-up.
@@ -361,17 +353,15 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
                  This is NOT recommended for production."
             );
             SsrfConfig::disabled()
+        } else if !args.allow_private_net.is_empty() {
+            info!(
+                "SSRF protection enabled with exceptions: {:?}",
+                args.allow_private_net
+            );
+            SsrfConfig::with_exceptions(args.allow_private_net.clone())
         } else {
-            if !args.allow_private_net.is_empty() {
-                info!(
-                    "SSRF protection enabled with exceptions: {:?}",
-                    args.allow_private_net
-                );
-                SsrfConfig::with_exceptions(args.allow_private_net.clone())
-            } else {
-                info!("SSRF protection enabled (blocking private IP ranges)");
-                SsrfConfig::new()
-            }
+            info!("SSRF protection enabled (blocking private IP ranges)");
+            SsrfConfig::new()
         };
 
         let default_config = IsolateConfig {

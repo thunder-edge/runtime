@@ -775,14 +775,9 @@ fn pump_websocket(
     stop: &AtomicBool,
 ) {
     while !stop.load(Ordering::Relaxed) {
-        loop {
-            match from_runtime_rx.try_recv() {
-                Ok(msg) => {
-                    if ws.send(Message::Text(msg.content.into())).is_err() {
-                        return;
-                    }
-                }
-                Err(_) => break,
+        while let Ok(msg) = from_runtime_rx.try_recv() {
+            if ws.send(Message::Text(msg.content)).is_err() {
+                return;
             }
         }
 

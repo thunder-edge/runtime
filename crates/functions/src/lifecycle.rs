@@ -27,7 +27,9 @@ use runtime_core::isolate::{
     OutgoingProxyConfig,
 };
 use runtime_core::isolate_logs::IsolateLogConfig;
-use runtime_core::manifest::{resolve_manifest_for_profile, validate_manifest_json, ResolvedFunctionManifest};
+use runtime_core::manifest::{
+    resolve_manifest_for_profile, validate_manifest_json, ResolvedFunctionManifest,
+};
 use runtime_core::mem_check::{near_heap_limit_callback, HeapLimitState};
 use runtime_core::module_loader::{EszipModuleLoader, ModuleCodeCacheMap};
 use runtime_core::permissions::create_permissions_with_policy;
@@ -155,7 +157,10 @@ pub async fn create_function(
             anyhow::anyhow!("embedded manifest validation failed for '{}': {e}", name)
         })?;
         let resolved = resolve_manifest_for_profile(&parsed, None).map_err(|e| {
-            anyhow::anyhow!("embedded manifest profile resolution failed for '{}': {e}", name)
+            anyhow::anyhow!(
+                "embedded manifest profile resolution failed for '{}': {e}",
+                name
+            )
         })?;
         if resolved.name != name {
             return Err(anyhow::anyhow!(
@@ -253,22 +258,22 @@ pub async fn create_function(
                             let (eszip, root_specifier) =
                                 parse_eszip_bundle(eszip_bytes_for_restart.clone()).await?;
 
-                            run_isolate(
-                                isolate_name.clone(),
+                            run_isolate(RunIsolateContext {
+                                name: isolate_name.clone(),
                                 eszip,
                                 root_specifier,
-                                isolate_config.clone(),
-                                isolate_outgoing_proxy.clone(),
-                                isolate_manifest.clone(),
-                                &mut request_rx,
-                                shutdown.clone(),
-                                isolate_metrics.clone(),
+                                config: isolate_config.clone(),
+                                outgoing_proxy: isolate_outgoing_proxy.clone(),
+                                manifest: isolate_manifest.clone(),
+                                request_rx: &mut request_rx,
+                                shutdown: shutdown.clone(),
+                                metrics: isolate_metrics.clone(),
                                 bundle_format,
                                 snapshot_bytes,
-                                package_v8_version_for_thread.clone(),
-                                inspector_stop_for_thread.clone(),
-                                supervisor_handle.clone(),
-                            )
+                                v8_version: package_v8_version_for_thread.clone(),
+                                inspector_stop: inspector_stop_for_thread.clone(),
+                                liveness_handle: supervisor_handle.clone(),
+                            })
                             .await
                         },
                     )
@@ -388,14 +393,14 @@ pub async fn create_function(
 }
 
 /// The long-running isolate event loop.
-async fn run_isolate(
+struct RunIsolateContext<'a> {
     name: String,
     eszip: Arc<eszip::EszipV2>,
     root_specifier: deno_core::ModuleSpecifier,
     config: IsolateConfig,
     outgoing_proxy: OutgoingProxyConfig,
     manifest: Option<ResolvedFunctionManifest>,
-    request_rx: &mut mpsc::UnboundedReceiver<IsolateRequest>,
+    request_rx: &'a mut mpsc::UnboundedReceiver<IsolateRequest>,
     shutdown: CancellationToken,
     metrics: Arc<FunctionMetrics>,
     bundle_format: BundleFormat,
@@ -403,11 +408,30 @@ async fn run_isolate(
     v8_version: String,
     inspector_stop: Option<Arc<AtomicBool>>,
     liveness_handle: IsolateHandle,
-) -> Result<(), Error> {
+}
+
+async fn run_isolate(context: RunIsolateContext<'_>) -> Result<(), Error> {
+    let RunIsolateContext {
+        name,
+        eszip,
+        root_specifier,
+        config,
+        outgoing_proxy,
+        manifest,
+        request_rx,
+        shutdown,
+        metrics,
+        bundle_format,
+        snapshot_bytes,
+        v8_version,
+        inspector_stop,
+        liveness_handle,
+    } = context;
+
     // Track cold start timing
     let cold_start_timer = std::time::Instant::now();
-    let snapshot_code_cache = snapshot_bytes
-        .and_then(|payload| crate::snapshot::decode_function_bytecode_cache(payload));
+    let snapshot_code_cache =
+        snapshot_bytes.and_then(crate::snapshot::decode_function_bytecode_cache);
 
     // Try to load from snapshot first, fall back to eszip if needed
     let (mut js_runtime, heap_limit_state_ptr) = match bundle_format {
@@ -632,25 +656,36 @@ async fn run_isolate(
                     let watchdog_terminated = terminated.clone();
                     let request_completed = Arc::new(AtomicBool::new(false));
                     let watchdog_completed = request_completed.clone();
+                    let watchdog_thread_slot = Arc::new(Mutex::new(None::<std::thread::Thread>));
+                    let watchdog_thread_slot_for_thread = watchdog_thread_slot.clone();
 
                     // Spawn watchdog thread that will forcefully terminate V8 execution on timeout
                     let watchdog = std::thread::spawn(move || {
+                        let current_thread = std::thread::current();
+                        let mut thread_slot = watchdog_thread_slot_for_thread
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        *thread_slot = Some(current_thread);
+                        drop(thread_slot);
+
                         let deadline = std::time::Instant::now()
                             + std::time::Duration::from_millis(timeout_ms);
 
-                        // Poll periodically until deadline or request completes
-                        while std::time::Instant::now() < deadline {
-                            if watchdog_completed.load(Ordering::SeqCst) {
-                                return; // Request completed before timeout
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        while !watchdog_completed.load(Ordering::Acquire) {
+                            let Some(remaining) =
+                                deadline.checked_duration_since(std::time::Instant::now())
+                            else {
+                                break;
+                            };
+
+                            std::thread::park_timeout(remaining);
                         }
 
                         // Deadline reached - terminate V8 execution if request still running
-                        if !watchdog_completed.load(Ordering::SeqCst) {
-                            if v8_handle.terminate_execution() {
-                                watchdog_terminated.store(true, Ordering::SeqCst);
-                            }
+                        if !watchdog_completed.load(Ordering::Acquire)
+                            && v8_handle.terminate_execution()
+                        {
+                            watchdog_terminated.store(true, Ordering::Release);
                         }
                     });
 
@@ -667,12 +702,21 @@ async fn run_isolate(
                     )
                     .await;
 
-                    // Signal watchdog to stop and wait for it
-                    request_completed.store(true, Ordering::SeqCst);
+                    // Signal watchdog to stop, wake it immediately, and wait for it.
+                    request_completed.store(true, Ordering::Release);
+                    let watchdog_thread = {
+                        let mut thread_slot = watchdog_thread_slot
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        thread_slot.take()
+                    };
+                    if let Some(watchdog_thread) = watchdog_thread {
+                        watchdog_thread.unpark();
+                    }
                     let _ = watchdog.join();
 
                     // Check if timeout happened (either async timeout or forced V8 termination)
-                    if terminated.load(Ordering::SeqCst) || dispatch_result.is_err() {
+                    if terminated.load(Ordering::Acquire) || dispatch_result.is_err() {
                         // Reset termination state so isolate can be reused
                         js_runtime.v8_isolate().cancel_terminate_execution();
 
@@ -686,6 +730,9 @@ async fn run_isolate(
                             )),
                         ) {
                             warn!("failed to clear execution timers: {}", e);
+                        }
+                        if let Err(e) = handler::cancel_all_response_streams(&mut js_runtime) {
+                            warn!("failed to cancel response streams after timeout: {}", e);
                         }
 
                         warn!(
@@ -706,7 +753,14 @@ async fn run_isolate(
                         ) {
                             warn!("failed to end execution context: {}", e);
                         }
-                        dispatch_result.expect("dispatch_result should be Ok here")
+                        match dispatch_result {
+                            Ok(response) => response,
+                            Err(error) => {
+                                return Err(anyhow::anyhow!(
+                                    "request timeout state was inconsistent: {error}"
+                                ));
+                            }
+                        }
                     }
                 } else {
                     // No timeout configured - execute directly
@@ -717,6 +771,12 @@ async fn run_isolate(
                         request_function_name.as_deref(),
                     )
                     .await;
+
+                    if dispatch_result.is_err() {
+                        if let Err(e) = handler::cancel_all_response_streams(&mut js_runtime) {
+                            warn!("failed to cancel response streams after dispatch error: {}", e);
+                        }
+                    }
 
                     // End execution context
                     if let Err(e) = js_runtime.execute_script(
@@ -801,6 +861,9 @@ async fn run_isolate(
                 }
             }
             _ = runtime_tick.tick() => {
+                if let Err(e) = handler::cancel_cancelled_response_streams(&mut js_runtime) {
+                    warn!("failed to cancel disconnected response streams: {}", e);
+                }
                 // Keep runtime tasks moving between requests so ReadableStream/SSE
                 // producers can continue pushing chunks.
                 let _ = tokio::time::timeout(
@@ -813,6 +876,9 @@ async fn run_isolate(
                 .await;
             }
             _ = shutdown.cancelled() => {
+                if let Err(e) = handler::cancel_all_response_streams(&mut js_runtime) {
+                    warn!("failed to cancel response streams during shutdown: {}", e);
+                }
                 info!("isolate '{}' received shutdown signal", name);
                 break;
             }
@@ -1216,14 +1282,9 @@ fn pump_websocket(
     stop: &AtomicBool,
 ) {
     while !stop.load(Ordering::Relaxed) {
-        loop {
-            match from_runtime_rx.try_recv() {
-                Ok(msg) => {
-                    if ws.send(Message::Text(msg.content.into())).is_err() {
-                        return;
-                    }
-                }
-                Err(_) => break,
+        while let Ok(msg) = from_runtime_rx.try_recv() {
+            if ws.send(Message::Text(msg.content)).is_err() {
+                return;
             }
         }
 

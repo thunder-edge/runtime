@@ -303,13 +303,12 @@ impl FunctionRegistry {
                     .map(|value| *value)
                     .unwrap_or(0);
 
-                let should_replace =
-                    (candidate_function.is_none())
-                        || (candidate_is_requester && !is_requester)
-                        || (candidate_is_requester == is_requester
-                            && (active_requests < candidate_active_requests
-                                || (active_requests == candidate_active_requests
-                                    && tick < candidate_tick)));
+                let should_replace = (candidate_function.is_none())
+                    || (candidate_is_requester && !is_requester)
+                    || (candidate_is_requester == is_requester
+                        && (active_requests < candidate_active_requests
+                            || (active_requests == candidate_active_requests
+                                && tick < candidate_tick)));
 
                 if should_replace {
                     candidate_function = Some(function_name.clone());
@@ -405,7 +404,11 @@ impl FunctionRegistry {
         ContextPoolLimits { min, max }
     }
 
-    fn effective_scaling_limits(&self, name: &str, configured_pool: PoolLimits) -> EffectiveScalingLimits {
+    fn effective_scaling_limits(
+        &self,
+        name: &str,
+        configured_pool: PoolLimits,
+    ) -> EffectiveScalingLimits {
         let isolates = self.normalize_pool_limits(configured_pool);
         let contexts = self
             .context_pool_limits
@@ -667,10 +670,7 @@ impl FunctionRegistry {
         let handle_by_id: std::collections::HashMap<Uuid, IsolateHandle> =
             handles.iter().cloned().map(|h| (h.id, h)).collect();
 
-        let mut state = self
-            .route_state
-            .entry(name.to_string())
-            .or_insert_with(FunctionRouteState::default);
+        let mut state = self.route_state.entry(name.to_string()).or_default();
 
         // Remove entries that reference dead or missing isolates.
         state
@@ -734,8 +734,8 @@ impl FunctionRegistry {
 
         // Under heavy queue pressure, prefer isolate scale-out earlier instead of
         // consuming all remaining context slots in existing isolates.
-        let prefer_isolate_scale_under_burst = self.capacity_waiters.load(Ordering::Relaxed)
-            >= BURST_ISOLATE_PREFERENCE_WAITERS;
+        let prefer_isolate_scale_under_burst =
+            self.capacity_waiters.load(Ordering::Relaxed) >= BURST_ISOLATE_PREFERENCE_WAITERS;
 
         // If context pool is enabled and all contexts are saturated, add a new context first.
         if config.context_pool_enabled
@@ -791,8 +791,7 @@ impl FunctionRegistry {
                 Some(idx) => Some(idx),
                 None => {
                     self.saturated_rejections.fetch_add(1, Ordering::Relaxed);
-                    self
-                        .saturated_rejections_context_capacity
+                    self.saturated_rejections_context_capacity
                         .fetch_add(1, Ordering::Relaxed);
                     None
                 }
@@ -907,7 +906,8 @@ impl FunctionRegistry {
                 self.burst_scale_batch_last
                     .store(burst_scale_batch as u64, Ordering::Relaxed);
                 if burst_scale_batch > 1 {
-                    self.burst_scale_events_total.fetch_add(1, Ordering::Relaxed);
+                    self.burst_scale_events_total
+                        .fetch_add(1, Ordering::Relaxed);
                 }
 
                 let scale_plan = {
@@ -925,8 +925,7 @@ impl FunctionRegistry {
                         || !entry.config.context_pool_enabled
                         || entry.current_pool_size() >= scaling_limits.isolates.max
                     {
-                        self
-                            .saturated_rejections_scale_blocked
+                        self.saturated_rejections_scale_blocked
                             .fetch_add(1, Ordering::Relaxed);
                         None
                     } else {
@@ -939,7 +938,8 @@ impl FunctionRegistry {
                     }
                 };
 
-                if let Some((bundle_package_bytes, config, manifest, per_function_max)) = scale_plan {
+                if let Some((bundle_package_bytes, config, manifest, per_function_max)) = scale_plan
+                {
                     let mut created = 0_usize;
                     for _ in 0..burst_scale_batch {
                         let current_pool_size = self
@@ -971,8 +971,7 @@ impl FunctionRegistry {
                                 break;
                             }
                             Err(err) => {
-                                self
-                                    .saturated_rejections_scale_failed
+                                self.saturated_rejections_scale_failed
                                     .fetch_add(1, Ordering::Relaxed);
                                 warn!(
                                     function_name = %name,
@@ -986,8 +985,7 @@ impl FunctionRegistry {
                     }
 
                     if created == 0 {
-                        self
-                            .saturated_rejections_scale_blocked
+                        self.saturated_rejections_scale_blocked
                             .fetch_add(1, Ordering::Relaxed);
                         Err(RouteTargetError::CapacityExhausted)
                     } else {
@@ -1033,7 +1031,9 @@ impl FunctionRegistry {
                         && entry.active_requests == 0
                         && entry
                             .idle_since
-                            .map(|since| now.saturating_duration_since(since) >= CONTEXT_SCALE_DOWN_COOLDOWN)
+                            .map(|since| {
+                                now.saturating_duration_since(since) >= CONTEXT_SCALE_DOWN_COOLDOWN
+                            })
                             .unwrap_or(false)
                 })
                 .map(|(idx, entry)| (idx, entry.context_id.clone()))
@@ -1053,7 +1053,8 @@ impl FunctionRegistry {
         // Scale down idle extra isolates above min isolate pool size.
         let mut removed_any = false;
         if let Some(mut entry) = self.functions.get_mut(&target.function_name) {
-            let scaling_limits = self.effective_scaling_limits(&target.function_name, entry.pool_limits);
+            let scaling_limits =
+                self.effective_scaling_limits(&target.function_name, entry.pool_limits);
             while entry.current_pool_size() > scaling_limits.isolates.min {
                 let removable_idx = entry
                     .extra_isolate_handles
@@ -1066,7 +1067,8 @@ impl FunctionRegistry {
                         self.handle_last_seen_at
                             .get(&handle.id)
                             .map(|seen_at| {
-                                now.saturating_duration_since(*seen_at) >= ISOLATE_SCALE_DOWN_COOLDOWN
+                                now.saturating_duration_since(*seen_at)
+                                    >= ISOLATE_SCALE_DOWN_COOLDOWN
                             })
                             .unwrap_or(false)
                     })
@@ -1338,8 +1340,10 @@ impl FunctionRegistry {
 
         let info = entry.to_info();
         self.mark_entry_handles_used(&entry);
-        self.context_pool_limits
-            .insert(name.to_string(), self.normalize_context_limits(context_limits));
+        self.context_pool_limits.insert(
+            name.to_string(),
+            self.normalize_context_limits(context_limits),
+        );
         self.functions.insert(name.to_string(), entry);
         Ok(info)
     }
@@ -1475,11 +1479,15 @@ impl FunctionRegistry {
         context_max: usize,
     ) -> Result<FunctionInfo, Error> {
         if isolate_min > isolate_max {
-            return Err(anyhow::anyhow!("invalid isolate pool limits: min must be <= max"));
+            return Err(anyhow::anyhow!(
+                "invalid isolate pool limits: min must be <= max"
+            ));
         }
 
         if context_min > context_max {
-            return Err(anyhow::anyhow!("invalid context pool limits: min must be <= max"));
+            return Err(anyhow::anyhow!(
+                "invalid context pool limits: min must be <= max"
+            ));
         }
 
         let Some((key, mut entry)) = self.functions.remove(name) else {

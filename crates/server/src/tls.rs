@@ -251,6 +251,7 @@ fn hex_encode_lower(bytes: &[u8]) -> String {
 }
 
 /// Stream that may be TCP (plain or TLS) or Unix socket.
+#[allow(clippy::large_enum_variant)]
 pub enum MaybeHttpsStream {
     /// Plain TCP stream.
     TcpPlain(TcpStream),
