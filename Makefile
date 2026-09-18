@@ -109,13 +109,14 @@ test-rust-fast:
 
 test-rust-full:
 	cargo test-full
+	cargo test -p edge-server --lib -- --ignored
 
 test:
 	cargo test-dev
 	cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**" 2>&1
 
 test-full:
-# 	cargo test-full
+	$(MAKE) test-rust-full
 	cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**" 2>&1
 
 audit:
