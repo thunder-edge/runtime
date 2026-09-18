@@ -14,9 +14,10 @@ use runtime_core::module_loader::{EszipModuleLoader, ModuleCodeCacheMap};
 use runtime_core::permissions::create_permissions_with_policy;
 
 use crate::handler;
-
-const RUNTIME_BASE_STARTUP_SNAPSHOT: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/runtime_base.snapshot.bin"));
+use crate::runtime_base_snapshot::{
+    RUNTIME_BASE_RESIDUAL_LAZY_ESM_SOURCES, RUNTIME_BASE_RESIDUAL_LAZY_JS_SOURCES,
+    RUNTIME_BASE_STARTUP_SNAPSHOT,
+};
 
 const BYTECODE_CACHE_MAGIC: [u8; 8] = *b"TBCCACHE";
 
@@ -74,6 +75,7 @@ pub async fn create_function_bytecode_cache_from_eszip(
     let mut runtime_extensions =
         extensions::get_extensions_with_ssrf_config(false, &config.ssrf_config);
     runtime_extensions.push(handler::response_stream_extension());
+    runtime_extensions.push(extensions::runtime_bootstrap_extension());
 
     let create_params = if config.max_heap_size_bytes > 0 {
         Some(deno_core::v8::CreateParams::default().heap_limits(0, config.max_heap_size_bytes))
@@ -86,7 +88,8 @@ pub async fn create_function_bytecode_cache_from_eszip(
         create_params,
         extensions: runtime_extensions,
         startup_snapshot: Some(RUNTIME_BASE_STARTUP_SNAPSHOT),
-        skip_op_registration: true,
+        residual_lazy_js_sources: RUNTIME_BASE_RESIDUAL_LAZY_JS_SOURCES,
+        residual_lazy_esm_sources: RUNTIME_BASE_RESIDUAL_LAZY_ESM_SOURCES,
         ..Default::default()
     };
     extensions::set_extension_transpiler(&mut runtime_opts);
@@ -132,7 +135,6 @@ pub async fn create_function_bytecode_cache_from_eszip(
     js_runtime
         .run_event_loop(PollEventLoopOptions {
             wait_for_inspector: false,
-            pump_v8_message_loop: true,
         })
         .await?;
 
@@ -154,4 +156,60 @@ pub async fn create_function_bytecode_cache_from_eszip(
         .map_err(|e| anyhow::anyhow!("failed to serialize bytecode cache envelope: {e}"))?;
 
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use deno_core::RuntimeOptions;
+
+    use crate::handler;
+    use crate::runtime_base_snapshot::{
+        RUNTIME_BASE_RESIDUAL_LAZY_ESM_SOURCES, RUNTIME_BASE_RESIDUAL_LAZY_JS_SOURCES,
+        RUNTIME_BASE_STARTUP_SNAPSHOT,
+    };
+    use runtime_core::extensions;
+
+    #[test]
+    fn runtime_base_snapshot_boots_with_production_extensions() {
+        deno_core::JsRuntime::init_platform(None);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build Tokio runtime");
+        let _guard = runtime.enter();
+
+        let mut extension_stack = extensions::get_extensions();
+        extension_stack.push(handler::response_stream_extension());
+        extension_stack.push(extensions::runtime_bootstrap_extension());
+        let mut options = RuntimeOptions {
+            extensions: extension_stack,
+            startup_snapshot: Some(RUNTIME_BASE_STARTUP_SNAPSHOT),
+            residual_lazy_js_sources: RUNTIME_BASE_RESIDUAL_LAZY_JS_SOURCES,
+            residual_lazy_esm_sources: RUNTIME_BASE_RESIDUAL_LAZY_ESM_SOURCES,
+            ..Default::default()
+        };
+        extensions::set_extension_transpiler(&mut options);
+
+        let mut js_runtime = deno_core::JsRuntime::new(options);
+        let value = js_runtime
+            .execute_script(
+                "<snapshot-bootstrap-test>",
+                "[
+                  typeof URL,
+                  typeof Request,
+                  typeof Response,
+                  typeof fetch,
+                  typeof crypto,
+                  typeof ReadableStream,
+                ].join(',')",
+            )
+            .expect("evaluate Web API availability");
+        deno_core::scope!(scope, &mut js_runtime);
+        let value = value
+            .open(scope)
+            .to_string(scope)
+            .expect("Web API availability is a string")
+            .to_rust_string_lossy(scope);
+        assert_eq!(value, "function,function,function,function,object,function");
+    }
 }

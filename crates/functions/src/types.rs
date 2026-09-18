@@ -161,17 +161,13 @@ impl FunctionMetrics {
         let current_heap_used_bytes = self.current_heap_used_bytes.load(Ordering::Relaxed);
         let peak_heap_used_bytes = self.peak_heap_used_bytes.load(Ordering::Relaxed);
 
-        let avg_warm_request_ms = if total_requests > 0 {
-            total_warm_start_time_ms / total_requests
-        } else {
-            0
-        };
+        let avg_warm_request_ms = total_warm_start_time_ms
+            .checked_div(total_requests)
+            .unwrap_or(0);
 
-        let avg_warm_request_us = if total_requests > 0 {
-            total_warm_start_time_us / total_requests
-        } else {
-            0
-        };
+        let avg_warm_request_us = total_warm_start_time_us
+            .checked_div(total_requests)
+            .unwrap_or(0);
 
         let avg_warm_request_ms_precise = if total_requests > 0 {
             total_warm_start_time_us as f64 / total_requests as f64 / 1000.0
@@ -179,17 +175,13 @@ impl FunctionMetrics {
             0.0
         };
 
-        let avg_cold_start_ms = if cold_start_count > 0 {
-            total_cold_start_time_ms / cold_start_count
-        } else {
-            0
-        };
+        let avg_cold_start_ms = total_cold_start_time_ms
+            .checked_div(cold_start_count)
+            .unwrap_or(0);
 
-        let avg_cold_start_us = if cold_start_count > 0 {
-            total_cold_start_time_us / cold_start_count
-        } else {
-            0
-        };
+        let avg_cold_start_us = total_cold_start_time_us
+            .checked_div(cold_start_count)
+            .unwrap_or(0);
 
         let avg_cold_start_ms_precise = if cold_start_count > 0 {
             total_cold_start_time_us as f64 / cold_start_count as f64 / 1000.0

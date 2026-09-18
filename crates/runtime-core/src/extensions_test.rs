@@ -11,8 +11,8 @@ fn init_v8() {
 #[test]
 fn get_extensions_returns_expected_count() {
     let exts = get_extensions();
-    // 16 extensions by default (no edge_assert in production profile)
-    assert_eq!(exts.len(), 16, "expected 16 extensions, got {}", exts.len());
+    // 15 extensions by default (no edge_assert in production profile)
+    assert_eq!(exts.len(), 15, "expected 15 extensions, got {}", exts.len());
 }
 
 #[test]
@@ -40,10 +40,16 @@ fn set_extension_transpiler_configures_opts() {
 #[test]
 fn runtime_boots_with_extensions() {
     init_v8();
-    let mut opts = RuntimeOptions {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build Tokio runtime");
+    let _guard = runtime.enter();
+
+    let mut options = RuntimeOptions {
         extensions: get_extensions(),
         ..Default::default()
     };
-    set_extension_transpiler(&mut opts);
-    let _rt = deno_core::JsRuntime::new(opts);
+    set_extension_transpiler(&mut options);
+    let _runtime = deno_core::JsRuntime::new(options);
 }

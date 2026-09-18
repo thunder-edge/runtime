@@ -12,16 +12,35 @@ fn init_v8() {
 
 fn make_runtime() -> JsRuntime {
     init_v8();
-    let mut runtime_extensions = extensions::get_extensions();
-    runtime_extensions.push(response_stream_extension());
-    let mut opts = RuntimeOptions {
-        extensions: runtime_extensions,
-        ..Default::default()
+    let create_runtime = || {
+        let mut runtime_extensions = extensions::get_extensions();
+        runtime_extensions.push(response_stream_extension());
+        runtime_extensions.push(extensions::runtime_bootstrap_extension());
+        let mut opts = RuntimeOptions {
+            extensions: runtime_extensions,
+            startup_snapshot: Some(crate::runtime_base_snapshot::RUNTIME_BASE_STARTUP_SNAPSHOT),
+            residual_lazy_js_sources:
+                crate::runtime_base_snapshot::RUNTIME_BASE_RESIDUAL_LAZY_JS_SOURCES,
+            residual_lazy_esm_sources:
+                crate::runtime_base_snapshot::RUNTIME_BASE_RESIDUAL_LAZY_ESM_SOURCES,
+            ..Default::default()
+        };
+        extensions::set_extension_transpiler(&mut opts);
+        let mut runtime = JsRuntime::new(opts);
+        ensure_response_stream_registry(&mut runtime);
+        runtime
     };
-    extensions::set_extension_transpiler(&mut opts);
-    let mut runtime = JsRuntime::new(opts);
-    ensure_response_stream_registry(&mut runtime);
-    runtime
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return create_runtime();
+    }
+
+    let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build Tokio runtime");
+    let _guard = tokio_runtime.enter();
+    create_runtime()
 }
 
 #[test]
@@ -198,7 +217,6 @@ fn dispatch_stream_response_returns_chunks() {
             std::time::Duration::from_millis(50),
             runtime.run_event_loop(deno_core::PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             }),
         )
         .await;
@@ -282,7 +300,6 @@ fn dispatch_for_context_uses_registered_context_handler() {
                     std::time::Duration::from_millis(50),
                     runtime.run_event_loop(deno_core::PollEventLoopOptions {
                         wait_for_inspector: false,
-                        pump_v8_message_loop: true,
                     }),
                 )
                 .await;
@@ -306,7 +323,6 @@ fn dispatch_for_context_uses_registered_context_handler() {
                     std::time::Duration::from_millis(50),
                     runtime.run_event_loop(deno_core::PollEventLoopOptions {
                         wait_for_inspector: false,
-                        pump_v8_message_loop: true,
                     }),
                 )
                 .await;
@@ -382,7 +398,6 @@ fn cancelled_response_stream_calls_reader_cancel_once() {
         runtime
             .run_event_loop(deno_core::PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .expect("stream cancellation event loop should complete");
@@ -520,7 +535,6 @@ fn default_function_handler_accepts_any_method() {
                     std::time::Duration::from_millis(50),
                     runtime.run_event_loop(deno_core::PollEventLoopOptions {
                         wait_for_inspector: false,
-                        pump_v8_message_loop: true,
                     }),
                 )
                 .await;
@@ -597,7 +611,6 @@ fn default_object_handler_returns_405_when_method_is_missing() {
                     std::time::Duration::from_millis(50),
                     runtime.run_event_loop(deno_core::PollEventLoopOptions {
                         wait_for_inspector: false,
-                        pump_v8_message_loop: true,
                     }),
                 )
                 .await;
@@ -673,7 +686,6 @@ fn dispatch_auto_normalizes_response_like_objects() {
                     std::time::Duration::from_millis(50),
                     runtime.run_event_loop(deno_core::PollEventLoopOptions {
                         wait_for_inspector: false,
-                        pump_v8_message_loop: true,
                     }),
                 )
                 .await;
@@ -751,7 +763,6 @@ fn dispatch_auto_normalizes_plain_object_to_json_response() {
                     std::time::Duration::from_millis(50),
                     runtime.run_event_loop(deno_core::PollEventLoopOptions {
                         wait_for_inspector: false,
-                        pump_v8_message_loop: true,
                     }),
                 )
                 .await;
@@ -840,7 +851,6 @@ fn dispatch_enforces_egress_rate_limit_per_execution() {
                     std::time::Duration::from_millis(50),
                     runtime.run_event_loop(deno_core::PollEventLoopOptions {
                         wait_for_inspector: false,
-                        pump_v8_message_loop: true,
                     }),
                 )
                 .await;

@@ -958,29 +958,17 @@ pub fn build_metrics_body(registry: &FunctionRegistry) -> String {
     let egress = global_connection_manager().snapshot();
     let listener_connection_capacity = current_listener_connection_capacity();
 
-    let avg_cold_start_ms = if total_cold_starts > 0 {
-        total_cold_start_ms / total_cold_starts
-    } else {
-        0
-    };
+    let avg_cold_start_ms = total_cold_start_ms
+        .checked_div(total_cold_starts)
+        .unwrap_or(0);
 
-    let avg_warm_start_ms = if total_requests > 0 {
-        total_warm_start_ms / total_requests
-    } else {
-        0
-    };
+    let avg_warm_start_ms = total_warm_start_ms.checked_div(total_requests).unwrap_or(0);
 
-    let avg_cold_start_us = if total_cold_starts > 0 {
-        total_cold_start_us / total_cold_starts
-    } else {
-        0
-    };
+    let avg_cold_start_us = total_cold_start_us
+        .checked_div(total_cold_starts)
+        .unwrap_or(0);
 
-    let avg_warm_start_us = if total_requests > 0 {
-        total_warm_start_us / total_requests
-    } else {
-        0
-    };
+    let avg_warm_start_us = total_warm_start_us.checked_div(total_requests).unwrap_or(0);
 
     let avg_cold_start_ms_precise = if total_cold_starts > 0 {
         total_cold_start_us as f64 / total_cold_starts as f64 / 1000.0

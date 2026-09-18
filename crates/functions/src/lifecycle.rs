@@ -35,6 +35,10 @@ use runtime_core::module_loader::{EszipModuleLoader, ModuleCodeCacheMap};
 use runtime_core::permissions::create_permissions_with_policy;
 
 use crate::handler;
+use crate::runtime_base_snapshot::{
+    RUNTIME_BASE_RESIDUAL_LAZY_ESM_SOURCES, RUNTIME_BASE_RESIDUAL_LAZY_JS_SOURCES,
+    RUNTIME_BASE_STARTUP_SNAPSHOT,
+};
 use crate::types::*;
 
 struct InspectorServerGuard {
@@ -43,8 +47,6 @@ struct InspectorServerGuard {
 }
 
 const MAX_ISOLATE_RESTARTS: u32 = 5;
-const RUNTIME_BASE_STARTUP_SNAPSHOT: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/runtime_base.snapshot.bin"));
 
 fn fail_pending_requests(request_rx: &mut mpsc::UnboundedReceiver<IsolateRequest>, reason: &str) {
     request_rx.close();
@@ -551,7 +553,6 @@ async fn run_isolate(context: RunIsolateContext<'_>) -> Result<(), Error> {
             let _ = js_runtime
                 .run_event_loop(PollEventLoopOptions {
                     wait_for_inspector: false,
-                    pump_v8_message_loop: true,
                 })
                 .await;
         }
@@ -822,7 +823,6 @@ async fn run_isolate(context: RunIsolateContext<'_>) -> Result<(), Error> {
                 let _ = js_runtime
                     .run_event_loop(PollEventLoopOptions {
                         wait_for_inspector: false,
-                        pump_v8_message_loop: true,
                     })
                     .await;
 
@@ -870,7 +870,6 @@ async fn run_isolate(context: RunIsolateContext<'_>) -> Result<(), Error> {
                     Duration::from_millis(5),
                     js_runtime.run_event_loop(PollEventLoopOptions {
                         wait_for_inspector: false,
-                        pump_v8_message_loop: true,
                     }),
                 )
                 .await;
@@ -949,12 +948,15 @@ async fn load_from_eszip_with_init(
     let mut runtime_extensions =
         extensions::get_extensions_with_ssrf_config(false, &config.ssrf_config);
     runtime_extensions.push(handler::response_stream_extension());
+    runtime_extensions.push(extensions::runtime_bootstrap_extension());
 
     let mut runtime_opts = RuntimeOptions {
         module_loader: Some(module_loader),
         create_params,
         extensions: runtime_extensions,
         startup_snapshot: Some(RUNTIME_BASE_STARTUP_SNAPSHOT),
+        residual_lazy_js_sources: RUNTIME_BASE_RESIDUAL_LAZY_JS_SOURCES,
+        residual_lazy_esm_sources: RUNTIME_BASE_RESIDUAL_LAZY_ESM_SOURCES,
         ..Default::default()
     };
     extensions::set_extension_transpiler(&mut runtime_opts);
@@ -1049,7 +1051,6 @@ async fn load_from_eszip_with_init(
     js_runtime
         .run_event_loop(PollEventLoopOptions {
             wait_for_inspector: false,
-            pump_v8_message_loop: true,
         })
         .await?;
 

@@ -41,3 +41,4 @@ rustls.workspace = true
 
 [build-dependencies]
 runtime-core.workspace = true
+deno_core.workspace = true

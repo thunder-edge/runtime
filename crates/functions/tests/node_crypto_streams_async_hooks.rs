@@ -28,6 +28,12 @@ fn make_runtime() -> JsRuntime {
 }
 
 fn assert_js_true(source_code: &str, desc: &str) {
+    let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build Tokio runtime");
+    let _guard = tokio_runtime.enter();
+
     let mut runtime = make_runtime();
     let source = format!("(async () => {{\n{}\n}})()", source_code);
     let result = runtime.execute_script("<test>", source);

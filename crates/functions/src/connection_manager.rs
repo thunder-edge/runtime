@@ -373,7 +373,7 @@ impl ConnectionManager {
                 active: *entry.value() as u64,
             })
             .collect();
-        top_tenants_by_active.sort_by(|a, b| b.active.cmp(&a.active));
+        top_tenants_by_active.sort_by_key(|tenant| std::cmp::Reverse(tenant.active));
         top_tenants_by_active.truncate(10);
 
         let token_bucket = self

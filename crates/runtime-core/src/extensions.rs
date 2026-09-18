@@ -8,7 +8,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use deno_ast::{EmitOptions, MediaType, ParseParams, TranspileModuleOptions, TranspileOptions};
+use deno_ast::{
+    EmitOptions, MediaType, ParseParams, SourceMapOption, TranspileModuleOptions, TranspileOptions,
+};
 use deno_core::url::Url;
 use deno_core::{
     error::CoreError,
@@ -39,6 +41,12 @@ use crate::ssrf::{is_denied_ip_with_exceptions, SsrfConfig};
 deno_core::extension!(
     edge_bootstrap,
     esm_entry_point = "ext:edge_bootstrap/bootstrap.js",
+    esm = [dir "src", "bootstrap.js"],
+);
+
+deno_core::extension!(
+    edge_bootstrap_runtime,
+    esm_entry_point = "ext:edge_bootstrap_runtime/bootstrap.js",
     esm = [dir "src", "bootstrap.js"],
 );
 
@@ -361,16 +369,6 @@ deno_core::extension!(
     esm = [dir "src", "00_serve.ts" = "http_serve_shim.js"],
 );
 
-// Shim for deno_node - provides minimal constants needed by deno_crypto
-// Maps: ext:deno_node/internal/crypto/constants.ts
-deno_core::extension!(
-    deno_node,
-    esm = [
-        dir "src/internal/crypto",
-        "ext:deno_node/internal/crypto/constants.ts" = "constants.ts",
-    ],
-);
-
 // Native assert module for user code running in the edge runtime.
 // Usage: import { assert, assertEquals } from "ext:edge_assert/mod.ts";
 deno_core::extension!(
@@ -620,7 +618,7 @@ pub fn get_extensions_with_ssrf_config(
 
     let fetch_options = if ssrf_config.enabled {
         deno_fetch::Options {
-            resolver: deno_fetch::dns::Resolver::Custom(Arc::new(SsrfDnsResolver {
+            resolver: deno_fetch::dns::Resolver::custom(Arc::new(SsrfDnsResolver {
                 enabled: true,
                 exceptions: ssrf_config.build_allow_net(),
             })),
@@ -642,6 +640,7 @@ pub fn get_extensions_with_ssrf_config(
         deno_web::deno_web::init(
             Arc::new(deno_web::BlobStore::default()),
             None,
+            false,
             deno_web::InMemoryBroadcastChannel::default(),
         ),
         // 3. TLS (no deps) - required by deno_net
@@ -663,11 +662,173 @@ pub fn get_extensions_with_ssrf_config(
         deno_websocket::deno_websocket::init(),
         // 10. Minimal Node compatibility modules with native crypto ops
         edge_node_compat::init(),
-        // 10. Node shim - provides minimal constants for deno_crypto
-        deno_node::init(),
-        // 11. Crypto (depends on webidl, web, node shim) - Web Crypto API
+        // 10. Crypto - Web Crypto API
         deno_crypto::deno_crypto::init(None), // maybe_seed
     ];
+
+    for extension in &mut extensions {
+        let synthetic_modules: &[(&str, &str)] = match extension.name {
+            "deno_webidl" => &[(
+                "ext:edge_polyfill/deno_webidl/00_webidl.js",
+                "ext:deno_webidl/00_webidl.js",
+            )],
+            "deno_io" => &[("ext:edge_polyfill/deno_io/12_io.js", "ext:deno_io/12_io.js")],
+            "deno_fs" => &[("ext:edge_polyfill/deno_fs/30_fs.js", "ext:deno_fs/30_fs.js")],
+            "deno_web" => &[
+                (
+                    "ext:edge_polyfill/deno_web/00_infra.js",
+                    "ext:deno_web/00_infra.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/00_url.js",
+                    "ext:deno_web/00_url.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/01_broadcast_channel.js",
+                    "ext:deno_web/01_broadcast_channel.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/01_console.js",
+                    "ext:deno_web/01_console.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/01_dom_exception.js",
+                    "ext:deno_web/01_dom_exception.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/01_mimesniff.js",
+                    "ext:deno_web/01_mimesniff.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/01_urlpattern.js",
+                    "ext:deno_web/01_urlpattern.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/02_event.js",
+                    "ext:deno_web/02_event.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/02_structured_clone.js",
+                    "ext:deno_web/02_structured_clone.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/02_timers.js",
+                    "ext:deno_web/02_timers.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/03_abort_signal.js",
+                    "ext:deno_web/03_abort_signal.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/04_global_interfaces.js",
+                    "ext:deno_web/04_global_interfaces.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/05_base64.js",
+                    "ext:deno_web/05_base64.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/06_streams.js",
+                    "ext:deno_web/06_streams.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/08_text_encoding.js",
+                    "ext:deno_web/08_text_encoding.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/09_file.js",
+                    "ext:deno_web/09_file.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/10_filereader.js",
+                    "ext:deno_web/10_filereader.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/12_location.js",
+                    "ext:deno_web/12_location.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/13_message_port.js",
+                    "ext:deno_web/13_message_port.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/14_compression.js",
+                    "ext:deno_web/14_compression.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/15_performance.js",
+                    "ext:deno_web/15_performance.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_web/16_image_data.js",
+                    "ext:deno_web/16_image_data.js",
+                ),
+            ],
+            "deno_crypto" => &[(
+                "ext:edge_polyfill/deno_crypto/00_crypto.js",
+                "ext:deno_crypto/00_crypto.js",
+            )],
+            "deno_telemetry" => &[
+                (
+                    "ext:edge_polyfill/deno_telemetry/telemetry.ts",
+                    "ext:deno_telemetry/telemetry.ts",
+                ),
+                (
+                    "ext:edge_polyfill/deno_telemetry/util.ts",
+                    "ext:deno_telemetry/util.ts",
+                ),
+            ],
+            "deno_fetch" => &[
+                (
+                    "ext:edge_polyfill/deno_fetch/20_headers.js",
+                    "ext:deno_fetch/20_headers.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_fetch/21_formdata.js",
+                    "ext:deno_fetch/21_formdata.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_fetch/22_body.js",
+                    "ext:deno_fetch/22_body.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_fetch/22_http_client.js",
+                    "ext:deno_fetch/22_http_client.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_fetch/23_request.js",
+                    "ext:deno_fetch/23_request.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_fetch/23_response.js",
+                    "ext:deno_fetch/23_response.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_fetch/26_fetch.js",
+                    "ext:deno_fetch/26_fetch.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_fetch/27_eventsource.js",
+                    "ext:deno_fetch/27_eventsource.js",
+                ),
+            ],
+            "deno_net" => &[
+                (
+                    "ext:edge_polyfill/deno_net/01_net.js",
+                    "ext:deno_net/01_net.js",
+                ),
+                (
+                    "ext:edge_polyfill/deno_net/02_tls.js",
+                    "ext:deno_net/02_tls.js",
+                ),
+            ],
+            _ => &[],
+        };
+        extension
+            .synthetic_esm_modules
+            .to_mut()
+            .extend_from_slice(synthetic_modules);
+    }
 
     if include_edge_assert {
         // Built-in assert helpers for CLI test runtime.
@@ -688,6 +849,15 @@ pub fn get_extensions() -> Vec<Extension> {
     get_extensions_with_edge_assert(false)
 }
 
+fn get_snapshot_extensions() -> Vec<Extension> {
+    let mut extensions = get_extensions();
+    for extension in &mut extensions {
+        extension.esm_files = Cow::Borrowed(&[]);
+        extension.esm_entry_point = None;
+    }
+    extensions
+}
+
 /// Create a build-time base snapshot containing the runtime extension stack.
 ///
 /// The resulting blob can be passed to `RuntimeOptions::startup_snapshot` to
@@ -703,12 +873,84 @@ pub fn create_runtime_base_snapshot(
             cargo_manifest_dir,
             startup_snapshot: None,
             skip_op_registration: false,
-            extensions: get_extensions(),
+            extensions: get_snapshot_extensions(),
             extension_transpiler: runtime_opts.extension_transpiler,
             with_runtime_cb: None,
         },
         None,
     )
+}
+
+pub fn transpile_extension_source(
+    name: ModuleName,
+    code: ModuleCodeString,
+) -> Result<(ModuleCodeString, Option<SourceMapData>), deno_error::JsErrorBox> {
+    let specifier_str: &str = &name;
+
+    let media_type = if specifier_str.starts_with("node:")
+        || specifier_str.ends_with(".ts")
+        || specifier_str.ends_with(".mts")
+        || specifier_str.ends_with(".cts")
+        || specifier_str.ends_with(".tsx")
+    {
+        MediaType::TypeScript
+    } else {
+        let url = deno_core::url::Url::parse(specifier_str)
+            .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap());
+        MediaType::from_specifier_and_headers(&url, None)
+    };
+
+    if !matches!(
+        media_type,
+        MediaType::TypeScript | MediaType::Mts | MediaType::Cts | MediaType::Tsx
+    ) {
+        return Ok((code, None));
+    }
+
+    let url = if let Some(stripped) = specifier_str.strip_prefix("node:") {
+        deno_core::url::Url::parse(&format!("file:///{}.ts", stripped))
+            .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap())
+    } else {
+        deno_core::url::Url::parse(specifier_str)
+            .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap())
+    };
+
+    let source_text: &str = &code;
+    let parsed = deno_ast::parse_module(ParseParams {
+        specifier: url,
+        text: source_text.into(),
+        media_type,
+        capture_tokens: false,
+        scope_analysis: false,
+        maybe_syntax: None,
+    })
+    .map_err(|e| {
+        deno_error::JsErrorBox::generic(format!("failed to parse {specifier_str}: {e}"))
+    })?;
+
+    let emitted = parsed
+        .transpile(
+            &TranspileOptions::default(),
+            &TranspileModuleOptions::default(),
+            &EmitOptions {
+                source_map: SourceMapOption::Separate,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| {
+            deno_error::JsErrorBox::generic(format!("failed to transpile {specifier_str}: {e}"))
+        })?
+        .into_source();
+    let source_map = emitted
+        .source_map
+        .map(|source_map| Cow::Owned(source_map.into_bytes()) as SourceMapData);
+
+    Ok((ModuleCodeString::from(emitted.text), source_map))
+}
+
+/// Evaluate the bootstrap from its built-in source after restoring a base snapshot.
+pub fn runtime_bootstrap_extension() -> Extension {
+    edge_bootstrap_runtime::init()
 }
 
 /// Set the extension transpiler on `RuntimeOptions`.
@@ -717,68 +959,7 @@ pub fn create_runtime_base_snapshot(
 /// V8 cannot execute directly. This configures TS → JS transpilation during
 /// JsRuntime initialisation.
 pub fn set_extension_transpiler(opts: &mut RuntimeOptions) {
-    opts.extension_transpiler = Some(Rc::new(|name: ModuleName, code: ModuleCodeString| {
-        let specifier_str: &str = &name;
-
-        // Handle different specifier formats:
-        // - Regular URLs (file:, https:, ext:)
-        // - Node.js built-in modules (node:*)
-        let media_type = if specifier_str.starts_with("node:") {
-            // Node.js polyfills from deno_node are TypeScript
-            MediaType::TypeScript
-        } else {
-            let url = deno_core::url::Url::parse(specifier_str)
-                .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap());
-            MediaType::from_specifier_and_headers(&url, None)
-        };
-
-        if !matches!(
-            media_type,
-            MediaType::TypeScript | MediaType::Mts | MediaType::Cts | MediaType::Tsx
-        ) {
-            return Ok((code, None));
-        }
-
-        // Create a synthetic URL for parsing (required by deno_ast)
-        let url = if let Some(stripped) = specifier_str.strip_prefix("node:") {
-            // Convert node: specifier to a parseable URL
-            deno_core::url::Url::parse(&format!("file:///{}.ts", stripped))
-                .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap())
-        } else {
-            deno_core::url::Url::parse(specifier_str)
-                .unwrap_or_else(|_| deno_core::url::Url::parse("file:///unknown.ts").unwrap())
-        };
-
-        let source_text: &str = &code;
-        let parsed = deno_ast::parse_module(ParseParams {
-            specifier: url,
-            text: source_text.into(),
-            media_type,
-            capture_tokens: false,
-            scope_analysis: false,
-            maybe_syntax: None,
-        })
-        .map_err(|e| {
-            deno_error::JsErrorBox::generic(format!("failed to parse {specifier_str}: {e}"))
-        })?;
-
-        let transpiled = parsed
-            .transpile(
-                &TranspileOptions::default(),
-                &TranspileModuleOptions::default(),
-                &EmitOptions::default(),
-            )
-            .map_err(|e| {
-                deno_error::JsErrorBox::generic(format!("failed to transpile {specifier_str}: {e}"))
-            })?;
-
-        let emitted = transpiled.into_source();
-        let source_map = emitted
-            .source_map
-            .map(|sm| Cow::Owned(sm.into_bytes()) as SourceMapData);
-
-        Ok((ModuleCodeString::from(emitted.text), source_map))
-    }));
+    opts.extension_transpiler = Some(Rc::new(transpile_extension_source));
 }
 
 #[cfg(test)]

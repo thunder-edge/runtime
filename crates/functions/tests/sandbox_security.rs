@@ -169,7 +169,7 @@ fn sandbox_blocks_private_fetch_targets() {
                 await fetch(target);
                 return new Response('unexpected-allow', { status: 200 });
               } catch (err) {
-                return new Response(String(err), { status: 500 });
+                return new Response(`${err}: ${err.cause ?? ''}`, { status: 500 });
               }
             });
         "#;

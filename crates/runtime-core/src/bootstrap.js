@@ -8,71 +8,67 @@
 // -- 1. Import all extension ESM (forces evaluation) -----------
 
 // deno_webidl
-import "ext:deno_webidl/00_webidl.js";
+import "ext:edge_polyfill/deno_webidl/00_webidl.js";
 
 // deno_io (required to be evaluated)
-import "ext:deno_io/12_io.js";
+import "ext:edge_polyfill/deno_io/12_io.js";
 
 // deno_fs (required to be evaluated)
-import "ext:deno_fs/30_fs.js";
+import "ext:edge_polyfill/deno_fs/30_fs.js";
 
 // deno_web (now includes console, URL, and other web APIs)
-import "ext:deno_web/00_infra.js";
-import { Console } from "ext:deno_web/01_console.js";
-import { URL, URLSearchParams } from "ext:deno_web/00_url.js";
-import { URLPattern } from "ext:deno_web/01_urlpattern.js";
-import { DOMException } from "ext:deno_web/01_dom_exception.js";
-import "ext:deno_web/01_mimesniff.js";
-import "ext:deno_web/01_broadcast_channel.js";
+import "ext:edge_polyfill/deno_web/00_infra.js";
+import { Console } from "ext:edge_polyfill/deno_web/01_console.js";
+import { URL, URLSearchParams } from "ext:edge_polyfill/deno_web/00_url.js";
+import { URLPattern } from "ext:edge_polyfill/deno_web/01_urlpattern.js";
+import { DOMException } from "ext:edge_polyfill/deno_web/01_dom_exception.js";
+import "ext:edge_polyfill/deno_web/01_mimesniff.js";
+import "ext:edge_polyfill/deno_web/01_broadcast_channel.js";
 import {
   Event, EventTarget, ErrorEvent, CloseEvent, CustomEvent,
   MessageEvent, ProgressEvent, PromiseRejectionEvent,
   reportError,
-} from "ext:deno_web/02_event.js";
-import { structuredClone } from "ext:deno_web/02_structured_clone.js";
+} from "ext:edge_polyfill/deno_web/02_event.js";
+import { structuredClone } from "ext:edge_polyfill/deno_web/02_structured_clone.js";
 import {
   setTimeout, setInterval, clearTimeout, clearInterval,
-} from "ext:deno_web/02_timers.js";
-import { AbortController, AbortSignal } from "ext:deno_web/03_abort_signal.js";
-import "ext:deno_web/04_global_interfaces.js";
-import { atob, btoa } from "ext:deno_web/05_base64.js";
+} from "ext:edge_polyfill/deno_web/02_timers.js";
+import { AbortController, AbortSignal } from "ext:edge_polyfill/deno_web/03_abort_signal.js";
+import "ext:edge_polyfill/deno_web/04_global_interfaces.js";
+import { atob, btoa } from "ext:edge_polyfill/deno_web/05_base64.js";
 import {
   ReadableStream, WritableStream, TransformStream,
   ByteLengthQueuingStrategy, CountQueuingStrategy,
-} from "ext:deno_web/06_streams.js";
+} from "ext:edge_polyfill/deno_web/06_streams.js";
 import {
   TextEncoder, TextDecoder, TextEncoderStream, TextDecoderStream,
-} from "ext:deno_web/08_text_encoding.js";
-import { Blob, File } from "ext:deno_web/09_file.js";
-import { FileReader } from "ext:deno_web/10_filereader.js";
-import "ext:deno_web/12_location.js";
-import { MessageChannel, MessagePort } from "ext:deno_web/13_message_port.js";
-import { CompressionStream, DecompressionStream } from "ext:deno_web/14_compression.js";
-import { Performance, performance, PerformanceEntry, PerformanceMark, PerformanceMeasure } from "ext:deno_web/15_performance.js";
-import { ImageData } from "ext:deno_web/16_image_data.js";
+} from "ext:edge_polyfill/deno_web/08_text_encoding.js";
+import { Blob, File } from "ext:edge_polyfill/deno_web/09_file.js";
+import { FileReader } from "ext:edge_polyfill/deno_web/10_filereader.js";
+import "ext:edge_polyfill/deno_web/12_location.js";
+import { MessageChannel, MessagePort } from "ext:edge_polyfill/deno_web/13_message_port.js";
+import { CompressionStream, DecompressionStream } from "ext:edge_polyfill/deno_web/14_compression.js";
+import { Performance, performance, PerformanceEntry, PerformanceMark, PerformanceMeasure } from "ext:edge_polyfill/deno_web/15_performance.js";
+import { ImageData } from "ext:edge_polyfill/deno_web/16_image_data.js";
 
 // deno_crypto (using minimal deno_node shim for crypto constants)
-import { Crypto, crypto, CryptoKey, SubtleCrypto } from "ext:deno_crypto/00_crypto.js";
-
-// deno_telemetry
-import "ext:deno_telemetry/telemetry.ts";
-import "ext:deno_telemetry/util.ts";
+import { Crypto, crypto, CryptoKey, SubtleCrypto } from "ext:edge_polyfill/deno_crypto/00_crypto.js";
 
 // deno_fetch
-import { Headers } from "ext:deno_fetch/20_headers.js";
-import { FormData } from "ext:deno_fetch/21_formdata.js";
-import "ext:deno_fetch/22_body.js";
-import "ext:deno_fetch/22_http_client.js";
-import { Request } from "ext:deno_fetch/23_request.js";
-import { Response } from "ext:deno_fetch/23_response.js";
-import { fetch } from "ext:deno_fetch/26_fetch.js";
-import { EventSource } from "ext:deno_fetch/27_eventsource.js";
+import { Headers } from "ext:edge_polyfill/deno_fetch/20_headers.js";
+import { FormData } from "ext:edge_polyfill/deno_fetch/21_formdata.js";
+import "ext:edge_polyfill/deno_fetch/22_body.js";
+import "ext:edge_polyfill/deno_fetch/22_http_client.js";
+import { Request } from "ext:edge_polyfill/deno_fetch/23_request.js";
+import { Response } from "ext:edge_polyfill/deno_fetch/23_response.js";
+import { fetch } from "ext:edge_polyfill/deno_fetch/26_fetch.js";
+import { EventSource } from "ext:edge_polyfill/deno_fetch/27_eventsource.js";
 import { WebSocket as NativeWebSocket } from "ext:deno_websocket/01_websocket.js";
 import "ext:deno_websocket/02_websocketstream.js";
 
 // deno_net (required by fetch)
-import "ext:deno_net/01_net.js";
-import "ext:deno_net/02_tls.js";
+import "ext:edge_polyfill/deno_net/01_net.js";
+import "ext:edge_polyfill/deno_net/02_tls.js";
 
 // node:* critical modules (required for core functionality and tests)
 import "node:process";

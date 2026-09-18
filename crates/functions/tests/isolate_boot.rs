@@ -187,7 +187,6 @@ fn test_module_load_and_eval() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -258,7 +257,6 @@ fn test_full_request_cycle() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -283,7 +281,6 @@ fn test_full_request_cycle() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("stream event loop: {e}"))?;

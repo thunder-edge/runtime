@@ -19,6 +19,12 @@ fn init_v8() {
 
 fn make_runtime() -> JsRuntime {
     init_v8();
+    let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build Tokio runtime");
+    let _guard = tokio_runtime.enter();
+
     let mut opts = RuntimeOptions {
         extensions: extensions::get_extensions(),
         ..Default::default()
@@ -100,7 +106,6 @@ fn pump_event_loop(runtime: &mut JsRuntime) -> bool {
             runtime
                 .run_event_loop(PollEventLoopOptions {
                     wait_for_inspector: false,
-                    pump_v8_message_loop: true,
                 })
                 .await
         })

@@ -133,7 +133,6 @@ fn run_module_and_expect_true(
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -196,7 +195,6 @@ fn node_process_module_can_be_imported() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -261,7 +259,6 @@ fn node_buffer_module_can_be_imported() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -333,7 +330,6 @@ fn node_events_module_can_be_imported() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -417,7 +413,6 @@ fn node_util_module_can_be_imported() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -427,7 +422,6 @@ fn node_util_module_can_be_imported() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop (promises): {e}"))?;
@@ -500,7 +494,6 @@ fn node_path_module_can_be_imported() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -584,7 +577,6 @@ fn node_stream_module_can_be_imported() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -594,7 +586,6 @@ fn node_stream_module_can_be_imported() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop (pipeline): {e}"))?;
@@ -692,7 +683,6 @@ fn node_stream_pipeline_handles_backpressure_on_long_flow() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -705,7 +695,6 @@ fn node_stream_pipeline_handles_backpressure_on_long_flow() {
             js_runtime
                 .run_event_loop(PollEventLoopOptions {
                     wait_for_inspector: false,
-                    pump_v8_message_loop: true,
                 })
                 .await
                 .map_err(|e| format!("run_event_loop (drain): {e}"))?;
@@ -809,7 +798,6 @@ fn node_stream_readable_web_bridge_roundtrip_works() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -821,7 +809,6 @@ fn node_stream_readable_web_bridge_roundtrip_works() {
             js_runtime
                 .run_event_loop(PollEventLoopOptions {
                     wait_for_inspector: false,
-                    pump_v8_message_loop: true,
                 })
                 .await
                 .map_err(|e| format!("run_event_loop (bridge): {e}"))?;
@@ -918,7 +905,6 @@ fn node_stream_writable_web_bridge_roundtrip_works() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -930,7 +916,6 @@ fn node_stream_writable_web_bridge_roundtrip_works() {
             js_runtime
                 .run_event_loop(PollEventLoopOptions {
                     wait_for_inspector: false,
-                    pump_v8_message_loop: true,
                 })
                 .await
                 .map_err(|e| format!("run_event_loop (bridge): {e}"))?;
@@ -1018,7 +1003,6 @@ fn node_os_module_can_be_imported() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -1138,7 +1122,6 @@ fn node_module_create_require_supports_builtins_only() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -1459,7 +1442,6 @@ fn additional_node_stub_modules_import_and_behave_predictably() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;

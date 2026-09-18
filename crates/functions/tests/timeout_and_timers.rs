@@ -192,7 +192,6 @@ fn test_terminate_execution_stops_infinite_loop() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -1549,7 +1548,6 @@ fn test_websocket_unregisters_on_close_event() {
             js_runtime
                 .run_event_loop(PollEventLoopOptions {
                     wait_for_inspector: false,
-                    pump_v8_message_loop: true,
                 })
                 .await
                 .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -1671,7 +1669,6 @@ fn test_isolate_reusable_after_timeout() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -1744,7 +1741,6 @@ fn test_isolate_reusable_after_timeout() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("stream event loop 2: {e}"))?;
@@ -2125,7 +2121,6 @@ fn test_async_hooks_import_preserves_bridge_timer_tracking() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -2249,7 +2244,6 @@ fn test_async_hooks_import_preserves_bridge_promise_tracking() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -2580,7 +2574,6 @@ fn test_multiple_requests_after_timeout() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -2656,7 +2649,6 @@ fn test_multiple_requests_after_timeout() {
             js_runtime
                 .run_event_loop(PollEventLoopOptions {
                     wait_for_inspector: false,
-                    pump_v8_message_loop: true,
                 })
                 .await
                 .map_err(|e| format!("stream event loop {}: {e}", i))?;
@@ -2858,7 +2850,6 @@ fn test_timer_callback_removes_from_registry() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -2943,7 +2934,6 @@ fn test_timer_callback_skipped_after_clear_execution() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;
@@ -3013,7 +3003,6 @@ fn test_microtask_callback_skipped_after_clear_execution() {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;

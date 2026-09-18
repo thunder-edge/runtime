@@ -1616,7 +1616,6 @@ async fn dispatch_request_for_context_inner(
             resolved,
             deno_core::PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             },
         )
         .await?;
@@ -1725,7 +1724,6 @@ pub async fn register_handler_from_module_exports(
     js_runtime
         .run_event_loop(deno_core::PollEventLoopOptions {
             wait_for_inspector: false,
-            pump_v8_message_loop: true,
         })
         .await?;
 

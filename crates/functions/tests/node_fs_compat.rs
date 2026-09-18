@@ -131,7 +131,6 @@ fn run_module_and_check(source: &str, check_expr: &'static str, what: &str) {
         js_runtime
             .run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             })
             .await
             .map_err(|e| format!("run_event_loop: {e}"))?;

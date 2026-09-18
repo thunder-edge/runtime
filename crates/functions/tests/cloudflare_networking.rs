@@ -233,7 +233,6 @@ fn websocket_handshake_and_message_echo() {
             runtime
                 .run_event_loop(PollEventLoopOptions {
                     wait_for_inspector: false,
-                    pump_v8_message_loop: true,
                 })
                 .await
                 .expect("run event loop for websocket test");
