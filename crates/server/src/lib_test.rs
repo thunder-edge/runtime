@@ -3,6 +3,11 @@ use super::*;
 use std::sync::Arc;
 use std::sync::Once;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(unix)]
+use std::{
+    net::TcpListener as StdTcpListener,
+    os::{fd::AsRawFd, fd::IntoRawFd, unix::net::UnixStream},
+};
 
 use functions::registry::{FunctionRegistry, PoolRuntimeConfig};
 use functions::types::{BundlePackage, PoolLimits};
@@ -145,6 +150,23 @@ async fn send_plain_http(addr: SocketAddr, request: &str) -> String {
     String::from_utf8_lossy(&response).to_string()
 }
 
+async fn send_plain_http_headers(addr: SocketAddr, request: &str) -> String {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .expect("failed to connect to server");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("failed to write request");
+
+    let mut response = [0_u8; 4096];
+    let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut response))
+        .await
+        .expect("timed out waiting for response headers")
+        .expect("failed to read response headers");
+    String::from_utf8_lossy(&response[..read]).to_string()
+}
+
 async fn send_plain_http_and_abort_after_body_prefix(addr: SocketAddr, request: &str) -> String {
     let mut stream = TcpStream::connect(addr)
         .await
@@ -247,6 +269,233 @@ async fn reserve_dual_listener_addrs() -> (SocketAddr, SocketAddr) {
     drop(admin_probe);
 
     (admin_addr, ingress_addr)
+}
+
+fn dual_server_config(
+    admin_listener_type: TcpListenerSource,
+    ingress_listener_type: IngressListenerType,
+) -> DualServerConfig {
+    DualServerConfig {
+        admin: AdminListenerConfig {
+            listener_type: admin_listener_type,
+            api_key: None,
+            tls: None,
+            body_limits: BodyLimitsConfig::default(),
+            bundle_signature: BundleSignatureConfig {
+                required: false,
+                public_key_path: None,
+            },
+        },
+        ingress: IngressListenerConfig {
+            listener_type: ingress_listener_type,
+            tls: None,
+            rate_limit_rps: None,
+            body_limits: BodyLimitsConfig::default(),
+        },
+        graceful_exit_deadline_secs: 1,
+        max_connections: 128,
+    }
+}
+
+async fn assert_dual_server_listeners(
+    admin_listener_type: TcpListenerSource,
+    admin_addr: SocketAddr,
+    ingress_listener_type: IngressListenerType,
+    ingress_addr: SocketAddr,
+) {
+    init_deno_platform();
+
+    let registry = make_test_registry();
+    let shutdown = CancellationToken::new();
+    let server_config = dual_server_config(admin_listener_type, ingress_listener_type);
+    let server_shutdown = shutdown.clone();
+    let server_registry = registry.clone();
+    let server_handle = tokio::spawn(async move {
+        run_dual_server(server_config, server_registry, server_shutdown).await
+    });
+
+    wait_for_tcp_listener(admin_addr).await;
+    wait_for_tcp_listener(ingress_addr).await;
+
+    let admin_response = send_plain_http_headers(
+        admin_addr,
+        "GET /_internal/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        admin_response.starts_with("HTTP/1.1 200"),
+        "admin listener did not serve health: {admin_response}"
+    );
+
+    let ingress_response = send_plain_http_headers(
+        ingress_addr,
+        "GET /_internal/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        ingress_response.starts_with("HTTP/1.1 404"),
+        "ingress must not expose admin routes: {ingress_response}"
+    );
+
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+        .await
+        .expect("server task did not finish in time")
+        .expect("server join error");
+    server_result.expect("server returned error");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn e2e_dual_server_serves_inherited_admin_and_ingress_tcp_listeners() {
+    let admin_listener =
+        StdTcpListener::bind("127.0.0.1:0").expect("failed to bind inherited admin listener");
+    let admin_addr = admin_listener
+        .local_addr()
+        .expect("failed to get inherited admin address");
+    let ingress_listener =
+        StdTcpListener::bind("127.0.0.1:0").expect("failed to bind inherited ingress listener");
+    let ingress_addr = ingress_listener
+        .local_addr()
+        .expect("failed to get inherited ingress address");
+
+    assert_dual_server_listeners(
+        TcpListenerSource::InheritedFd(admin_listener.into_raw_fd()),
+        admin_addr,
+        IngressListenerType::Tcp(TcpListenerSource::InheritedFd(
+            ingress_listener.into_raw_fd(),
+        )),
+        ingress_addr,
+    )
+    .await;
+
+    StdTcpListener::bind(admin_addr)
+        .expect("runtime must close inherited admin listener during shutdown");
+    StdTcpListener::bind(ingress_addr)
+        .expect("runtime must close inherited ingress listener during shutdown");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn e2e_dual_server_binds_the_other_listener_when_one_is_inherited() {
+    let inherited_admin =
+        StdTcpListener::bind("127.0.0.1:0").expect("failed to bind inherited admin listener");
+    let inherited_admin_addr = inherited_admin
+        .local_addr()
+        .expect("failed to get inherited admin address");
+    let (_, ingress_bind_addr) = reserve_dual_listener_addrs().await;
+    assert_dual_server_listeners(
+        TcpListenerSource::InheritedFd(inherited_admin.into_raw_fd()),
+        inherited_admin_addr,
+        IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_bind_addr)),
+        ingress_bind_addr,
+    )
+    .await;
+
+    let (admin_bind_addr, _) = reserve_dual_listener_addrs().await;
+    let inherited_ingress =
+        StdTcpListener::bind("127.0.0.1:0").expect("failed to bind inherited ingress listener");
+    let inherited_ingress_addr = inherited_ingress
+        .local_addr()
+        .expect("failed to get inherited ingress address");
+    assert_dual_server_listeners(
+        TcpListenerSource::Bind(admin_bind_addr),
+        admin_bind_addr,
+        IngressListenerType::Tcp(TcpListenerSource::InheritedFd(
+            inherited_ingress.into_raw_fd(),
+        )),
+        inherited_ingress_addr,
+    )
+    .await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn inherited_tcp_listener_validation_rejects_invalid_and_non_listening_descriptors() {
+    let negative = validate_inherited_tcp_listener(-1, "admin")
+        .expect_err("negative descriptor must be rejected");
+    assert!(negative.to_string().contains("non-negative"));
+
+    let file = std::fs::File::open("/dev/null").expect("failed to open test file");
+    let non_socket = validate_inherited_tcp_listener(file.as_raw_fd(), "ingress")
+        .expect_err("regular file descriptor must be rejected");
+    assert!(non_socket.to_string().contains("not an open socket"));
+
+    let (unix_stream, _unix_peer) = UnixStream::pair().expect("failed to create Unix stream pair");
+    let non_tcp = validate_inherited_tcp_listener(unix_stream.as_raw_fd(), "ingress")
+        .expect_err("Unix stream descriptor must be rejected");
+    assert!(non_tcp.to_string().contains("IPv4 or IPv6 TCP"));
+
+    let listener = StdTcpListener::bind("127.0.0.1:0").expect("failed to bind test listener");
+    let addr = listener
+        .local_addr()
+        .expect("failed to get test listener address");
+    let client = std::net::TcpStream::connect(addr).expect("failed to connect test TCP stream");
+    let _server_stream = listener
+        .accept()
+        .expect("failed to accept test TCP stream")
+        .0;
+    let non_listening = validate_inherited_tcp_listener(client.as_raw_fd(), "ingress")
+        .expect_err("connected TCP stream must be rejected");
+    assert!(
+        non_listening.to_string().contains("listener"),
+        "non-listening TCP stream returned an unexpected error: {non_listening:#}"
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn inherited_tcp_listener_conversion_accepts_connections() {
+    let listener =
+        StdTcpListener::bind("127.0.0.1:0").expect("failed to bind inherited test listener");
+    let addr = listener
+        .local_addr()
+        .expect("failed to get inherited test listener address");
+    let fd = listener.into_raw_fd();
+    validate_inherited_tcp_listener(fd, "test").expect("test listener should validate");
+    let listener =
+        inherited_tcp_listener(fd, "test").expect("failed to convert inherited listener");
+
+    let client = TcpStream::connect(addr)
+        .await
+        .expect("failed to connect to inherited listener");
+    let accepted = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+        .await
+        .expect("inherited listener did not accept a connection")
+        .expect("inherited listener failed to accept a connection");
+    drop(accepted);
+    drop(client);
+}
+
+#[test]
+fn duplicate_inherited_listener_descriptors_are_rejected_before_startup() {
+    let config = dual_server_config(
+        TcpListenerSource::InheritedFd(7),
+        IngressListenerType::Tcp(TcpListenerSource::InheritedFd(7)),
+    );
+
+    let error =
+        validate_dual_listener_config(&config).expect_err("duplicate descriptor must be rejected");
+    assert!(error.to_string().contains("same inherited file descriptor"));
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn invalid_inherited_descriptor_fails_before_any_listener_opens() {
+    let (admin_addr, _) = reserve_dual_listener_addrs().await;
+    let config = dual_server_config(
+        TcpListenerSource::Bind(admin_addr),
+        IngressListenerType::Tcp(TcpListenerSource::InheritedFd(-1)),
+    );
+
+    let error = run_dual_server(config, make_test_registry(), CancellationToken::new())
+        .await
+        .expect_err("invalid descriptor must fail startup");
+    assert!(error.to_string().contains("non-negative"));
+
+    let rebound = StdTcpListener::bind(admin_addr)
+        .expect("admin address must remain unbound after validation failure");
+    drop(rebound);
 }
 
 async fn wait_for_routing_saturation(addr: SocketAddr) {
@@ -450,7 +699,7 @@ async fn e2e_admin_pool_endpoints_update_and_read_limits() {
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr,
+            listener_type: TcpListenerSource::Bind(addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -460,7 +709,7 @@ async fn e2e_admin_pool_endpoints_update_and_read_limits() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -524,7 +773,7 @@ async fn e2e_deploy_corrupted_bundle_returns_400_without_crash() {
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -534,7 +783,7 @@ async fn e2e_deploy_corrupted_bundle_returns_400_without_crash() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -599,7 +848,7 @@ async fn e2e_admin_auth_and_public_ingress_behavior() {
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: Some("secret-key".to_string()),
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -609,7 +858,7 @@ async fn e2e_admin_auth_and_public_ingress_behavior() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -634,7 +883,10 @@ async fn e2e_admin_auth_and_public_ingress_behavior() {
         "POST /_internal/functions HTTP/1.1\r\nHost: localhost\r\nx-function-name: auth-e2e\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    let resp_no_key = send_plain_http_bytes(admin_addr, &req_no_key_head, &body).await;
+    // Authentication is evaluated from request headers. Do not send the
+    // package body for rejected requests: the server is allowed to close the
+    // connection after returning 401 without consuming that body.
+    let resp_no_key = send_plain_http(admin_addr, &req_no_key_head).await;
     assert!(
         resp_no_key.starts_with("HTTP/1.1 401"),
         "expected 401 without API key: {resp_no_key}"
@@ -644,7 +896,7 @@ async fn e2e_admin_auth_and_public_ingress_behavior() {
         "POST /_internal/functions HTTP/1.1\r\nHost: localhost\r\nx-function-name: auth-e2e\r\nX-API-Key: wrong-key\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    let resp_wrong_key = send_plain_http_bytes(admin_addr, &req_wrong_key_head, &body).await;
+    let resp_wrong_key = send_plain_http(admin_addr, &req_wrong_key_head).await;
     assert!(
         resp_wrong_key.starts_with("HTTP/1.1 401"),
         "expected 401 with wrong API key: {resp_wrong_key}"
@@ -721,7 +973,7 @@ async fn e2e_host_based_routing_updates_via_put_and_routes_without_prefix() {
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -731,7 +983,7 @@ async fn e2e_host_based_routing_updates_via_put_and_routes_without_prefix() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -841,7 +1093,7 @@ async fn e2e_ingress_streaming_returns_progressive_chunked_body() {
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -851,7 +1103,7 @@ async fn e2e_ingress_streaming_returns_progressive_chunked_body() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -977,7 +1229,7 @@ async fn e2e_ingress_sse_streams_events_progressively() {
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -987,7 +1239,7 @@ async fn e2e_ingress_sse_streams_events_progressively() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -1100,7 +1352,7 @@ async fn e2e_ingress_streaming_long_chunked_body_completes() {
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -1110,7 +1362,7 @@ async fn e2e_ingress_streaming_long_chunked_body_completes() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -1234,7 +1486,7 @@ async fn e2e_ingress_streaming_response_exceeds_limit_rejects_before_headers() {
     let tiny_limit = 512usize;
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig {
@@ -1247,7 +1499,7 @@ async fn e2e_ingress_streaming_response_exceeds_limit_rejects_before_headers() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig {
@@ -1353,7 +1605,7 @@ async fn e2e_ingress_streaming_response_truncates_after_headers() {
     let tiny_limit = 128usize;
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig {
@@ -1366,7 +1618,7 @@ async fn e2e_ingress_streaming_response_truncates_after_headers() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig {
@@ -1533,7 +1785,7 @@ async fn e2e_ingress_streaming_producer_error_cleans_up_without_appending_json()
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -1543,7 +1795,7 @@ async fn e2e_ingress_streaming_producer_error_cleans_up_without_appending_json()
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -1660,7 +1912,7 @@ async fn e2e_ingress_streaming_client_abort_cancels_producer_and_releases_route(
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -1670,7 +1922,7 @@ async fn e2e_ingress_streaming_client_abort_cancels_producer_and_releases_route(
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -1749,7 +2001,7 @@ async fn e2e_legacy_router_streaming_abort_cleans_up_once() {
         .expect("failed to bind probe listener");
     let addr = probe_listener
         .local_addr()
-        .expect("failed to get probe address");
+        .expect("failed to get local addr");
     drop(probe_listener);
 
     let registry = make_test_registry();
@@ -1861,7 +2113,7 @@ async fn e2e_legacy_router_streaming_limit_cancels_producer() {
         .expect("failed to bind probe listener");
     let addr = probe_listener
         .local_addr()
-        .expect("failed to get probe address");
+        .expect("failed to get local addr");
     drop(probe_listener);
 
     let registry = make_test_registry();
@@ -2010,7 +2262,7 @@ async fn e2e_ingress_preserves_http_header_semantics_on_rewrite() {
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -2020,7 +2272,7 @@ async fn e2e_ingress_preserves_http_header_semantics_on_rewrite() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),
@@ -2130,7 +2382,7 @@ async fn e2e_async_local_storage_isolated_between_overlapping_requests() {
 
     let server_config = DualServerConfig {
         admin: AdminListenerConfig {
-            addr: admin_addr,
+            listener_type: TcpListenerSource::Bind(admin_addr),
             api_key: None,
             tls: None,
             body_limits: BodyLimitsConfig::default(),
@@ -2140,7 +2392,7 @@ async fn e2e_async_local_storage_isolated_between_overlapping_requests() {
             },
         },
         ingress: IngressListenerConfig {
-            listener_type: IngressListenerType::Tcp(ingress_addr),
+            listener_type: IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
             tls: None,
             rate_limit_rps: None,
             body_limits: BodyLimitsConfig::default(),

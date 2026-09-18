@@ -22,13 +22,21 @@ pub struct StartArgs {
     // ─────────────────────────────────────────────────────────────────────────
     // Admin Listener Configuration (port 9000 by default)
     // ─────────────────────────────────────────────────────────────────────────
-    /// Admin API host
-    #[arg(long, default_value = "0.0.0.0", env = "EDGE_RUNTIME_ADMIN_HOST")]
-    admin_host: String,
+    /// Admin API host (default: 0.0.0.0 when binding)
+    #[arg(long, env = "EDGE_RUNTIME_ADMIN_HOST")]
+    admin_host: Option<String>,
 
-    /// Admin API port
-    #[arg(long, default_value_t = 9000, env = "EDGE_RUNTIME_ADMIN_PORT")]
-    admin_port: u16,
+    /// Admin API port (default: 9000 when binding)
+    #[arg(long, env = "EDGE_RUNTIME_ADMIN_PORT")]
+    admin_port: Option<u16>,
+
+    /// Inherited listening TCP file descriptor for the admin API (Unix only).
+    #[arg(
+        long,
+        env = "EDGE_RUNTIME_ADMIN_FD",
+        conflicts_with_all = ["admin_host", "admin_port"]
+    )]
+    admin_fd: Option<i32>,
 
     /// API key for admin endpoint authentication (required in production)
     #[arg(long, env = "EDGE_RUNTIME_API_KEY")]
@@ -57,9 +65,9 @@ pub struct StartArgs {
     // ─────────────────────────────────────────────────────────────────────────
     // Ingress Listener Configuration (TCP port or Unix socket)
     // ─────────────────────────────────────────────────────────────────────────
-    /// Ingress IP address to bind (for TCP mode)
-    #[arg(long, default_value = "0.0.0.0", env = "EDGE_RUNTIME_HOST")]
-    host: String,
+    /// Ingress IP address to bind (default: 0.0.0.0 for TCP binding)
+    #[arg(long, env = "EDGE_RUNTIME_HOST")]
+    host: Option<String>,
 
     /// Ingress port to listen on (mutually exclusive with --unix-socket)
     #[arg(short, long, env = "EDGE_RUNTIME_PORT")]
@@ -68,6 +76,14 @@ pub struct StartArgs {
     /// Unix socket path for ingress (mutually exclusive with --port)
     #[arg(long, env = "EDGE_RUNTIME_UNIX_SOCKET")]
     unix_socket: Option<PathBuf>,
+
+    /// Inherited listening TCP file descriptor for ingress (Unix only).
+    #[arg(
+        long,
+        env = "EDGE_RUNTIME_INGRESS_FD",
+        conflicts_with_all = ["host", "port", "unix_socket"]
+    )]
+    ingress_fd: Option<i32>,
 
     /// TLS certificate file path for ingress (TCP only)
     #[arg(long, env = "EDGE_RUNTIME_TLS_CERT")]
@@ -326,12 +342,7 @@ pub struct StartArgs {
 }
 
 pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
-    // Validate mutually exclusive options
-    if args.port.is_some() && args.unix_socket.is_some() {
-        return Err(anyhow::anyhow!(
-            "--port and --unix-socket are mutually exclusive"
-        ));
-    }
+    validate_start_args(&args)?;
 
     // Warn if TLS specified with Unix socket
     if args.unix_socket.is_some() && (args.tls_cert.is_some() || args.tls_key.is_some()) {
@@ -462,7 +473,15 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
         }
 
         // Build admin listener config
-        let admin_addr: SocketAddr = format!("{}:{}", args.admin_host, args.admin_port).parse()?;
+        let admin_listener_type = match args.admin_fd {
+            Some(fd) => edge_server::TcpListenerSource::InheritedFd(fd),
+            None => {
+                let host = args.admin_host.as_deref().unwrap_or("0.0.0.0");
+                let port = args.admin_port.unwrap_or(9000);
+                let addr: SocketAddr = format!("{host}:{port}").parse()?;
+                edge_server::TcpListenerSource::Bind(addr)
+            }
+        };
         let admin_tls = match (&args.admin_tls_cert, &args.admin_tls_key) {
             (Some(cert), Some(key)) => Some(edge_server::TlsConfig {
                 cert_path: cert.clone(),
@@ -472,16 +491,23 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
         };
 
         // Build ingress listener config
-        let ingress_type = match (&args.unix_socket, args.port) {
-            (Some(path), _) => edge_server::IngressListenerType::Unix(path.clone()),
-            (_, Some(port)) => {
-                let addr: SocketAddr = format!("{}:{}", args.host, port).parse()?;
-                edge_server::IngressListenerType::Tcp(addr)
+        let ingress_type = match (args.ingress_fd, &args.unix_socket, args.port) {
+            (Some(fd), _, _) => {
+                edge_server::IngressListenerType::Tcp(edge_server::TcpListenerSource::InheritedFd(
+                    fd,
+                ))
             }
-            (None, None) => {
+            (None, Some(path), _) => edge_server::IngressListenerType::Unix(path.clone()),
+            (None, _, Some(port)) => {
+                let host = args.host.as_deref().unwrap_or("0.0.0.0");
+                let addr: SocketAddr = format!("{host}:{port}").parse()?;
+                edge_server::IngressListenerType::Tcp(edge_server::TcpListenerSource::Bind(addr))
+            }
+            (None, None, None) => {
                 // Default: TCP port 8080
-                let addr: SocketAddr = format!("{}:8080", args.host).parse()?;
-                edge_server::IngressListenerType::Tcp(addr)
+                let host = args.host.as_deref().unwrap_or("0.0.0.0");
+                let addr: SocketAddr = format!("{host}:8080").parse()?;
+                edge_server::IngressListenerType::Tcp(edge_server::TcpListenerSource::Bind(addr))
             }
         };
 
@@ -495,7 +521,7 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
 
         let config = edge_server::DualServerConfig {
             admin: edge_server::AdminListenerConfig {
-                addr: admin_addr,
+                listener_type: admin_listener_type,
                 api_key: args.api_key,
                 tls: admin_tls,
                 body_limits,
@@ -519,15 +545,21 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
         };
 
         let ingress_target = match &config.ingress.listener_type {
-            edge_server::IngressListenerType::Tcp(addr) => format!("tcp://{}", addr),
+            edge_server::IngressListenerType::Tcp(edge_server::TcpListenerSource::Bind(addr)) => {
+                format!("tcp://{addr}")
+            }
+            edge_server::IngressListenerType::Tcp(
+                edge_server::TcpListenerSource::InheritedFd(fd),
+            ) => format!("inherited-fd:{fd}"),
             edge_server::IngressListenerType::Unix(path) => {
                 format!("unix:{}", path.display())
             }
         };
 
         info!(
-            "starting thunder (admin=http://{}, ingress={})",
-            config.admin.addr, ingress_target
+            admin_listener = ?config.admin.listener_type,
+            ingress = ingress_target,
+            "starting thunder dual-listener server"
         );
 
         // Run the dual-listener server (blocks until shutdown)
@@ -536,4 +568,116 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
         info!("thunder stopped");
         Ok(())
     })
+}
+
+fn validate_start_args(args: &StartArgs) -> Result<(), anyhow::Error> {
+    if args.port.is_some() && args.unix_socket.is_some() {
+        return Err(anyhow::anyhow!(
+            "--port and --unix-socket are mutually exclusive"
+        ));
+    }
+
+    if let Some(fd) = args.admin_fd {
+        if fd < 0 {
+            return Err(anyhow::anyhow!(
+                "--admin-fd must be a non-negative file descriptor"
+            ));
+        }
+    }
+    if let Some(fd) = args.ingress_fd {
+        if fd < 0 {
+            return Err(anyhow::anyhow!(
+                "--ingress-fd must be a non-negative file descriptor"
+            ));
+        }
+    }
+    if args.admin_fd.is_some() && args.admin_fd == args.ingress_fd {
+        return Err(anyhow::anyhow!(
+            "--admin-fd and --ingress-fd cannot use the same file descriptor"
+        ));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    if args.admin_fd.is_some() || args.ingress_fd.is_some() {
+        return Err(anyhow::anyhow!(
+            "--admin-fd and --ingress-fd are supported only on macOS and Linux"
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{Command, FromArgMatches};
+
+    fn parse_start_args(args: &[&str]) -> Result<StartArgs, clap::Error> {
+        let command = StartArgs::augment_args(Command::new("start"));
+        let matches = command.try_get_matches_from(args)?;
+        StartArgs::from_arg_matches(&matches)
+    }
+
+    #[test]
+    fn inherited_listener_flags_parse_with_their_environment_names() {
+        let args = parse_start_args(&["start", "--admin-fd", "3", "--ingress-fd", "4"])
+            .expect("inherited listener flags should parse");
+
+        assert_eq!(args.admin_fd, Some(3));
+        assert_eq!(args.ingress_fd, Some(4));
+        assert!(
+            args.admin_host.is_none() && args.admin_port.is_none() && args.host.is_none(),
+            "bind defaults must remain absent so FD conflicts only apply to explicit selectors"
+        );
+        validate_start_args(&args).expect("distinct non-negative FDs should validate");
+    }
+
+    #[test]
+    fn inherited_listener_flags_conflict_with_bind_selectors() {
+        for arguments in [
+            &["start", "--admin-fd", "3", "--admin-host", "127.0.0.1"][..],
+            &["start", "--admin-fd", "3", "--admin-port", "9001"][..],
+            &["start", "--ingress-fd", "4", "--host", "127.0.0.1"][..],
+            &["start", "--ingress-fd", "4", "--port", "8081"][..],
+            &[
+                "start",
+                "--ingress-fd",
+                "4",
+                "--unix-socket",
+                "/tmp/thunder.sock",
+            ][..],
+        ] {
+            assert!(
+                parse_start_args(arguments).is_err(),
+                "expected conflicting arguments to fail: {arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_listener_flags_reject_negative_and_duplicate_descriptors() {
+        let negative = parse_start_args(&["start", "--admin-fd=-1"])
+            .expect("negative descriptor syntax should parse for validation");
+        let negative_error =
+            validate_start_args(&negative).expect_err("negative descriptor must be rejected");
+        assert!(negative_error.to_string().contains("--admin-fd"));
+
+        let duplicate = parse_start_args(&["start", "--admin-fd", "3", "--ingress-fd", "3"])
+            .expect("duplicate descriptor syntax should parse for validation");
+        let duplicate_error =
+            validate_start_args(&duplicate).expect_err("duplicate descriptor must be rejected");
+        assert!(duplicate_error.to_string().contains("same file descriptor"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inherited_listener_flags_are_explicitly_unsupported_on_windows() {
+        let args = parse_start_args(&["start", "--admin-fd", "3"])
+            .expect("inherited listener flag syntax should parse");
+        let error =
+            validate_start_args(&args).expect_err("non-Unix platforms must reject inherited FDs");
+        assert!(error
+            .to_string()
+            .contains("supported only on macOS and Linux"));
+    }
 }

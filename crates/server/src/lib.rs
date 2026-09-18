@@ -12,15 +12,19 @@ pub mod tls;
 pub mod trace_context;
 
 use std::net::SocketAddr;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::os::fd::{FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use anyhow::Error;
+use anyhow::{Context, Error};
 use hyper_util::rt::TokioIo;
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -41,7 +45,9 @@ const FD_RESERVED_RATIO: f64 = 0.10;
 const FD_RESERVED_ABSOLUTE: usize = 64;
 const ACCEPT_EMFILE_BACKOFF: Duration = Duration::from_millis(50);
 const ACCEPT_PERMIT_WAIT: Duration = Duration::from_millis(500);
+#[cfg(unix)]
 const DEFAULT_NOFILE_TARGET: usize = 10_000;
+#[cfg(unix)]
 const NOFILE_TARGET_ENV: &str = "EDGE_RUNTIME_NOFILE_TARGET";
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,6 +113,7 @@ pub fn current_listener_connection_capacity() -> ListenerConnectionCapacitySnaps
     listener_connection_capacity_state().snapshot()
 }
 
+#[cfg(unix)]
 fn fd_soft_limit() -> Option<usize> {
     let mut lim = libc::rlimit {
         rlim_cur: 0,
@@ -122,6 +129,12 @@ fn fd_soft_limit() -> Option<usize> {
     }
 }
 
+#[cfg(not(unix))]
+fn fd_soft_limit() -> Option<usize> {
+    None
+}
+
+#[cfg(unix)]
 fn resolve_nofile_target() -> usize {
     match std::env::var(NOFILE_TARGET_ENV) {
         Ok(raw) => match raw.trim().parse::<usize>() {
@@ -153,6 +166,7 @@ fn resolve_nofile_target() -> usize {
     }
 }
 
+#[cfg(unix)]
 fn maybe_raise_nofile_limit() {
     let target = resolve_nofile_target();
     let mut lim = libc::rlimit {
@@ -233,6 +247,9 @@ fn maybe_raise_nofile_limit() {
     );
 }
 
+#[cfg(not(unix))]
+fn maybe_raise_nofile_limit() {}
+
 fn compute_listener_connection_capacity(configured: usize) -> ListenerConnectionCapacitySnapshot {
     let configured = configured.max(1);
     let Some(soft_limit) = fd_soft_limit() else {
@@ -290,11 +307,24 @@ pub struct DualServerConfig {
     pub max_connections: usize,
 }
 
+/// Source for a TCP listener.
+///
+/// `InheritedFd` is supported on macOS and Linux only. The descriptor must be
+/// an owned copy in this process of a listening IPv4 or IPv6 TCP socket. Once
+/// the listener is opened, ownership transfers to the runtime.
+#[derive(Debug, Clone, Copy)]
+pub enum TcpListenerSource {
+    /// Bind a new listener to this socket address.
+    Bind(SocketAddr),
+    /// Adopt an inherited listening TCP file descriptor on macOS or Linux.
+    InheritedFd(i32),
+}
+
 /// Admin listener configuration (TCP only).
 #[derive(Debug, Clone)]
 pub struct AdminListenerConfig {
-    /// Address to bind (default: 0.0.0.0:9000)
-    pub addr: SocketAddr,
+    /// TCP listener source.
+    pub listener_type: TcpListenerSource,
     /// API key for authentication. None = no auth (dev mode).
     pub api_key: Option<String>,
     /// Optional TLS configuration.
@@ -322,7 +352,7 @@ pub struct IngressListenerConfig {
 #[derive(Debug, Clone)]
 pub enum IngressListenerType {
     /// TCP socket with address.
-    Tcp(SocketAddr),
+    Tcp(TcpListenerSource),
     /// Unix domain socket with path.
     Unix(PathBuf),
 }
@@ -347,19 +377,240 @@ pub struct TlsConfig {
     pub key_path: String,
 }
 
+fn inherited_fd(source: TcpListenerSource) -> Option<i32> {
+    match source {
+        TcpListenerSource::Bind(_) => None,
+        TcpListenerSource::InheritedFd(fd) => Some(fd),
+    }
+}
+
+fn validate_dual_listener_config(config: &DualServerConfig) -> Result<(), Error> {
+    let admin_fd = inherited_fd(config.admin.listener_type);
+    let ingress_fd = match config.ingress.listener_type {
+        IngressListenerType::Tcp(source) => inherited_fd(source),
+        IngressListenerType::Unix(_) => None,
+    };
+
+    if admin_fd.is_some() && admin_fd == ingress_fd {
+        anyhow::bail!("admin and ingress listeners cannot use the same inherited file descriptor");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        if let Some(fd) = admin_fd {
+            validate_inherited_tcp_listener(fd, "admin")?;
+        }
+        if let Some(fd) = ingress_fd {
+            validate_inherited_tcp_listener(fd, "ingress")?;
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    if admin_fd.is_some() || ingress_fd.is_some() {
+        anyhow::bail!(
+            "inherited TCP listener file descriptors are supported only on macOS and Linux"
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn validate_inherited_tcp_listener(fd: RawFd, listener_name: &str) -> Result<(), Error> {
+    if fd < 0 {
+        anyhow::bail!(
+            "inherited {listener_name} listener file descriptor must be non-negative, got {fd}"
+        );
+    }
+
+    let mut socket_type: libc::c_int = 0;
+    let mut option_len = std::mem::size_of_val(&socket_type) as libc::socklen_t;
+    // Safety: the pointers refer to valid writable values of the stated length.
+    let socket_type_result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            (&mut socket_type as *mut libc::c_int).cast(),
+            &mut option_len,
+        )
+    };
+    if socket_type_result != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!("inherited {listener_name} listener fd {fd} is not an open socket")
+        });
+    }
+    if socket_type != libc::SOCK_STREAM {
+        anyhow::bail!("inherited {listener_name} listener fd {fd} must be a TCP stream socket");
+    }
+
+    // Safety: all-zero initialization is valid for `sockaddr_storage`.
+    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut address_len = std::mem::size_of_val(&address) as libc::socklen_t;
+    // Safety: the pointers refer to valid writable storage and its length.
+    let address_result = unsafe {
+        libc::getsockname(
+            fd,
+            (&mut address as *mut libc::sockaddr_storage).cast(),
+            &mut address_len,
+        )
+    };
+    if address_result != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!("failed to inspect inherited {listener_name} listener fd {fd}")
+        });
+    }
+    if !matches!(
+        address.ss_family as libc::c_int,
+        libc::AF_INET | libc::AF_INET6
+    ) {
+        anyhow::bail!(
+            "inherited {listener_name} listener fd {fd} must be an IPv4 or IPv6 TCP socket"
+        );
+    }
+
+    validate_tcp_listener_state(fd, listener_name)?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_tcp_listener_state(fd: RawFd, listener_name: &str) -> Result<(), Error> {
+    let mut accepting: libc::c_int = 0;
+    let mut option_len = std::mem::size_of_val(&accepting) as libc::socklen_t;
+    // Safety: the pointers refer to valid writable values of the stated length.
+    let accepting_result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_ACCEPTCONN,
+            (&mut accepting as *mut libc::c_int).cast(),
+            &mut option_len,
+        )
+    };
+    if accepting_result != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!("failed to inspect inherited {listener_name} listener fd {fd}")
+        });
+    }
+    if accepting == 0 {
+        anyhow::bail!("inherited {listener_name} listener fd {fd} is not listening");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_tcp_listener_state(fd: RawFd, listener_name: &str) -> Result<(), Error> {
+    // Darwin exposes SO_ACCEPTCONN as an internal socket-state bit, not a
+    // getsockopt option. A connected TCP stream is therefore rejected using
+    // getpeername; an unconnected IPv4/IPv6 SOCK_STREAM descriptor is then
+    // accepted only under the inherited-listener ownership contract.
+    // Safety: zero initialization is valid for `sockaddr_storage`.
+    let mut peer: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut peer_len = std::mem::size_of_val(&peer) as libc::socklen_t;
+    // Safety: the pointers refer to valid writable storage and its length.
+    let peer_result = unsafe {
+        libc::getpeername(
+            fd,
+            (&mut peer as *mut libc::sockaddr_storage).cast(),
+            &mut peer_len,
+        )
+    };
+    if peer_result == 0 {
+        anyhow::bail!("inherited {listener_name} listener fd {fd} is not listening");
+    }
+
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::ENOTCONN) {
+        return Err(error).with_context(|| {
+            format!("failed to inspect inherited {listener_name} listener fd {fd}")
+        });
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn inherited_tcp_listener(fd: RawFd, listener_name: &str) -> Result<TcpListener, Error> {
+    // Safety: `validate_dual_listener_config` validated that this is an owned,
+    // open IPv4/IPv6 TCP listening socket before any listener was opened.
+    let listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+    listener.set_nonblocking(true).with_context(|| {
+        format!("failed to set inherited {listener_name} listener fd {fd} nonblocking")
+    })?;
+    TcpListener::from_std(listener).with_context(|| {
+        format!("failed to register inherited {listener_name} listener fd {fd} with Tokio")
+    })
+}
+
+async fn open_tcp_listener(
+    source: TcpListenerSource,
+    listener_name: &str,
+) -> Result<TcpListener, Error> {
+    match source {
+        TcpListenerSource::Bind(addr) => TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("failed to bind {listener_name} listener on {addr}")),
+        TcpListenerSource::InheritedFd(fd) => {
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            {
+                inherited_tcp_listener(fd, listener_name)
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            {
+                let _ = fd;
+                anyhow::bail!(
+                    "inherited TCP listener file descriptors are supported only on macOS and Linux"
+                )
+            }
+        }
+    }
+}
+
+fn log_tcp_listener_start(
+    listener_name: &'static str,
+    source: TcpListenerSource,
+    address: SocketAddr,
+    scheme: &'static str,
+) {
+    match source {
+        TcpListenerSource::Bind(_) => info!(
+            function_name = "runtime",
+            request_id = "system",
+            listener = listener_name,
+            listener_origin = "bind",
+            scheme,
+            address = %address,
+            "TCP listener started"
+        ),
+        TcpListenerSource::InheritedFd(fd) => info!(
+            function_name = "runtime",
+            request_id = "system",
+            listener = listener_name,
+            listener_origin = "inherited-fd",
+            inherited_fd = fd,
+            scheme,
+            address = %address,
+            "TCP listener started"
+        ),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Dual Server (New Architecture)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Start the dual-listener HTTP server.
 ///
-/// - Admin listener on `config.admin.addr` (default port 9000) with API key auth
+/// - Admin listener from `config.admin.listener_type` with API key auth
 /// - Ingress listener on TCP port or Unix socket for function requests
 pub async fn run_dual_server(
     config: DualServerConfig,
     registry: Arc<FunctionRegistry>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
+    // Validate all inherited descriptors before opening either listener. This
+    // prevents a malformed ingress descriptor from partially starting admin.
+    validate_dual_listener_config(&config)?;
     maybe_raise_nofile_limit();
 
     // Warn if no API key configured
@@ -423,13 +674,29 @@ pub async fn run_dual_server(
         global_routing,
     );
 
+    // Open both TCP listeners before spawning serving tasks so bind/adoption
+    // errors fail startup instead of being logged only by a detached task.
+    let admin_source = config.admin.listener_type;
+    let admin_listener = open_tcp_listener(admin_source, "admin").await?;
+    let ingress_tcp_listener = match config.ingress.listener_type {
+        IngressListenerType::Tcp(source) => Some(open_tcp_listener(source, "ingress").await?),
+        IngressListenerType::Unix(_) => None,
+    };
+
     // Spawn admin listener
     let admin_shutdown = shutdown.clone();
-    let admin_config = config.admin.clone();
+    let admin_tls = config.admin.tls.clone();
     let admin_semaphore = admin_connection_semaphore.clone();
     let admin_handle = tokio::spawn(async move {
-        if let Err(e) =
-            run_admin_listener(admin_config, admin_router, admin_shutdown, admin_semaphore).await
+        if let Err(e) = run_admin_listener(
+            admin_listener,
+            admin_source,
+            admin_tls,
+            admin_router,
+            admin_shutdown,
+            admin_semaphore,
+        )
+        .await
         {
             error!(
                 function_name = "runtime",
@@ -447,6 +714,7 @@ pub async fn run_dual_server(
     let ingress_handle = tokio::spawn(async move {
         if let Err(e) = run_ingress_listener(
             ingress_config,
+            ingress_tcp_listener,
             ingress_router,
             ingress_shutdown,
             ingress_semaphore,
@@ -494,14 +762,18 @@ pub async fn run_dual_server(
 
 /// Run the admin listener (TCP only, with optional TLS).
 async fn run_admin_listener(
-    config: AdminListenerConfig,
+    listener: TcpListener,
+    source: TcpListenerSource,
+    tls_config: Option<TlsConfig>,
     router: AdminRouter,
     shutdown: CancellationToken,
     connection_semaphore: Arc<Semaphore>,
 ) -> Result<(), Error> {
-    let listener = TcpListener::bind(config.addr).await?;
+    let addr = listener
+        .local_addr()
+        .context("failed to get admin listener local address")?;
 
-    let tls_acceptor = if let Some(ref tls_config) = config.tls {
+    let tls_acceptor = if let Some(ref tls_config) = tls_config {
         Some(tls::build_dynamic_tls_acceptor(
             tls_config.clone(),
             shutdown.clone(),
@@ -516,7 +788,7 @@ async fn run_admin_listener(
             function_name = "runtime",
             request_id = "system",
             "admin listener started without TLS on {}. Traffic is unencrypted.",
-            config.addr
+            addr
         );
     }
 
@@ -525,13 +797,7 @@ async fn run_admin_listener(
     } else {
         "http"
     };
-    info!(
-        function_name = "runtime",
-        request_id = "system",
-        "admin API listening on {}://{}",
-        scheme,
-        config.addr
-    );
+    log_tcp_listener_start("admin", source, addr, scheme);
 
     let svc = EdgeService::new(router);
 
@@ -621,29 +887,54 @@ async fn run_admin_listener(
 /// Run the ingress listener (TCP or Unix socket).
 async fn run_ingress_listener(
     config: IngressListenerConfig,
+    tcp_listener: Option<TcpListener>,
     router: IngressRouter,
     shutdown: CancellationToken,
     connection_semaphore: Arc<Semaphore>,
 ) -> Result<(), Error> {
     match config.listener_type {
-        IngressListenerType::Tcp(addr) => {
-            run_tcp_ingress(addr, config.tls, router, shutdown, connection_semaphore).await
+        IngressListenerType::Tcp(source) => {
+            let listener = tcp_listener
+                .ok_or_else(|| anyhow::anyhow!("missing prepared TCP listener for ingress"))?;
+            run_tcp_ingress(
+                listener,
+                source,
+                config.tls,
+                router,
+                shutdown,
+                connection_semaphore,
+            )
+            .await
         }
         IngressListenerType::Unix(path) => {
-            run_unix_ingress(path, router, shutdown, connection_semaphore).await
+            if tcp_listener.is_some() {
+                anyhow::bail!("unexpected prepared TCP listener for Unix ingress");
+            }
+            #[cfg(unix)]
+            {
+                run_unix_ingress(path, router, shutdown, connection_semaphore).await
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (path, router, shutdown, connection_semaphore);
+                anyhow::bail!("Unix socket ingress is supported only on Unix")
+            }
         }
     }
 }
 
 /// Run ingress on TCP socket.
 async fn run_tcp_ingress(
-    addr: SocketAddr,
+    listener: TcpListener,
+    source: TcpListenerSource,
     tls_config: Option<TlsConfig>,
     router: IngressRouter,
     shutdown: CancellationToken,
     connection_semaphore: Arc<Semaphore>,
 ) -> Result<(), Error> {
-    let listener = TcpListener::bind(addr).await?;
+    let addr = listener
+        .local_addr()
+        .context("failed to get ingress listener local address")?;
 
     let tls_acceptor = if let Some(ref tls) = tls_config {
         Some(tls::build_dynamic_tls_acceptor(
@@ -669,13 +960,7 @@ async fn run_tcp_ingress(
     } else {
         "http"
     };
-    info!(
-        function_name = "runtime",
-        request_id = "system",
-        "ingress listening on {}://{}",
-        scheme,
-        addr
-    );
+    log_tcp_listener_start("ingress", source, addr, scheme);
 
     let svc = EdgeService::new(router);
 
@@ -763,6 +1048,7 @@ async fn run_tcp_ingress(
 }
 
 /// Run ingress on Unix socket.
+#[cfg(unix)]
 async fn run_unix_ingress(
     path: PathBuf,
     router: IngressRouter,
