@@ -117,6 +117,12 @@ test:
 test-full:
 # 	cargo test-full
 	cargo run -- test --path "./tests/js/**/*.ts" --ignore "./tests/js/lib/**" 2>&1
+
+audit:
+	test "$$(date -u +%Y%m%d)" -le 20270917 || { echo "temporary advisory exceptions expired on 2027-09-17"; exit 1; }
+	cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119 --ignore RUSTSEC-2026-0285
+	cargo deny check advisories
+
 release:
 	cargo build --release 2>&1
 	cp target/release/thunder ./thunder

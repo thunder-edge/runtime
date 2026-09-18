@@ -1,0 +1,11 @@
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "Accepted temporary upstream exception: rsa is transitive through deno_crypto and has no fixed release. No platform RSA private keys are exposed to untrusted functions. Expires 2027-09-17." },
+    { id = "RUSTSEC-2024-0436", reason = "Accepted temporary upstream exception: paste is transitive in the current Deno batch. Expires 2027-09-17." },
+    { id = "RUSTSEC-2025-0134", reason = "Accepted temporary exception pending a separately planned rustls-pemfile migration. Expires 2027-09-17." },
+    { id = "RUSTSEC-2025-0141", reason = "Accepted temporary exception: bincode format migration requires a separate compatibility plan and dual-reader. Expires 2027-09-17." },
+    { id = "RUSTSEC-2026-0118", reason = "Accepted temporary upstream exception: hickory-proto is transitive through deno_net and has no fixed release. Egress remains protected by SSRF policy and quotas. Expires 2027-09-17." },
+    { id = "RUSTSEC-2026-0119", reason = "Accepted temporary upstream exception: hickory-proto fix requires a Deno batch that permits >=0.26.1. Egress remains protected by SSRF policy and quotas. Expires 2027-09-17." },
+    { id = "RUSTSEC-2026-0249", reason = "Accepted temporary upstream exception: smartstring is transitive in the current Deno batch. Expires 2027-09-17." },
+    { id = "RUSTSEC-2026-0285", reason = "Accepted temporary upstream exception: deno_tls pins rustls exactly at 0.23.40. Expires 2027-09-17." },
+]

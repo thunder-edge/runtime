@@ -19,6 +19,7 @@ This directory contains scripts for bundling, deploying, and load-testing the De
 ### Automation Scripts
 - **`run-benchmarks.sh`** - Full end-to-end benchmark (build, bundle, deploy, test everything)
 - **`quick-benchmark.sh`** - Fast re-run of benchmarks without rebuilding
+- **`run-k6-1k-repeats.sh`** - Repeat the 1k RPS k6 scenario and retain one summary JSON per run
 - **`benchmark-context-isolate-extreme.sh`** - Extreme comparative benchmark (legacy vs context+isolate) with consolidated stdout report
 - **`node-crypto-benchmark.sh`** - Focused benchmark/check for `node:crypto` throughput/latency (`createHash`, `createHmac`, `randomBytes`)
 - **`zlib-guardrail-benchmark.sh`** - Focused benchmark/check for `node:zlib` hardening guardrails
@@ -62,6 +63,18 @@ This will:
 ```bash
 ./scripts/quick-benchmark.sh
 ```
+
+### Repeated 1k RPS measurement
+
+With a running runtime and a function returning `200` at `/hello`, run:
+
+```bash
+./scripts/run-k6-1k-repeats.sh
+```
+
+The script executes ten runs by default and writes `run-01.json` through `run-10.json`, plus
+environment metadata, to a timestamped directory under `/tmp`. Override `OUTPUT_DIR`, `RUNS`,
+`BASE_URL`, or `PATHNAME` when a controlled comparison needs a different target.
 
 ### Focused Node Crypto Benchmark
 
