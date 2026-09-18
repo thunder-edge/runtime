@@ -31,6 +31,7 @@ use crate::router::{
     build_limited_stream, is_valid_function_name, json_response, sanitize_internal_error,
     RouteTargetLease,
 };
+use crate::runtime_state::{IngressAdmission, RuntimeState};
 use crate::trace_context::{
     add_correlation_id_header, apply_trace_headers, trace_context_from_headers,
 };
@@ -38,6 +39,22 @@ use crate::trace_context::{
 fn boxed_full_response(response: Response<Full<Bytes>>) -> Response<BoxBody> {
     let (parts, body) = response.into_parts();
     Response::from_parts(parts, body.boxed())
+}
+
+fn hold_ingress_admission(
+    response: Response<BoxBody>,
+    admission: IngressAdmission,
+) -> Response<BoxBody> {
+    let (parts, body) = response.into_parts();
+    // The mapping closure is stored by the body until the body is fully
+    // consumed or dropped, which covers streaming responses and disconnects.
+    let body = body
+        .map_frame(move |frame| {
+            let _admission = &admission;
+            frame
+        })
+        .boxed();
+    Response::from_parts(parts, body)
 }
 
 /// Ingress router for function invocation.
@@ -50,6 +67,7 @@ pub struct IngressRouter {
     body_limits: BodyLimitsConfig,
     rate_limiter: Option<RateLimitLayer>,
     global_routing: GlobalRoutingState,
+    runtime_state: RuntimeState,
 }
 
 impl IngressRouter {
@@ -87,11 +105,28 @@ impl IngressRouter {
         rate_limit_rps: Option<u64>,
         global_routing: GlobalRoutingState,
     ) -> Self {
+        Self::new_with_global_routing_state_and_runtime_state(
+            registry,
+            body_limits,
+            rate_limit_rps,
+            global_routing,
+            RuntimeState::standalone(),
+        )
+    }
+
+    pub fn new_with_global_routing_state_and_runtime_state(
+        registry: Arc<FunctionRegistry>,
+        body_limits: BodyLimitsConfig,
+        rate_limit_rps: Option<u64>,
+        global_routing: GlobalRoutingState,
+        runtime_state: RuntimeState,
+    ) -> Self {
         Self {
             registry,
             body_limits,
             rate_limiter: rate_limit_rps.map(rate_limit_layer),
             global_routing,
+            runtime_state,
         }
     }
 
@@ -102,11 +137,20 @@ impl IngressRouter {
     ) -> Result<Response<BoxBody>, Infallible> {
         let trace_ctx = trace_context_from_headers(req.headers());
 
+        let Some(admission) = self.runtime_state.try_admit_ingress() else {
+            let mut resp = json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                r#"{"error":"runtime is draining","code":"ERR_RUNTIME_DRAINING","draining":true}"#,
+            );
+            add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
+            return Ok(resp);
+        };
+
         if let Some(limiter) = &self.rate_limiter {
             if let Some(retry_after_secs) = limiter.check_limit() {
                 let mut resp = boxed_full_response(rate_limited_response(retry_after_secs));
                 add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
-                return Ok(resp);
+                return Ok(hold_ingress_admission(resp, admission));
             }
         }
 
@@ -116,12 +160,12 @@ impl IngressRouter {
         if path.starts_with("/_internal") {
             let mut resp = json_response(StatusCode::NOT_FOUND, r#"{"error":"not found"}"#);
             add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
-            return Ok(resp);
+            return Ok(hold_ingress_admission(resp, admission));
         }
 
         let mut resp = self.route_to_function(req, &trace_ctx).await;
         add_correlation_id_header(&mut resp, &trace_ctx.trace_id);
-        Ok(resp)
+        Ok(hold_ingress_admission(resp, admission))
     }
 
     /// Route request to the appropriate function isolate.

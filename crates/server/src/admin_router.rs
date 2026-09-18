@@ -17,11 +17,14 @@ use crate::body_limits::{
     BodyLimitsConfig,
 };
 use crate::bundle_signature::BundleSignatureVerifier;
-use crate::global_routing::{load_global_routing_table_from_env, GlobalRoutingState};
+use crate::global_routing::{
+    load_global_routing_table_from_env, GlobalRoutingState, StaleRoutingEpoch,
+};
 use crate::router::{
     build_metrics_body, is_metrics_fresh_query, is_valid_function_name, json_response,
     normalize_function_name, sanitize_internal_error, MetricsCache, METRICS_CACHE_TTL_SECS,
 };
+use crate::runtime_state::RuntimeState;
 use crate::service::BoxBody;
 
 #[derive(serde::Deserialize)]
@@ -102,6 +105,7 @@ pub struct AdminRouter {
     metrics_cache: Arc<MetricsCache>,
     bundle_signature_verifier: BundleSignatureVerifier,
     global_routing: GlobalRoutingState,
+    runtime_state: RuntimeState,
 }
 
 impl AdminRouter {
@@ -148,6 +152,24 @@ impl AdminRouter {
         bundle_signature_verifier: BundleSignatureVerifier,
         global_routing: GlobalRoutingState,
     ) -> Self {
+        Self::new_with_global_routing_state_and_runtime_state(
+            registry,
+            api_key,
+            body_limits,
+            bundle_signature_verifier,
+            global_routing,
+            RuntimeState::standalone(),
+        )
+    }
+
+    pub fn new_with_global_routing_state_and_runtime_state(
+        registry: Arc<FunctionRegistry>,
+        api_key: Option<String>,
+        body_limits: BodyLimitsConfig,
+        bundle_signature_verifier: BundleSignatureVerifier,
+        global_routing: GlobalRoutingState,
+        runtime_state: RuntimeState,
+    ) -> Self {
         Self {
             registry,
             api_key,
@@ -157,6 +179,7 @@ impl AdminRouter {
             ))),
             bundle_signature_verifier,
             global_routing,
+            runtime_state,
         }
     }
 
@@ -169,9 +192,13 @@ impl AdminRouter {
     ) -> Result<Response<BoxBody>, Infallible> {
         let path = req.uri().path().to_string();
         let method = req.method().clone();
-        // Check authentication
-        if let Err(resp) = self.check_auth(&req) {
-            return Ok(*resp);
+        // Kubernetes liveness/readiness probes are intentionally
+        // unauthenticated.  All management endpoints and non-GET health
+        // requests remain protected.
+        if !(method == Method::GET && path == "/health") {
+            if let Err(resp) = self.check_auth(&req) {
+                return Ok(*resp);
+            }
         }
 
         Ok(self.route_internal(req, &path, method).await)
@@ -214,10 +241,21 @@ impl AdminRouter {
     ) -> Response<BoxBody> {
         let metrics_fresh = is_metrics_fresh_query(req.uri().query());
         match (method.clone(), path) {
+            // Unauthenticated Kubernetes liveness/readiness probes.
+            (Method::GET, "/health") => self.handle_health(req.uri().query()),
+
             // Health check
             (Method::GET, "/_internal/health") => {
                 json_response(StatusCode::OK, r#"{"status":"ok"}"#)
             }
+
+            // Start an ingress-only graceful drain.  This does not cancel the
+            // process or function registry, so admin health/state stay
+            // available while accepted streams complete.
+            (Method::POST, "/_internal/drain") => self.handle_drain(),
+
+            // Snapshot consumed by a reconciler/control plane.
+            (Method::GET, "/_internal/state") => self.handle_state().await,
 
             // Metrics
             (Method::GET, "/_internal/metrics") => self.handle_metrics(metrics_fresh).await,
@@ -254,6 +292,105 @@ impl AdminRouter {
         }
     }
 
+    fn handle_health(&self, query: Option<&str>) -> Response<BoxBody> {
+        let ready_probe = query
+            .unwrap_or_default()
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .any(|(key, value)| key == "ready" && value == "1");
+        let snapshot = self.runtime_state.snapshot();
+
+        if ready_probe {
+            let body = serde_json::json!({
+                "status": if snapshot.ready { "ok" } else { "not_ready" },
+                "ready": snapshot.ready,
+                "draining": snapshot.draining,
+            })
+            .to_string();
+            return json_response(
+                if snapshot.ready {
+                    StatusCode::OK
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                },
+                &body,
+            );
+        }
+
+        let body = serde_json::json!({
+            "status": "ok",
+            "ready": snapshot.ready,
+            "draining": snapshot.draining,
+        })
+        .to_string();
+        json_response(StatusCode::OK, &body)
+    }
+
+    fn handle_drain(&self) -> Response<BoxBody> {
+        self.runtime_state.begin_drain();
+        let snapshot = self.runtime_state.snapshot();
+        let body = serde_json::json!({
+            "draining": snapshot.draining,
+            "active_requests": snapshot.active_requests,
+        })
+        .to_string();
+        json_response(StatusCode::ACCEPTED, &body)
+    }
+
+    async fn handle_state(&self) -> Response<BoxBody> {
+        let snapshot = self.runtime_state.snapshot();
+        let observed_at_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default();
+
+        let saturation =
+            serde_json::from_str::<serde_json::Value>(&build_metrics_body(&self.registry))
+                .ok()
+                .and_then(|metrics| metrics.get("process_saturation").cloned())
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "score": 0.0,
+                        "level": "healthy",
+                        "should_scale_out": false,
+                    })
+                });
+
+        let functions = self
+            .registry
+            .list()
+            .into_iter()
+            .map(|function| {
+                serde_json::json!({
+                    "name": function.name,
+                    "status": function.status,
+                    "active_requests": function.metrics.active_requests,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let body = serde_json::json!({
+            "runtime_revision": snapshot.runtime_revision,
+            "runtime_pid": snapshot.pid,
+            "pid": snapshot.pid,
+            "uptime_s": snapshot.uptime.as_secs(),
+            "functions": functions,
+            "routing_epoch": self.global_routing.routing_epoch(),
+            "runtime_ready": snapshot.runtime_ready,
+            "initial_reconcile_complete": snapshot.initial_reconcile_complete,
+            "ready": snapshot.ready,
+            "readiness": snapshot.ready,
+            "draining": snapshot.draining,
+            "active_requests": snapshot.active_requests,
+            "observed_saturation": saturation,
+            "saturation": saturation,
+            "saturation_observed_at": observed_at_unix_ms,
+            "saturation_observed_at_unix_ms": observed_at_unix_ms,
+        })
+        .to_string();
+        json_response(StatusCode::OK, &body)
+    }
+
     /// Handle GET /_internal/metrics
     async fn handle_metrics(&self, fresh: bool) -> Response<BoxBody> {
         let body = if fresh {
@@ -273,6 +410,7 @@ impl AdminRouter {
             Some(table) => {
                 let body = serde_json::json!({
                     "enabled": true,
+                    "epoch": table.epoch(),
                     "source": table.source(),
                     "routes": table.routes(),
                 })
@@ -282,6 +420,7 @@ impl AdminRouter {
             None => {
                 let body = serde_json::json!({
                     "enabled": false,
+                    "epoch": 0,
                     "source": serde_json::Value::Null,
                     "routes": [],
                 })
@@ -345,11 +484,30 @@ impl AdminRouter {
             Ok(active) => {
                 let body = serde_json::json!({
                     "enabled": true,
+                    "epoch": active.epoch(),
+                    "applied": true,
                     "source": active.source(),
                     "routeCount": active.routes().len(),
                 })
                 .to_string();
                 json_response(StatusCode::OK, &body)
+            }
+            Err(err) if err.downcast_ref::<StaleRoutingEpoch>().is_some() => {
+                let stale = err
+                    .downcast_ref::<StaleRoutingEpoch>()
+                    .expect("stale routing error checked above");
+                json_response(
+                    StatusCode::CONFLICT,
+                    &serde_json::json!({
+                        "code": "ERR_ROUTING_EPOCH_STALE",
+                        "error": "routing epoch is stale",
+                        "epoch": stale.current,
+                        "applied": false,
+                        "current_epoch": stale.current,
+                        "incoming_epoch": stale.incoming,
+                    })
+                    .to_string(),
+                )
             }
             Err(err) => json_response(
                 StatusCode::BAD_REQUEST,
@@ -415,6 +573,7 @@ impl AdminRouter {
                 let body = serde_json::json!({
                     "valid": true,
                     "manifestVersion": parsed.manifest_version,
+                    "epoch": parsed.epoch.unwrap_or(0),
                     "routeCount": parsed.routes.len(),
                 })
                 .to_string();

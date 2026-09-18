@@ -876,6 +876,25 @@ async fn e2e_admin_auth_and_public_ingress_behavior() {
     wait_for_tcp_listener(admin_addr).await;
     wait_for_tcp_listener(ingress_addr).await;
 
+    let public_health = send_plain_http(
+        admin_addr,
+        "GET /health?ready=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        public_health.starts_with("HTTP/1.1 200"),
+        "health probes must remain unauthenticated: {public_health}"
+    );
+    let state_without_key = send_plain_http(
+        admin_addr,
+        "GET /_internal/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        state_without_key.starts_with("HTTP/1.1 401"),
+        "state must retain admin authentication: {state_without_key}"
+    );
+
     let body = bincode::serialize(&BundlePackage::eszip_only(hello_eszip))
         .expect("serialize bundle package");
 
@@ -1849,6 +1868,217 @@ async fn e2e_ingress_streaming_producer_error_cleans_up_without_appending_json()
             && check_response.contains(r#""pendingCancels":0"#),
         "expected producer error cleanup to clear stream registries: {check_response}"
     );
+
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)
+        .await
+        .expect("server task did not finish in time")
+        .expect("server join error");
+    server_result.expect("server returned error");
+}
+
+#[tokio::test]
+async fn e2e_supervisor_phase_a_b_health_drain_and_state_contract() {
+    init_deno_platform();
+
+    let (admin_addr, ingress_addr) = reserve_dual_listener_addrs().await;
+    let registry = make_test_registry();
+    let shutdown = CancellationToken::new();
+    let runtime_state = RuntimeState::with_revision("revision-e2e");
+
+    let delayed_eszip = build_eszip_async(
+        "file:///supervisor_phase_ab_e2e.ts",
+        r#"
+        Deno.serve(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 750));
+          return new Response("in-flight-complete");
+        });
+        "#,
+    )
+    .await;
+    let bundle = bincode::serialize(&BundlePackage::eszip_only(delayed_eszip))
+        .expect("failed to serialize delayed bundle");
+    registry
+        .deploy(
+            "phase-ab-e2e".to_string(),
+            bytes::Bytes::from(bundle),
+            None,
+            None,
+        )
+        .await
+        .expect("failed to deploy delayed test function");
+
+    let server_config = dual_server_config(
+        TcpListenerSource::Bind(admin_addr),
+        IngressListenerType::Tcp(TcpListenerSource::Bind(ingress_addr)),
+    );
+    let server_handle = tokio::spawn({
+        let registry = registry.clone();
+        let shutdown = shutdown.clone();
+        let runtime_state = runtime_state.clone();
+        async move {
+            run_dual_server_with_runtime_state(server_config, registry, shutdown, runtime_state)
+                .await
+        }
+    });
+
+    wait_for_tcp_listener(admin_addr).await;
+    wait_for_tcp_listener(ingress_addr).await;
+
+    // Listener/bootstrap readiness alone is not enough for a state-aware
+    // Supervisor entry point.
+    let before_reconcile = send_plain_http(
+        admin_addr,
+        "GET /health?ready=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        before_reconcile.starts_with("HTTP/1.1 503"),
+        "readiness must remain false before initial reconcile: {before_reconcile}"
+    );
+    assert_eq!(parse_http_json_body(&before_reconcile)["ready"], false);
+
+    runtime_state.mark_initial_reconcile_complete();
+    let after_reconcile = send_plain_http(
+        admin_addr,
+        "GET /health?ready=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        after_reconcile.starts_with("HTTP/1.1 200"),
+        "readiness should become true after initial reconcile: {after_reconcile}"
+    );
+    assert_eq!(parse_http_json_body(&after_reconcile)["ready"], true);
+
+    let routing_manifest = r#"{
+        "manifestVersion": 1,
+        "epoch": 7,
+        "routes": [
+            {"host":"api.example.com","path":"/*","targetFunction":"phase-ab-e2e"}
+        ]
+    }"#;
+    let put_request = format!(
+        "PUT /_internal/routing HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        routing_manifest.len(),
+        routing_manifest
+    );
+    let put_response = send_plain_http(admin_addr, &put_request).await;
+    assert!(
+        put_response.starts_with("HTTP/1.1 200"),
+        "new routing epoch should apply: {put_response}"
+    );
+    assert_eq!(parse_http_json_body(&put_response)["epoch"], 7);
+
+    let stale_manifest = routing_manifest.replace("\"epoch\": 7", "\"epoch\": 6");
+    let stale_request = format!(
+        "PUT /_internal/routing HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        stale_manifest.len(),
+        stale_manifest
+    );
+    let stale_response = send_plain_http(admin_addr, &stale_request).await;
+    assert!(
+        stale_response.starts_with("HTTP/1.1 409"),
+        "stale routing epoch should be rejected: {stale_response}"
+    );
+
+    let state_response = send_plain_http(
+        admin_addr,
+        "GET /_internal/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        state_response.starts_with("HTTP/1.1 200"),
+        "state endpoint should be available before drain: {state_response}"
+    );
+    let state = parse_http_json_body(&state_response);
+    assert_eq!(state["runtime_revision"], "revision-e2e");
+    assert!(state["pid"].as_u64().is_some_and(|pid| pid > 0));
+    assert_eq!(state["routing_epoch"], 7);
+    assert_eq!(state["ready"], true);
+    assert_eq!(state["draining"], false);
+    assert!(state["functions"]
+        .as_array()
+        .is_some_and(|functions| functions.iter().any(|function| {
+            function["name"] == "phase-ab-e2e" && function["status"] == "running"
+        })));
+    assert!(state["observed_saturation"]["score"].is_number());
+
+    // Hold a request inside the function while drain is initiated.  The
+    // request must finish, while a request arriving after the drain boundary
+    // receives deterministic 503 shedding.
+    let in_flight = tokio::spawn(send_plain_http(
+        ingress_addr,
+        "GET /phase-ab-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    ));
+    let active_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let active_response = send_plain_http(
+            admin_addr,
+            "GET /_internal/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        if parse_http_json_body(&active_response)["active_requests"]
+            .as_u64()
+            .is_some_and(|active| active >= 1)
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < active_deadline,
+            "in-flight request was not observed in state"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let drain_response = send_plain_http(
+        admin_addr,
+        "POST /_internal/drain HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        drain_response.starts_with("HTTP/1.1 202"),
+        "drain should return accepted: {drain_response}"
+    );
+    assert_eq!(parse_http_json_body(&drain_response)["draining"], true);
+
+    let rejected = send_plain_http(
+        ingress_addr,
+        "GET /phase-ab-e2e HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        rejected.starts_with("HTTP/1.1 503"),
+        "new ingress request must be rejected during drain: {rejected}"
+    );
+    assert!(rejected.contains("ERR_RUNTIME_DRAINING"));
+
+    let completed = tokio::time::timeout(Duration::from_secs(3), in_flight)
+        .await
+        .expect("in-flight request did not finish")
+        .expect("in-flight request task failed");
+    assert!(
+        completed.starts_with("HTTP/1.1 200") && completed.contains("in-flight-complete"),
+        "accepted request must complete during drain: {completed}"
+    );
+
+    // Drain is idempotent and the admin plane remains usable.
+    let drain_again = send_plain_http(
+        admin_addr,
+        "POST /_internal/drain HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(drain_again.starts_with("HTTP/1.1 202"));
+    assert_eq!(parse_http_json_body(&drain_again)["active_requests"], 0);
+
+    let state_after_drain = send_plain_http(
+        admin_addr,
+        "GET /_internal/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(state_after_drain.starts_with("HTTP/1.1 200"));
+    let state_after_drain = parse_http_json_body(&state_after_drain);
+    assert_eq!(state_after_drain["draining"], true);
+    assert_eq!(state_after_drain["ready"], false);
 
     shutdown.cancel();
     let server_result = tokio::time::timeout(Duration::from_secs(3), server_handle)

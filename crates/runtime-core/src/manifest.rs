@@ -153,6 +153,10 @@ pub struct ResolvedFunctionManifest {
 #[serde(rename_all = "camelCase")]
 pub struct RoutingManifest {
     pub manifest_version: u32,
+    /// Optional monotonic routing revision.  Omitted for legacy standalone
+    /// manifests, which retain the pre-epoch behavior.
+    #[serde(default)]
+    pub epoch: Option<u64>,
     pub routes: Vec<RoutingRule>,
 }
 

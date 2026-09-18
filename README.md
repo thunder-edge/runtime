@@ -301,8 +301,6 @@ Reported summary:
 
 ## Security and Current Status
 
-A technical audit of the codebase is available in [AUDIT.md](AUDIT.md).
-
 The blocking findings from that audit (05/03/2026) are addressed:
 
 - TLS termination is applied in the accept loop; starting a listener without TLS logs an explicit warning

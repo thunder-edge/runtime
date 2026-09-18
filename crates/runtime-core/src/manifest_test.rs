@@ -290,6 +290,24 @@ fn validates_minimal_routing_manifest() {
 }
 
 #[test]
+fn validates_routing_manifest_with_optional_epoch() {
+    let json = r#"{
+        "manifestVersion": 1,
+        "epoch": 12,
+        "routes": [
+            {
+                "host": "api.example.com",
+                "path": "/*",
+                "targetFunction": "users-api"
+            }
+        ]
+    }"#;
+
+    let manifest = validate_routing_manifest_json(json).expect("routing epoch should validate");
+    assert_eq!(manifest.epoch, Some(12));
+}
+
+#[test]
 fn rejects_routing_manifest_with_duplicate_host_and_path() {
     let json = r#"{
         "manifestVersion": 1,

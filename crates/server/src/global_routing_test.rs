@@ -52,3 +52,41 @@ fn global_routing_rejects_ambiguous_rules_same_precedence() {
         .to_string()
         .contains("ambiguous routing rules with same precedence"));
 }
+
+#[test]
+fn global_routing_epoch_is_monotonic() {
+    let state = GlobalRoutingState::new(None);
+    let manifest = |epoch: u64| {
+        format!(
+            r#"{{
+                "manifestVersion": 1,
+                "epoch": {epoch},
+                "routes": [
+                    {{"host":"api.example.com","path":"/*","targetFunction":"api"}}
+                ]
+            }}"#
+        )
+    };
+
+    let active = state
+        .replace_from_manifest_json(&manifest(4), "test")
+        .expect("first version should apply");
+    assert_eq!(active.epoch(), 4);
+    assert_eq!(state.routing_epoch(), 4);
+
+    let stale = state
+        .replace_from_manifest_json(&manifest(3), "test")
+        .expect_err("older epoch must be rejected");
+    assert!(stale.downcast_ref::<StaleRoutingEpoch>().is_some());
+    assert_eq!(state.routing_epoch(), 4);
+
+    let equal = state
+        .replace_from_manifest_json(&manifest(4), "test")
+        .expect_err("equal epoch must be rejected");
+    assert!(equal.downcast_ref::<StaleRoutingEpoch>().is_some());
+
+    state
+        .replace_from_manifest_json(&manifest(5), "test")
+        .expect("newer epoch should apply");
+    assert_eq!(state.routing_epoch(), 5);
+}

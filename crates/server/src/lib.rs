@@ -7,6 +7,7 @@ pub mod graceful;
 pub mod ingress_router;
 pub mod middleware;
 pub mod router;
+pub mod runtime_state;
 pub mod service;
 pub mod tls;
 pub mod trace_context;
@@ -37,6 +38,8 @@ use crate::bundle_signature::{BundleSignatureConfig, BundleSignatureVerifier};
 use crate::global_routing::{load_global_routing_table_from_env, GlobalRoutingState};
 use crate::ingress_router::IngressRouter;
 use crate::service::EdgeService;
+
+pub use crate::runtime_state::{IngressAdmission, RuntimeState, RuntimeStateSnapshot};
 
 // Re-export for convenience
 pub use crate::body_limits::BodyLimitsConfig;
@@ -608,6 +611,25 @@ pub async fn run_dual_server(
     registry: Arc<FunctionRegistry>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
+    // Standalone startup has no external Supervisor to perform the first
+    // desired-vs-observed reconcile.  Treat the successfully bootstrapped
+    // process as that no-op reconcile so existing standalone deployments stay
+    // ready as soon as both listeners are serving.
+    run_dual_server_with_runtime_state(config, registry, shutdown, RuntimeState::standalone()).await
+}
+
+/// Start the dual-listener server with caller-owned lifecycle state.
+///
+/// This is the seam used by a Supervisor/reconciler: listener bootstrap marks
+/// the runtime healthy, but the caller must mark the first reconcile complete
+/// before `/health?ready=1` becomes ready.  The admin listener remains
+/// available while the shared state is draining.
+pub async fn run_dual_server_with_runtime_state(
+    config: DualServerConfig,
+    registry: Arc<FunctionRegistry>,
+    shutdown: CancellationToken,
+    runtime_state: RuntimeState,
+) -> Result<(), Error> {
     // Validate all inherited descriptors before opening either listener. This
     // prevents a malformed ingress descriptor from partially starting admin.
     validate_dual_listener_config(&config)?;
@@ -660,18 +682,20 @@ pub async fn run_dual_server(
     let global_routing = GlobalRoutingState::new(load_global_routing_table_from_env());
 
     // Create routers with shared registry and body limits
-    let admin_router = AdminRouter::new_with_global_routing_state(
+    let admin_router = AdminRouter::new_with_global_routing_state_and_runtime_state(
         registry.clone(),
         config.admin.api_key.clone(),
         config.admin.body_limits,
         BundleSignatureVerifier::from_config(config.admin.bundle_signature.clone())?,
         global_routing.clone(),
+        runtime_state.clone(),
     );
-    let ingress_router = IngressRouter::new_with_global_routing_state(
+    let ingress_router = IngressRouter::new_with_global_routing_state_and_runtime_state(
         registry.clone(),
         config.ingress.body_limits,
         config.ingress.rate_limit_rps,
         global_routing,
+        runtime_state.clone(),
     );
 
     // Open both TCP listeners before spawning serving tasks so bind/adoption
@@ -730,32 +754,53 @@ pub async fn run_dual_server(
         }
     });
 
+    // The listeners being started is the runtime/bootstrap half of
+    // readiness.  An external reconciler still owns the initial reconcile
+    // gate when this state-aware entry point is used.
+    runtime_state.mark_runtime_ready();
+
     // Wait for shutdown signal
     shutdown.cancelled().await;
+    runtime_state.begin_drain();
     info!(
         function_name = "runtime",
         request_id = "system",
         "shutdown signal received, stopping listeners..."
     );
 
-    // Wait for listeners to finish with deadline
+    // Share one shutdown deadline between listener stop, ingress drain, and
+    // final function cleanup.
     let deadline = Duration::from_secs(config.graceful_exit_deadline_secs);
+    let shutdown_started = std::time::Instant::now();
     let _ = tokio::time::timeout(deadline, async {
         let _ = admin_handle.await;
         let _ = ingress_handle.await;
     })
     .await;
 
+    let remaining = deadline.saturating_sub(shutdown_started.elapsed());
+    let drained = tokio::time::timeout(remaining, runtime_state.wait_for_no_active_requests())
+        .await
+        .is_ok();
+    if !drained {
+        warn!(
+            function_name = "runtime",
+            request_id = "system",
+            active_requests = runtime_state.active_requests(),
+            "graceful drain deadline reached with active ingress requests"
+        );
+    }
+
+    let remaining = deadline.saturating_sub(shutdown_started.elapsed());
     info!(
         function_name = "runtime",
         request_id = "system",
-        "waited up to {}s for connections to drain",
-        config.graceful_exit_deadline_secs
+        active_requests = runtime_state.active_requests(),
+        "waited for ingress requests to drain (deadline={}s)",
+        config.graceful_exit_deadline_secs,
     );
 
-    registry
-        .shutdown_all_with_deadline(Duration::from_secs(config.graceful_exit_deadline_secs))
-        .await;
+    registry.shutdown_all_with_deadline(remaining).await;
 
     Ok(())
 }

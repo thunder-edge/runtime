@@ -1,4 +1,6 @@
 use std::cmp::Ordering;
+use std::error::Error as StdError;
+use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
 
 use base64::Engine;
@@ -19,6 +21,8 @@ pub struct GlobalRouteView {
 #[derive(Debug, Clone)]
 pub struct GlobalRoutingTable {
     source: String,
+    epoch: u64,
+    epoch_explicit: bool,
     rules: Vec<CompiledRule>,
     view_rules: Vec<GlobalRouteView>,
 }
@@ -32,6 +36,24 @@ pub struct GlobalRoutingState {
 pub struct ResolvedGlobalRoute {
     pub target_function: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaleRoutingEpoch {
+    pub current: u64,
+    pub incoming: u64,
+}
+
+impl Display for StaleRoutingEpoch {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "routing epoch is stale: incoming {} must be greater than current {}",
+            self.incoming, self.current
+        )
+    }
+}
+
+impl StdError for StaleRoutingEpoch {}
 
 #[derive(Debug, Clone)]
 struct CompiledRule {
@@ -78,6 +100,10 @@ impl GlobalRoutingTable {
         &self.source
     }
 
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     pub fn routes(&self) -> &[GlobalRouteView] {
         &self.view_rules
     }
@@ -120,6 +146,10 @@ impl GlobalRoutingState {
         self.inner.read().ok().and_then(|guard| guard.clone())
     }
 
+    pub fn routing_epoch(&self) -> u64 {
+        self.get().map(|table| table.epoch()).unwrap_or(0)
+    }
+
     pub fn replace_from_manifest_json(
         &self,
         raw: &str,
@@ -127,6 +157,15 @@ impl GlobalRoutingState {
     ) -> anyhow::Result<Arc<GlobalRoutingTable>> {
         let table = Arc::new(GlobalRoutingTable::from_manifest_json(raw, source)?);
         if let Ok(mut write) = self.inner.write() {
+            if let Some(current) = write.as_ref() {
+                let must_advance_epoch = current.epoch_explicit || table.epoch_explicit;
+                if must_advance_epoch && (!table.epoch_explicit || table.epoch <= current.epoch) {
+                    return Err(anyhow::Error::new(StaleRoutingEpoch {
+                        current: current.epoch,
+                        incoming: table.epoch,
+                    }));
+                }
+            }
             *write = Some(table.clone());
         }
         Ok(table)
@@ -375,6 +414,8 @@ fn parse_global_routing_manifest(raw: &str, source: &str) -> anyhow::Result<Glob
 
     Ok(GlobalRoutingTable {
         source: source.to_string(),
+        epoch: parsed.epoch.unwrap_or(0),
+        epoch_explicit: parsed.epoch.is_some(),
         rules,
         view_rules,
     })

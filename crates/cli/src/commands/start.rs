@@ -11,6 +11,10 @@ use functions::types::{ContextPoolLimits, PoolLimits};
 use runtime_core::isolate::{IsolateConfig, OutgoingProxyConfig};
 use runtime_core::ssrf::SsrfConfig;
 
+fn runtime_shutdown_tokens() -> (CancellationToken, CancellationToken) {
+    (CancellationToken::new(), CancellationToken::new())
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SourceMapMode {
     None,
@@ -355,7 +359,11 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
         .build()?;
 
     runtime.block_on(async {
-        let shutdown = CancellationToken::new();
+        // Keep the registry cancellation token separate from the listener
+        // shutdown token.  SIGTERM stops new admissions first; the server
+        // waits for admitted ingress streams before FunctionRegistry cancels
+        // isolate event loops.
+        let (shutdown, registry_shutdown) = runtime_shutdown_tokens();
 
         // Build SSRF config
         let ssrf_config = if args.disable_ssrf_protection {
@@ -435,7 +443,7 @@ pub fn run(args: StartArgs) -> Result<(), anyhow::Error> {
         };
 
         let registry = Arc::new(FunctionRegistry::new_with_pool(
-            shutdown.clone(),
+            registry_shutdown,
             default_config,
             pool_config,
             PoolLimits {
@@ -616,6 +624,15 @@ mod tests {
         let command = StartArgs::augment_args(Command::new("start"));
         let matches = command.try_get_matches_from(args)?;
         StartArgs::from_arg_matches(&matches)
+    }
+
+    #[test]
+    fn listener_shutdown_token_does_not_cancel_registry_token() {
+        let (listener_shutdown, registry_shutdown) = runtime_shutdown_tokens();
+        listener_shutdown.cancel();
+
+        assert!(listener_shutdown.is_cancelled());
+        assert!(!registry_shutdown.is_cancelled());
     }
 
     #[test]
